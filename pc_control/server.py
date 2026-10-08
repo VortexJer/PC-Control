@@ -237,7 +237,7 @@ def verdict(result, delta):
         return "the window closed"
     if delta == "no changes":
         return "WARNING: NO VISIBLE EFFECT (it may not have worked); check with look"
-    if delta.startswith(("change not measurable", "no previous reading")):
+    if delta.startswith(("change not measurable", "no previous reading", "no change in the UI tree")):
         return "effect not measurable in this mode; check with look"
     return "effect observed"
 
@@ -319,8 +319,8 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         res = _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double, rel=rel), note)
         # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
-        if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right and not double and not hidden:
-            r2 = core.invoke(str(hwnd), t)
+        if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right:
+            r2 = core.invoke(str(hwnd), t, double=double)
             if r2:
                 time.sleep(0.25)
                 delta = core.changes(str(hwnd))
