@@ -149,6 +149,12 @@ def type(window: str, target: str, text: str, replace: bool = False) -> str:
     """Type text into the element id (from look()). Appends, or replaces with replace=true. Id is required: no blind typing. Returns what changed."""
     def run(hidden):
         hwnd = _gate(window, act=True)
+        it = core._state.get(hwnd, {}).get("items", {}).get(int(target))
+        try:
+            is_pw = bool(it and it.ctrl is not None and it.ctrl.IsPassword)
+        except Exception:
+            is_pw = False
+        policy.check_type(policy.mode(), it.name if it else "", is_pw)
         return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, int(target), replace))
     return _on(window, run)
 
