@@ -3,4 +3,14 @@ __pycache__/
 *.jpg
 *.png
 bench_*.json
-.pcsight/
+.pc-control/
+GATES.md
+@AutomationLog.txt
+.hygiene-local.txt
+.unlazy/
+*.egg-info/
+dist/
+build/
+tests/test_html.py
+!docs/pc-control.png
+docs/.imgout/
