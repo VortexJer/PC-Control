@@ -94,7 +94,7 @@ def find_window(query):
     def cb(h, _):
         if win32gui.IsWindowVisible(h):
             t = win32gui.GetWindowText(h)
-            if t and q in t.lower():
+            if t and q in t.lower() and win32gui.GetClassName(h) != "PC-Control-Overlay":
                 hits.append((h, t))
     win32gui.EnumWindows(cb, None)
     if not hits:
@@ -105,7 +105,7 @@ def find_window(query):
 def list_windows():
     out = []
     def cb(h, _):
-        if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h):
+        if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h) and win32gui.GetClassName(h) != "PC-Control-Overlay":
             r = win32gui.GetWindowRect(h)
             if r[2] - r[0] > 100 and r[0] > -10000:
                 out.append((h, win32gui.GetWindowText(h)[:60]))
@@ -413,6 +413,8 @@ def changes(query):
     before = st["lines"]; st["lines"] = now
     add, rem = sorted(now - before), sorted(before - now)
     if not add and not rem:
+        if st.get("mode") == "uia+ocr":              # the window's real text came from OCR: the tree not changing proves nothing
+            return "no change in the UI tree (this window's text comes from OCR, so the effect cannot be measured): check with look"
         return "no changes"
     f = lambda L: "; ".join(x.split("|", 1)[1][:30] for x in L[:6]) + (f" (+{len(L) - 6})" if len(L) > 6 else "")
     return (f"+ {f(add)}" if add else "") + (" | " if add and rem else "") + (f"- {f(rem)}" if rem else "")
@@ -643,7 +645,7 @@ def in_title_bar(ctrl):
         return False
 
 
-def invoke(query, target, why="this app ignores mouse messages"):
+def invoke(query, target, why="this app ignores mouse messages", double=False):
     """Press an element through its UI Automation pattern (Invoke, Toggle, Select, Expand). Apps whose controls are drawn by the app itself
     (modern Store/XAML apps such as Calculator or Paint) ignore the mouse messages, but a screen reader's Invoke works on them: it neither
     moves the mouse nor needs focus. Returns a result text, or None if the element has no such pattern."""
@@ -651,8 +653,11 @@ def invoke(query, target, why="this app ignores mouse messages"):
     it = st["items"].get(target) if st and isinstance(target, int) else None
     if it is None or it.ctrl is None:
         return None
-    for getter, call, label in (("GetInvokePattern", "Invoke", "Invoke"), ("GetTogglePattern", "Toggle", "Toggle"),
-                                ("GetSelectionItemPattern", "Select", "Select"), ("GetExpandCollapsePattern", "Expand", "Expand")):
+    order = [("GetInvokePattern", "Invoke", "Invoke"), ("GetTogglePattern", "Toggle", "Toggle"),
+             ("GetSelectionItemPattern", "Select", "Select"), ("GetExpandCollapsePattern", "Expand", "Expand")]
+    if double:                                                   # a double click means "open / expand": try those first
+        order = [order[3], order[0]] + [order[1], order[2]]
+    for getter, call, label in order:
         try:
             p = getattr(it.ctrl, getter)()
             if p:

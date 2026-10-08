@@ -113,6 +113,33 @@ c["field_value: an editable field returns its text"] = core.field_value(CtrlV("a
 c["field_value: a read-only field is skipped for the listing"] = core.field_value(CtrlV("abc", ro=True), editable_only=True) is None
 c["field_value: ... but still readable for the read-back after typing"] = core.field_value(CtrlV("abc", ro=True)) == "abc"
 
+
+# ---- windows whose text comes from OCR (Tk, custom-drawn): an unchanged UI tree must NOT be reported as "no visible effect" ----
+real_walk = core.walk_uia; core.walk_uia = lambda *a, **k: []
+real_isw2 = core.win32gui.IsWindow; core.win32gui.IsWindow = lambda h: True
+core._state[H] = {"items": {}, "lines": set(), "rect": (0, 0, 800, 600), "scale": 1.0, "mode": "uia+ocr"}
+d_ocr = core.changes(str(H))
+c["uia+ocr window, tree unchanged: says it cannot be measured (not 'no changes')"] = d_ocr.startswith("no change in the UI tree") and "OCR" in d_ocr
+c["... and the verdict is 'not measurable', never 'NO VISIBLE EFFECT'"] = "not measurable" in server.verdict("ok (10 characters through WM_CHAR; unconfirmed)", d_ocr) and "NO VISIBLE" not in server.verdict("ok (key sent by message)", d_ocr)
+core._state[H]["mode"] = "uia"
+c["a plain UI-tree window with nothing changed still says 'no changes'"] = core.changes(str(H)) == "no changes"
+core.walk_uia = real_walk; core.win32gui.IsWindow = real_isw2
+
+
+# ---- a double click that had no effect: the fallback prefers Expand / Invoke ("open") over Select ----
+class Exp2:
+    def __init__(self, log): self.log = log
+    def Expand(self): self.log.append("Expand")
+class CtrlTree(Ctrl2):
+    def GetSelectionItemPattern(self): return type("S", (), {"Select": lambda s: self.log.append("Select")})()
+    def GetExpandCollapsePattern(self): return Exp2(self.log)
+ctree = CtrlTree(invoke=False); item(ctree, "folder", kind="treeitem")
+r_d = core.invoke(str(H), 1, double=True)
+c["double click fallback on a tree item: Expand (open), not just Select"] = "UI Automation Expand" in r_d and ctree.log == ["Expand"]
+ctree2 = CtrlTree(invoke=False); item(ctree2, "folder", kind="treeitem")
+r_s = core.invoke(str(H), 1)
+c["a single click fallback on the same tree item: Select"] = "UI Automation Select" in r_s and ctree2.log == ["Select"]
+
 # ---- a click that closes the window must not turn into an error ----
 real_isw = core.win32gui.IsWindow
 core.win32gui.IsWindow = lambda h: False
