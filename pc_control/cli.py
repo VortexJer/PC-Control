@@ -21,7 +21,7 @@ READ_TOOLS = [f"mcp__{SERVER_NAME}__windows", f"mcp__{SERVER_NAME}__look"]
 HOOK_MATCHER = f"mcp__{SERVER_NAME}__.*"
 HOOK_MARK = "pc_control.hook"
 HOOK_EVENTS = ("PreToolUse", "PermissionRequest")     # PreToolUse asks with a clear text; PermissionRequest answers by itself when asking is pointless
-MD_START, MD_END = "<!-- pc-control:start -->", "<!-- pc-control:end -->"
+MD_START, MD_END = "<!-- pc-control:begin (managed by the pc-control package) -->", "<!-- pc-control:end -->"
 
 SKILL = f"""---
 name: pc-control
