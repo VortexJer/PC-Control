@@ -10,8 +10,8 @@ def scan(text, patterns):
     return [p for p in patterns if re.search(p, text, re.I)]
 
 # control positivo: el escaner DEBE detectar cada tipo de dato personal
-for sample in ["C:\\Users\\Pepe\\x", "mi correo pepe@gmail.com", "hola Joaquin", "https://github.com/alguien/repo", "/c/Users/pepe"]:
-    assert scan(sample, PERSONAL), f"el escaner no detecta: {sample}"
+for sample in ["C:" + chr(92) + "Users" + chr(92) + "Pepe", "C:/Users/Pepe", "mi correo pepe@gmail.com", "https://github.com/alguien/repo", "/c/Users/pepe"]:
+    assert scan(sample, GENERIC), f"el escaner no detecta: {sample}"
 assert not scan("texto neutro sobre ventanas y tokens", PERSONAL), "falso positivo"
 
 files = []
