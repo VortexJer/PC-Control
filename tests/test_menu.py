@@ -107,6 +107,12 @@ r_ro = core.type_text(str(H), "x", target=1)
 core.win32gui.PostMessage = real_pm
 c["a read-only field is not overwritten (falls back, and says it is unconfirmed)"] = ro.pat.Value == "fijo" and "unconfirmed" in r_ro
 
+
+# ---- field values in look(): only EDITABLE fields (read-only cells repeat what is already listed and cost tokens) ----
+c["field_value: an editable field returns its text"] = core.field_value(CtrlV("abc"), editable_only=True) == "abc"
+c["field_value: a read-only field is skipped for the listing"] = core.field_value(CtrlV("abc", ro=True), editable_only=True) is None
+c["field_value: ... but still readable for the read-back after typing"] = core.field_value(CtrlV("abc", ro=True)) == "abc"
+
 # ---- a click that closes the window must not turn into an error ----
 real_isw = core.win32gui.IsWindow
 core.win32gui.IsWindow = lambda h: False
