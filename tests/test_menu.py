@@ -51,6 +51,36 @@ core.live_rel = lambda h, it: it.rect
 core.click(str(H), 1)
 c["a normal button does NOT use the menu path"] = cb.log == [] and bool(posted)
 
+
+# ---- apps that ignore mouse messages (modern Store/XAML): the element is pressed through its UI Automation pattern ----
+class Tog:
+    def __init__(self, log): self.log = log
+    def Toggle(self): self.log.append("Toggle")
+class Ctrl2:
+    def __init__(self, invoke=False, toggle=False): self.log = []; self._i, self._t = invoke, toggle
+    def GetInvokePattern(self): return Inv(self.log, "i") if self._i else None
+    def GetTogglePattern(self): return Tog(self.log) if self._t else None
+    def GetSelectionItemPattern(self): return None
+    def GetExpandCollapsePattern(self): return None
+cx = Ctrl2(invoke=True); item(cx, "Seven", kind="button")
+c["invoke: a button of an app that ignores mouse messages is pressed through UI Automation Invoke"] = core.invoke(str(H), 1).startswith("ok (UI Automation Invoke") and cx.log == ["Invoke"]
+ct = Ctrl2(toggle=True); item(ct, "Option", kind="checkbox")
+c["invoke: a checkbox falls back to Toggle"] = core.invoke(str(H), 1).startswith("ok (UI Automation Toggle") and ct.log == ["Toggle"]
+cn = Ctrl2(); item(cn, "Plain", kind="text")
+c["invoke: an element with no pattern returns None (the caller keeps the plain click)"] = core.invoke(str(H), 1) is None
+c["invoke: an unknown id returns None"] = core.invoke(str(H), 99) is None
+
+
+# ---- a click that closes the window must not turn into an error ----
+real_isw = core.win32gui.IsWindow
+core.win32gui.IsWindow = lambda h: False
+c["changes(): the window closed after the click -> a clear message, not an exception"] = core.changes(str(H)) == "the window is gone (it was closed)"
+c["... and the verdict says the window closed"] = server.verdict("ok (BM_CLICK, no focus)", "the window is gone (it was closed)") == "the window closed"
+def _gone(q): raise LookupError("no window")
+real_fw = core.find_window; core.find_window = _gone
+c["changes(): a title that no longer matches any window -> the same clear message"] = core.changes("Calculator") == "the window is gone (it was closed)"
+core.find_window = real_fw; core.win32gui.IsWindow = real_isw
+
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 ok = all(c.values())
 print(f"menu verification passed ({len(c)} checks)" if ok else "menu verification FAILED")

@@ -354,7 +354,8 @@ def _look(hwnd, mode, edge):
         else:
             return finish("image", f"empty text (uia {len(uia)} elem, ocr {len(oc)} lines): image")
     if not items:
-        why = "minimized and no usable tree: nothing to send" if mini else "empty tree and no capture"
+        why = ("minimized and no usable tree: nothing to send" if mini else
+                "empty tree and no capture (if this window runs as administrator, Windows does not let a normal process read it)")
         res.update(mode="none", why=why, tokens=0); return res
     numbered(items)
     text = grid(items, w, h); tok = txt_cost(text)
@@ -371,7 +372,14 @@ def _look(hwnd, mode, edge):
 def changes(query):
     """What changed in the text tree since the last reading (it is the only thing sent after acting).
     Chained: each call leaves the state updated. In image/OCR mode it cannot be measured and says so."""
-    hwnd = find_window(query); st = _state.get(hwnd)
+    try:
+        hwnd = find_window(query)
+    except LookupError:
+        return "the window is gone (it was closed)"
+    if not win32gui.IsWindow(hwnd):
+        _state.pop(hwnd, None)
+        return "the window is gone (it was closed)"
+    st = _state.get(hwnd)
     if not st:
         return "no previous reading: call look()"
     if st.get("mode") not in ("uia", "uia+ocr") and not st.get("lines"):
@@ -597,6 +605,26 @@ def _click_menu_item(ctrl, name):
             if p:
                 getattr(p, call)()
                 return f"ok (menu entry «{name[:40]}» {label} through accessibility; if it opens a submenu, use look to see its entries)"
+        except Exception:
+            continue
+    return None
+
+
+def invoke(query, target):
+    """Press an element through its UI Automation pattern (Invoke, Toggle, Select, Expand). Apps whose controls are drawn by the app itself
+    (modern Store/XAML apps such as Calculator or Paint) ignore the mouse messages, but a screen reader's Invoke works on them: it neither
+    moves the mouse nor needs focus. Returns a result text, or None if the element has no such pattern."""
+    hwnd = find_window(query); st = _state.get(hwnd)
+    it = st["items"].get(target) if st and isinstance(target, int) else None
+    if it is None or it.ctrl is None:
+        return None
+    for getter, call, label in (("GetInvokePattern", "Invoke", "Invoke"), ("GetTogglePattern", "Toggle", "Toggle"),
+                                ("GetSelectionItemPattern", "Select", "Select"), ("GetExpandCollapsePattern", "Expand", "Expand")):
+        try:
+            p = getattr(it.ctrl, getter)()
+            if p:
+                getattr(p, call)()
+                return f"ok (UI Automation {label}: this app ignores mouse messages)"
         except Exception:
             continue
     return None

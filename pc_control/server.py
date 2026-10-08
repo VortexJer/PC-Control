@@ -229,6 +229,8 @@ def verdict(result, delta):
         return "format noted for what Claude types"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
+    if delta.startswith("the window is gone"):
+        return "the window closed"
     if delta == "no changes":
         return "WARNING: NO VISIBLE EFFECT (it may not have worked); check with look"
     if delta.startswith(("change not measurable", "no previous reading")):
@@ -310,7 +312,16 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
                 cursor.CURSOR.pointer(x2, y2, click=True, ms=140, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.18)
                 rel = core.live_rel(hwnd, it) if (it and not hidden) else rel
         note = core.moved_note(old, rel) if rel else ""
-        return _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double, rel=rel), note)
+        res = _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double, rel=rel), note)
+        # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
+        # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
+        if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right and not double and not hidden:
+            r2 = core.invoke(str(hwnd), t)
+            if r2:
+                time.sleep(0.25)
+                delta = core.changes(str(hwnd))
+                res = f"{r2} | changes: {delta} | {verdict(r2, delta)} | the plain mouse click had no effect, so it was sent through UI Automation"
+        return res
     return _on(window, run)
 
 
