@@ -1,31 +1,33 @@
-"""El cursor de Claude: un puntero naranja y una barra de escritura que muestran lo que hace, siempre a la vista.
+"""Claude's cursor: an orange pointer and a typing bar that show what it is doing, always in plain sight.
 
-No es el cursor del raton: son ventanas transparentes que dejan pasar los clics y nunca toman el foco, asi que no
-interfieren con tu raton ni tu teclado. Nacen ya con el estilo "sin activar" y solo se muestran con SW_SHOWNOACTIVATE
-(Tk, por ejemplo, activa su ventana al crearla y te quitaria el foco: por eso es Win32 puro).
+It is not the mouse cursor: they are transparent windows that let clicks through and never take focus, so they do not
+interfere with your mouse or keyboard. They are created with the "no activate" style and only shown with SW_SHOWNOACTIVATE
+(Tk, for example, activates its window on creation and would take your focus away: that is why this is pure Win32).
 
-Tres capas independientes, para que se vean a la vez: el PUNTERO (donde pulso), la BARRA (donde escribo) y el CARTEL de aviso.
-  * Siempre visibles: tras actuar quedan en REPOSO, quietos en su ultima posicion (la barra no parpadea).
-  * Entran y salen con una animacion suave (aparecen en fundido; el puntero viaja desde un lado y se va en fundido).
-  * Cerrar la app donde actuan los hace desaparecer. Minimizarla solo los esconde: al volver, reaparecen donde estaban.
-  * Aislados a la app: son ventanas "propiedad" de ella, asi que otra ventana encima los tapa a la vez que a ella.
-  * El color se adapta al fondo (naranja con borde claro sobre fondo oscuro, naranja intenso con borde oscuro sobre fondo claro,
-    azul si el fondo ya es naranja) y se vuelve a elegir si el fondo cambia.
-  * Tamano: algo mayor que el cursor de Windows; escalan con el DPI de la ventana (nunca un tamano fijo).
-La visibilidad se decide en CADA fotograma, no una vez al empezar: PC_CONTROL_CURSOR=always (por defecto: visibles mientras la app
-se vea), user (solo si el usuario esta en la app: aparece si entra, desaparece si sale), off.
+Three independent layers, so they can be seen at the same time: the POINTER (where I click), the BAR (where I type) and the NOTICE banner.
+  * Always visible: after acting they stay at REST, still at their last position (the bar does not blink).
+  * They enter and leave with a smooth animation (they fade in; the pointer travels in from one side and fades out).
+  * Closing the app they act on makes them disappear. Minimizing it only hides them: when it comes back, they reappear where they were.
+  * Isolated to the app: they are windows "owned" by it, so another window on top covers them together with it.
+  * The colour adapts to the background (orange with a light edge on a dark background, intense orange with a dark edge on a light background,
+    blue if the background is already orange) and is chosen again if the background changes.
+  * Size: somewhat larger than the Windows cursor; they scale with the window's DPI (never a fixed size).
+Visibility is decided on EVERY frame, not once at the start: PC_CONTROL_CURSOR=always (default: visible while the app
+is visible), user (only if the user is in the app: appears when they enter, disappears when they leave), off.
 """
 import ctypes, ctypes.wintypes as wt, math, os, queue, threading, time
 import numpy as np
 from PIL import Image, ImageDraw
 from . import envvars
 
-SIZE, HOT = 176, 88                                   # lienzo holgado: cabe el puntero y su anillo hasta ~3x de escala
-EX = 0x00080000 | 0x00000020 | 0x08000000 | 0x00000080   # LAYERED | TRANSPARENT | NOACTIVATE | TOOLWINDOW (NO topmost: sigue a su ventana)
-SS = 4                                                # supermuestreo para suavizar los bordes
-ARROW = [(0, 0), (0, 19), (5, 15), (8, 22), (12, 20), (9, 14), (15, 14)]   # puntero clasico, en pixeles a 96 dpi
-ARROW_K = 1.0                                         # algo mayor que antes (0,78) y que el de Windows no pasa de 22 px
-RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22          # duracion del anillo del clic y de los fundidos (s)
+SIZE, HOT = 176, 88                                   # roomy canvas: fits the pointer and its ring up to ~3x scale
+EX = 0x00080000 | 0x00000020 | 0x08000000 | 0x00000080   # LAYERED | TRANSPARENT | NOACTIVATE | TOOLWINDOW (NOT topmost: it follows its window)
+SS = 4                                                # supersampling to smooth the edges
+ARROW = [(0, 0), (0, 19), (5, 15), (8, 22), (12, 20), (9, 14), (15, 14)]   # classic pointer, in pixels at 96 dpi
+ARROW_K = 1.0                                         # somewhat larger than before (0.78); the Windows one is no taller than 22 px
+RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22
+LINGER = 1.6            # an indicator (pointer or bar) is shown for AT LEAST this long before yielding to the other: typing is very fast
+# RING_S, FADE_IN, FADE_OUT: duration of the click ring and of the fades (s)
 ORANGE, WHITE, DARK = (255, 122, 26), (255, 255, 255), (24, 24, 28)
 TITLES = {"pointer": "pc-control-cursor", "caret": "pc-control-caret", "note": "pc-control-note"}
 
@@ -40,24 +42,24 @@ def mode():
 
 
 def should_show(m, is_iconic, is_visible_on_screen, user_is_on_it):
-    """Regla pura: el cursor solo existe cuando alguien puede verlo y, en modo user, cuando el usuario esta en esa ventana."""
+    """Pure rule: the cursor only exists when someone can see it and, in user mode, when the user is on that window."""
     if m == "off" or is_iconic or not is_visible_on_screen:
         return False
     return True if m == "always" else bool(user_is_on_it)
 
 
 def should_hide(m, owner_alive, owner_iconic, owner_visible, user_is_on_it):
-    """Regla pura, comprobada en cada fotograma: el cursor esta aislado a la app donde actua. Se esconde si esa ventana se
-    cierra, se minimiza o se oculta, y, en modo user, mientras el usuario no este en ella. Es una condicion del momento, no
-    una decision tomada al empezar: cuando se cumple de nuevo, el cursor vuelve a dibujarse."""
+    """Pure rule, checked on every frame: the cursor is isolated to the app it acts on. It hides if that window is
+    closed, minimized or hidden and, in user mode, while the user is not on it. It is a condition of the moment, not
+    a decision taken at the start: when it holds again, the cursor is drawn again."""
     if m == "off" or not owner_alive or owner_iconic or not owner_visible:
         return True
     return m == "user" and not user_is_on_it
 
 
 def user_is_on(owner):
-    """True si la ventana en primer plano es (o pertenece a) esa app. Se consulta en cada fotograma. (Los tests la sustituyen
-    para simular que el usuario entra y sale sin tener que activar ninguna ventana.)"""
+    """True if the foreground window is (or belongs to) that app. Queried on every frame. (The tests replace it
+    to simulate the user entering and leaving without having to activate any window.)"""
     try:
         fg = _u.GetForegroundWindow()
         return bool(fg) and _u.GetAncestor(fg, 2) == owner
@@ -66,7 +68,7 @@ def user_is_on(owner):
 
 
 def scale_for(hwnd=0):
-    """Escala de la pantalla de esa ventana (1.0 = 96 dpi, 1.5 = 144 dpi...). Es lo que adapta el tamano del cursor."""
+    """Scale of that window's screen (1.0 = 96 dpi, 1.5 = 144 dpi...). It is what adapts the cursor size."""
     try:
         dpi = _u.GetDpiForWindow(hwnd) if hwnd else _u.GetDpiForSystem()
         return max(0.75, min(3.0, (dpi or 96) / 96.0))
@@ -75,31 +77,31 @@ def scale_for(hwnd=0):
 
 
 def caret_height(element_h, s):
-    """Altura de la barra de escribir: la de una linea de texto, NO la del elemento (una pagina entera de Word no es una linea).
-    Si el elemento es de una linea (un campo, una celda) la barra mide ~70% de el; si es grande, una linea normal."""
+    """Height of the typing bar: that of one line of text, NOT of the element (a whole Word page is not one line).
+    If the element is one line (a field, a cell) the bar is ~70% of it; if it is large, a normal line."""
     one_line = 22 * s
     h = 0.7 * element_h if 0 < element_h <= 56 * s else one_line
     return int(round(max(15 * s, min(40 * s, h))))
 
 
 def palette_for(bg):
-    """(relleno, borde) que se ve bien sobre un fondo medio (r, g, b) o None si no se sabe. Se adapta al fondo."""
+    """(fill, edge) that looks good over a mean background (r, g, b), or None if unknown. Adapts to the background."""
     if not bg:
         return ORANGE, WHITE
     r, g, b = bg
     lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    if r > 190 and 60 < g < 190 and b < 110:          # el fondo ya es naranja: se cambia el tono para que no se pierda
+    if r > 190 and 60 < g < 190 and b < 110:          # the background is already orange: the hue is changed so it does not get lost
         return (0, 132, 255), WHITE
     if lum < 100:
-        return (255, 140, 44), WHITE                   # fondo oscuro: naranja vivo con borde claro
+        return (255, 140, 44), WHITE                   # dark background: vivid orange with a light edge
     if lum < 185:
         return (255, 106, 0), WHITE
-    return (238, 90, 0), DARK                          # fondo claro: naranja intenso con borde oscuro
+    return (238, 90, 0), DARK                          # light background: intense orange with a dark edge
 
 
-# ---------- dibujo ----------
+# ---------- drawing ----------
 def _bgra(im, alpha=255):
-    """Imagen RGBA -> bytes BGRA con alfa premultiplicado (lo que pide UpdateLayeredWindow)."""
+    """RGBA image -> BGRA bytes with premultiplied alpha (what UpdateLayeredWindow asks for)."""
     a = np.asarray(im.resize((SIZE, SIZE), Image.LANCZOS)).astype(np.uint16)
     al = a[..., 3:4]
     rgb = (a[..., :3] * al // 255)[..., ::-1]
@@ -112,7 +114,7 @@ def _canvas():
 
 
 def render_arrow(s=1.0, ring=0, pal=None):
-    """Puntero naranja. ring = 0 (sin anillo) o 1..12: el anillo del clic, que se expande y se desvanece."""
+    """Orange pointer. ring = 0 (no ring) or 1..12: the click ring, which expands and fades."""
     fill, edge = pal or (ORANGE, WHITE)
     im, d = _canvas()
     k = ARROW_K * s
@@ -126,13 +128,13 @@ def render_arrow(s=1.0, ring=0, pal=None):
 
 
 def render_caret(h, s=1.0, pal=None):
-    """Barra en I: de la altura de una linea, con remates, FIJA (no parpadea)."""
+    """I-beam bar: one line high, with serifs, STEADY (does not blink)."""
     fill, edge = pal or (ORANGE, WHITE)
     im, d = _canvas()
     x, top, bot = HOT * SS, (HOT - h / 2) * SS, (HOT + h / 2) * SS
-    half = max(1.4, 1.5 * s) * SS                     # ~3 px de grosor a 96 dpi
+    half = max(1.4, 1.5 * s) * SS                     # ~3 px thick at 96 dpi
     serif = max(3.5, 4.6 * s) * SS
-    for grow, col in ((0.9 * SS, edge + (255,)), (0, fill + (255,))):    # borde claro/oscuro por fuera, relleno por dentro
+    for grow, col in ((0.9 * SS, edge + (255,)), (0, fill + (255,))):    # light/dark edge outside, fill inside
         d.rounded_rectangle([x - half - grow, top - grow, x + half + grow, bot + grow], radius=half, fill=col)
         for y in (top, bot):
             d.rounded_rectangle([x - serif - grow, y - half - grow, x + serif + grow, y + half + grow], radius=half, fill=col)
@@ -140,10 +142,10 @@ def render_caret(h, s=1.0, pal=None):
 
 
 def render_note(text, s=1.0, max_w=470):
-    """Cartel de aviso: texto blanco sobre fondo oscuro con borde naranja, ajustado en lineas. Devuelve (bytes BGRA premultiplicado, ancho, alto).
-    El tamano de letra y del cartel escalan con la pantalla (s)."""
+    """Notice banner: white text on a dark background with an orange border, wrapped into lines. Returns (premultiplied BGRA bytes, width, height).
+    The font size and the banner size scale with the screen (s)."""
     from PIL import ImageFont
-    K = 2                                             # supermuestreo del texto
+    K = 2                                             # text supersampling
     px = max(12, round(14 * s))
     try:
         font = ImageFont.truetype("segoeui.ttf", px * K)
@@ -188,24 +190,24 @@ class ClaudeCursor:
         self.q = queue.Queue()
         self.thread = None
         self.ready = threading.Event()
-        self.hwnds = {}                               # capa -> hwnd de su ventana ("pointer", "caret", "note")
+        self.hwnds = {}                               # layer -> hwnd of its window ("pointer", "caret", "note")
 
     @property
     def hwnd(self):
         return self.hwnds.get("pointer", 0)
 
-    # -- API (se llama desde cualquier hilo) --
+    # -- API (callable from any thread) --
     def pointer(self, x, y, click=False, ms=320, scale=1.0, owner=0):
-        """Lleva el puntero naranja a (x, y) en pantalla con una curva suave y, si click, marca el clic con un anillo. Despues queda
-        en reposo, visible. owner = ventana a la que actua: el cursor queda aislado a ella."""
+        """Move the orange pointer to (x, y) on screen along a smooth curve and, if click, mark the click with a ring. Afterwards it stays
+        at rest, visible. owner = the window it acts on: the cursor is isolated to it."""
         self._ensure(); self.q.put(("pointer", int(x), int(y), click, ms, float(scale), int(owner)))
 
     def caret(self, x, y, h=22, hold=None, scale=1.0, owner=0):
-        """Pone la barra de escritura en (x, y) (centro vertical, h px de alto). Se desliza hasta alli y queda en reposo, visible."""
+        """Put the typing bar at (x, y) (vertical centre, h px high). It slides there and stays at rest, visible."""
         self._ensure(); self.q.put(("caret", int(x), int(y), int(h), float(scale), int(owner)))
 
     def note(self, text, x, y, hold=10.0, scale=1.0, owner=0):
-        """Cartel de aviso para el usuario, centrado en x y con su borde superior en y. Dura `hold` segundos."""
+        """Notice banner for the user, centred on x with its top edge at y. Lasts `hold` seconds."""
         self._ensure(); self.q.put(("note", str(text), int(x), int(y), float(hold), float(scale), int(owner)))
 
     def hide_note(self):
@@ -213,7 +215,7 @@ class ClaudeCursor:
             self.q.put(("hide_note",))
 
     def hide(self):
-        """Quita las tres capas al instante y olvida su estado."""
+        """Remove the three layers instantly and forget their state."""
         if self.thread and self.thread.is_alive():
             self.q.put(("hide",))
 
@@ -224,7 +226,7 @@ class ClaudeCursor:
             self.thread.start()
         self.ready.wait(5)
 
-    # -- hilo propio: crea las ventanas, las anima y bombea sus mensajes --
+    # -- own thread: creates the windows, animates them and pumps their messages --
     def _run(self):
         import win32api, win32gui
         u, g = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("gdi32", use_last_error=True)
@@ -245,18 +247,18 @@ class ClaudeCursor:
         except Exception: pass
 
         class Win:
-            """Una ventana superpuesta transparente (una capa). Nace sin activar y fuera de pantalla."""
+            """A transparent overlay window (one layer). Born unactivated and off-screen."""
             def __init__(self, title):
                 self.h = win32gui.CreateWindowEx(EX, "PC-Control-Overlay", title, 0x80000000, -3000, -3000, 8, 8, 0, 0, wc.hInstance, None)
                 self.memdc = g.CreateCompatibleDC(hdc_screen); self.dib = None; self.size = (0, 0)
                 self.shown = False; self.owner = 0; self.last = None
 
             def set_owner(self, o):
-                if self.owner != o:                                      # GWLP_HWNDPARENT en una ventana de nivel superior = dueno
+                if self.owner != o:                                      # GWLP_HWNDPARENT on a top-level window = owner
                     u.SetWindowLongPtrW(self.h, -8, o or None); self.owner = o
 
             def present(self, x, y, data, w, h, alpha):
-                if self.size != (w, h):                                  # cada capa tiene su propio lienzo, del tamano de lo que dibuja
+                if self.size != (w, h):                                  # each layer has its own canvas, the size of what it draws
                     bmi = _BMI(ctypes.sizeof(_BMI), w, -h, 1, 32, 0, w * h * 4, 0, 0, 0, 0); bits = ctypes.c_void_p()
                     hbm = g.CreateDIBSection(self.memdc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
                     old = g.SelectObject(self.memdc, hbm)
@@ -268,7 +270,7 @@ class ClaudeCursor:
                 u.UpdateLayeredWindow(self.h, hdc_screen, ctypes.byref(pt), ctypes.byref(sz), self.memdc, ctypes.byref(src), 0,
                                       ctypes.byref(_BLEND(0, 0, max(0, min(255, int(alpha))), 1)), 2)             # ULW_ALPHA
                 if not self.shown:
-                    win32gui.ShowWindow(self.h, 4); self.shown = True                                               # SW_SHOWNOACTIVATE: no activa
+                    win32gui.ShowWindow(self.h, 4); self.shown = True                                               # SW_SHOWNOACTIVATE: does not activate
 
             def hide(self):
                 if self.shown:
@@ -285,7 +287,7 @@ class ClaudeCursor:
         cache = {}
 
         def sample_bg(x, y, pts):
-            """Color medio del fondo alrededor (puntos FUERA del dibujo, para no medirse a si mismo)."""
+            """Mean colour of the surrounding background (points OUTSIDE the drawing, so it does not measure itself)."""
             rs = gs = bs = n = 0
             for dx, dy in pts:
                 c = g.GetPixel(hdc_screen, int(x + dx), int(y + dy))
@@ -301,6 +303,12 @@ class ClaudeCursor:
                 if pal != L["pal"]:
                     L["pal"] = pal; L["dirty"] = True
 
+        def origin(o):
+            try:
+                rc = win32gui.GetWindowRect(o); return (rc[0], rc[1])
+            except Exception:
+                return None
+
         def reset_all():
             for L in (P, C, N):
                 L["on"] = False; L["a"] = 0.0
@@ -311,7 +319,7 @@ class ClaudeCursor:
         while True:
             win32gui.PumpWaitingMessages()
             now = time.time(); dt = max(0.001, min(0.1, now - last)); last = now
-            # ---- comandos ----
+            # ---- commands ----
             try:
                 while True:
                     cmd = self.q.get_nowait()
@@ -320,21 +328,25 @@ class ClaudeCursor:
                         fresh = (not P["on"]) or P["owner"] != own or P["pos"] is None
                         P.update(on=True, owner=own, s=s, to=(x, y), click=click, dur=max(ms, 1) / 1000.0, t0=now, closing=False, travel=True, dirty=True)
                         if fresh:
-                            P["frm"] = (x - 60 * s, y + 40 * s); P["a"] = 0.0           # entrada: llega desde un lado, en fundido
+                            P["frm"] = (x - 60 * s, y + 40 * s); P["a"] = 0.0           # entrance: arrives from one side, fading in
                         else:
                             P["frm"] = P["pos"]
-                        wins["pointer"].set_owner(own)
+                        wins["pointer"].set_owner(own); P["org"] = origin(own) if own else None
+                        P["t_cmd"] = now; P["close_at"] = None
+                        if C["on"]: C["close_at"] = max(now, C.get("t_cmd", 0.0) + LINGER)      # only ONE at a time, but the bar does not disappear before LINGER
                     elif cmd[0] == "caret":
                         _, x, y, hh, s, own = cmd
                         fresh = (not C["on"]) or C["owner"] != own or C["pos"] is None
                         C.update(on=True, owner=own, s=s, h=hh, to=(x, y), closing=False, dirty=True)
-                        if fresh: C["pos"] = (x, y); C["a"] = 0.0                       # entrada: aparece en fundido
-                        wins["caret"].set_owner(own)
+                        if fresh: C["pos"] = (x, y); C["a"] = 0.0                       # entrance: fades in
+                        wins["caret"].set_owner(own); C["org"] = origin(own) if own else None
+                        C["t_cmd"] = now; C["close_at"] = None
+                        if P["on"]: P["close_at"] = max(now, P.get("t_cmd", 0.0) + LINGER)
                     elif cmd[0] == "note":
                         _, text, x, y, hold, s, own = cmd
                         data, nw, nh = render_note(text, s)
                         N.update(on=True, owner=own, until=now + hold, data=(data, nw, nh, x - nw // 2, y), closing=False, dirty=True, a=0.0)
-                        wins["note"].set_owner(own)
+                        wins["note"].set_owner(own); N["org"] = origin(own) if own else None
                     elif cmd[0] == "hide_note":
                         N["closing"] = True
                     elif cmd[0] == "hide":
@@ -342,13 +354,15 @@ class ClaudeCursor:
             except queue.Empty:
                 pass
 
-            # ---- cada capa: visibilidad continua, fundido y dibujo ----
+            # ---- each layer: continuous visibility, fade and drawing ----
             for name, L in (("pointer", P), ("caret", C), ("note", N)):
                 if not L["on"]:
                     continue
                 w, o = wins[name], L["owner"]
                 if name == "note" and now > N["until"]:
                     N["closing"] = True
+                if L.get("close_at") and now >= L["close_at"]:
+                    L["closing"] = True; L["close_at"] = None
                 alive = bool(win32gui.IsWindow(o)) if o else True
                 iconic = bool(o and alive and win32gui.IsIconic(o)); vis = bool(not o or (alive and win32gui.IsWindowVisible(o)))
                 on_user = user_is_on(o) if o else True
@@ -360,15 +374,21 @@ class ClaudeCursor:
                     L["a"] = a2; L["dirty"] = True
                 if L["a"] <= 0.0:
                     w.hide(); L["last_shown"] = False
-                    if (o and not alive) or L["closing"]:                  # la app se cerro (o se acabo el aviso): la capa desaparece del todo
+                    if (o and not alive) or L["closing"]:                  # the app closed (or the notice ended): the layer disappears completely
                         L["on"] = False; L["closing"] = False
                         if o and not alive: w.set_owner(0)
                     continue
+                dx = dy = 0                                                # the window moved: the cursor goes with it (position relative to the app)
+                if o and alive and not iconic and L.get("org"):
+                    cur = origin(o)
+                    if cur: dx, dy = cur[0] - L["org"][0], cur[1] - L["org"][1]
+                if (dx, dy) != L.get("d", (0, 0)):
+                    L["d"] = (dx, dy); L["dirty"] = True
                 if name == "pointer":
                     if P["travel"]:
-                        p = min(1.0, (now - P["t0"]) / P["dur"]); e = 1 - (1 - p) ** 3                      # frena al llegar
+                        p = min(1.0, (now - P["t0"]) / P["dur"]); e = 1 - (1 - p) ** 3                      # slows down on arrival
                         (x0, y0), (x1, y1) = P["frm"], P["to"]
-                        mx, my = (x0 + x1) / 2 + (y0 - y1) * 0.12, (y0 + y1) / 2 + (x1 - x0) * 0.12           # curva como una mano real
+                        mx, my = (x0 + x1) / 2 + (y0 - y1) * 0.12, (y0 + y1) / 2 + (x1 - x0) * 0.12           # curve like a real hand
                         P["pos"] = ((1 - e) ** 2 * x0 + 2 * (1 - e) * e * mx + e ** 2 * x1, (1 - e) ** 2 * y0 + 2 * (1 - e) * e * my + e ** 2 * y1)
                         P["dirty"] = True
                         if p >= 1.0:
@@ -380,28 +400,28 @@ class ClaudeCursor:
                     elif P["ring_t0"]:
                         P["ring_t0"] = 0.0; P["dirty"] = True
                     x, y = P["pos"]; s = P["s"]
-                    refresh_palette(P, x, y, [(dx * s, dy * s) for dx, dy in ((-34, -34), (0, -38), (34, -34), (-38, 0), (38, 0), (-34, 34), (0, 38), (34, 34))], now)
+                    refresh_palette(P, x + dx, y + dy, [(ex * s, ey * s) for ex, ey in ((-34, -34), (0, -38), (34, -34), (-38, 0), (38, 0), (-34, 34), (0, 38), (34, 34))], now)
                     if not P["dirty"]: continue
                     k = ("a", round(s * 20), ring, P["pal"])
                     if k not in cache: cache[k] = render_arrow(s, ring, P["pal"])
-                    off = (1 - L["a"] / 255.0) * 14 * s if want == 0.0 else 0.0                          # salida: se va en fundido, derivando un poco
-                    w.present(x - HOT + off, y - HOT + off * 0.7, cache[k], SIZE, SIZE, L["a"]); P["dirty"] = False
+                    off = (1 - L["a"] / 255.0) * 14 * s if want == 0.0 else 0.0                          # exit: fades out, drifting a little
+                    w.present(x - HOT + off + dx, y - HOT + off * 0.7 + dy, cache[k], SIZE, SIZE, L["a"]); P["dirty"] = False
                 elif name == "caret":
                     (cx, cy), (tx, ty) = C["pos"], C["to"]
-                    if abs(tx - cx) + abs(ty - cy) > 0.4:                                                  # se desliza hasta su sitio (sin saltar)
+                    if abs(tx - cx) + abs(ty - cy) > 0.4:                                                  # slides to its place (no jumping)
                         f = 1 - (0.62 ** (dt / 0.012)); C["pos"] = (cx + (tx - cx) * f, cy + (ty - cy) * f); C["dirty"] = True
                     elif C["pos"] != C["to"]:
                         C["pos"] = C["to"]; C["dirty"] = True
                     x, y = C["pos"]; s, hh = C["s"], C["h"]
-                    refresh_palette(C, x, y, [(-20 * s, -hh / 2), (-20 * s, 0), (-20 * s, hh / 2), (20 * s, -hh / 2), (20 * s, 0), (20 * s, hh / 2)], now)
+                    refresh_palette(C, x + dx, y + dy, [(-20 * s, -hh / 2), (-20 * s, 0), (-20 * s, hh / 2), (20 * s, -hh / 2), (20 * s, 0), (20 * s, hh / 2)], now)
                     if not C["dirty"]: continue
                     k = ("c", round(s * 20), hh, C["pal"])
                     if k not in cache: cache[k] = render_caret(hh, s, C["pal"])
-                    w.present(x - HOT, y - HOT, cache[k], SIZE, SIZE, L["a"]); C["dirty"] = False
+                    w.present(x - HOT + dx, y - HOT + dy, cache[k], SIZE, SIZE, L["a"]); C["dirty"] = False
                 else:
                     if not N["dirty"]: continue
                     data, nw, nh, nx, ny = N["data"]
-                    w.present(nx, ny, data, nw, nh, L["a"]); N["dirty"] = False
+                    w.present(nx + dx, ny + dy, data, nw, nh, L["a"]); N["dirty"] = False
             time.sleep(0.012 if (P["on"] or C["on"] or N["on"]) else 0.05)
 
 
