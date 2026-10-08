@@ -1,4 +1,4 @@
-mcp>=1.2
+mcp>=1.2   # works with 1.x (FastMCP) and 2.x (MCPServer)
 uiautomation>=2.0
 pywin32>=306
 opencv-python-headless>=4.8
