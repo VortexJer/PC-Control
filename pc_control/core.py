@@ -20,6 +20,7 @@ os.makedirs(OUT_DIR, exist_ok=True)
 CLICKABLE = {"ButtonControl", "EditControl", "MenuItemControl", "TabItemControl", "ListItemControl",
              "CheckBoxControl", "ComboBoxControl", "HyperlinkControl", "RadioButtonControl",
              "TreeItemControl", "SplitButtonControl", "DataItemControl"}
+NAMELESS_OK = {"EditControl", "ComboBoxControl", "CheckBoxControl", "RadioButtonControl", "ButtonControl", "SplitButtonControl"}
 TEXTY = CLICKABLE | {"TextControl", "DocumentControl"}
 
 _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
@@ -129,6 +130,19 @@ def grab(hwnd, rect):
 
 
 # ---------- text extraction ----------
+def fallback_name(c, kind):
+    """Label for a control that exposes no Name: its AutomationId, its help text, or the kind (so look() still offers an id to aim at)."""
+    for attr in ("AutomationId", "HelpText"):
+        try:
+            v = (getattr(c, attr) or "").strip()
+            if v:
+                return v[:40]
+        except Exception:
+            pass
+    return "(unnamed " + {"EditControl": "text field", "ComboBoxControl": "dropdown", "CheckBoxControl": "checkbox",
+                          "RadioButtonControl": "radio button", "SplitButtonControl": "button"}.get(kind, "button") + ")"
+
+
 def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
     root = auto.ControlFromHandle(hwnd)
     l, t = rect[0], rect[1]
@@ -141,11 +155,8 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
             kind = c.ControlTypeName; name = (c.Name or "").strip(); r = c.BoundingRectangle; off = c.IsOffscreen
         except Exception:
             continue
-        if not name and kind == "EditControl":                   # Chromium drops the placeholder name once the field has been used: keep the field anyway
-            try:
-                name = (c.AutomationId or c.HelpText or "").strip() or "(unnamed text field)"
-            except Exception:
-                name = "(unnamed text field)"
+        if not name and kind in NAMELESS_OK:                     # Chromium drops a field's name once used; icon buttons often have none: keep them
+            name = fallback_name(c, kind)
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
             it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE)
             if kind == "EditControl":

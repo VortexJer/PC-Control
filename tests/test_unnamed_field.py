@@ -18,12 +18,12 @@ class Fake:
 
 
 def run():
-    root = Fake("WindowControl", "", [Fake("EditControl", ""), Fake("EditControl", "", aid="cmd")])
+    root = Fake("WindowControl", "", [Fake("EditControl", ""), Fake("EditControl", "", aid="cmd"), Fake("CheckBoxControl", ""), Fake("ButtonControl", "", aid="btnGo")])
     core.auto.ControlFromHandle = lambda h: root
     core.field_value = lambda c, editable_only=False: ""
     items = core.walk_uia(1, (0, 0, 500, 500))
-    names = sorted(i.name for i in items if i.kind == "edit")
-    ok = names == ["(unnamed text field)", "cmd"]
+    names = sorted(i.name for i in items)
+    ok = names == ["(unnamed checkbox)", "(unnamed text field)", "btnGo", "cmd"]
     print(("OK   " if ok else "FAIL ") + "unnamed edit fields are listed:", names)
     return ok
 
