@@ -26,10 +26,26 @@ _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
 
 class Item:
-    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable")
+    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value")
     def __init__(self, kind, name, rect, ctrl=None, src="uia", clickable=False):
         self.id = 0; self.kind = kind; self.name = name; self.rect = rect
         self.ctrl = ctrl; self.src = src; self.clickable = clickable
+        self.value = ""                                      # what a text field currently contains (never for password fields)
+
+
+def line_key(it):
+    """What identifies an element in the 'what changed' comparison: its kind, name and, for text fields, what they contain."""
+    return f"{it.kind}|{it.name}" + (f"={it.value[:30]}" if it.value else "")
+
+
+def field_value(ctrl):
+    """The text a field holds, read through UI Automation (None if it cannot be read or it is a password field)."""
+    try:
+        if ctrl.IsPassword:
+            return None
+        return ctrl.GetValuePattern().Value
+    except Exception:
+        return None
 
 
 # ---------- cost utilities ----------
@@ -122,7 +138,11 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
         except Exception:
             continue
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
-            items.append(Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE))
+            it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE)
+            if kind == "EditControl":
+                v = field_value(c)
+                it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
+            items.append(it)
         if d < 12:
             try:
                 stack.extend((ch, d + 1) for ch in reversed(c.GetChildren()))
@@ -190,7 +210,7 @@ def grid(items, w, h):
     rows = {}
     for it in sorted(items, key=lambda i: (i.rect[1] // max(1, h // rows_n), i.rect[0])):
         r = min(rows_n - 1, it.rect[1] * rows_n // max(1, h)); c = it.rect[0] * cols // max(1, w)
-        tag = f"[{it.id}:{it.name[:26]}]" if it.clickable else it.name[:44]
+        tag = (f"[{it.id}:{it.name[:26]}" + (f'="{it.value[:40]}"' if it.value else "") + "]") if it.clickable else it.name[:44]
         row = rows.setdefault(r, "")
         pad = max(1, c - len(row)) if row else c
         rows[r] = row + " " * pad + tag
@@ -242,7 +262,7 @@ def draw_marks(im, items, k, area):
 
 def list_format(items):
     """Text without positions (minimized windows: their rectangles mean nothing)."""
-    return "\n".join((f"[{it.id}:{it.name[:60]}]" if it.clickable else it.name[:80]) for it in items)
+    return "\n".join((f"[{it.id}:{it.name[:60]}" + (f'="{it.value[:60]}"' if it.value else "") + "]" if it.clickable else it.name[:80]) for it in items)
 
 
 def virtual_screen():
@@ -255,11 +275,11 @@ def _look_minimized(hwnd, mode, edge):
     rc = win32gui.GetWindowPlacement(hwnd)[4]; w, h = rc[2] - rc[0], rc[3] - rc[1]
     if mode != "image":
         items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True)
-        if sum(1 for i in items if i.clickable) >= 4 and sum(len(i.name) for i in items) >= 40:
+        if sum(len(i.name) for i in items) >= 40:            # a minimized window has no image alternative: any tree with real text is worth sending
             for n, it in enumerate(items, 1):
                 it.id = n
             text = list_format(items); tok = txt_cost(text)
-            _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {f"{it.kind}|{it.name}" for it in items},
+            _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items},
                             "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia"}
             return {"window": win32gui.GetWindowText(hwnd)[:50], "hwnd": hwnd, "size": f"{w}x{h}", "image_cost": img_cost(*fit(w, h, edge)),
                     "mode": "uia", "why": f"minimized: tree {tok} tok, no capture", "tokens": tok, "text": text, "minimized": True}
@@ -317,7 +337,7 @@ def _look(hwnd, mode, edge):
             res.update(image=path, image_size=f"{iw}x{ih}", tokens=img_tok)
         else:
             res.update(text=text, tokens=tokens)
-        _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {f"{it.kind}|{it.name}" for it in items if it.src == "uia"},
+        _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items if it.src == "uia"},
                         "rect": rect, "scale": scale, "mode": kind}
         return res
 
@@ -385,7 +405,7 @@ def changes(query):
     if st.get("mode") not in ("uia", "uia+ocr") and not st.get("lines"):
         return "change not measurable in this mode (the window exposes no text): call look()"
     rect = win32gui.GetWindowRect(hwnd)
-    now = {f"{i.kind}|{i.name}" for i in walk_uia(hwnd, rect, offscreen_ok=bool(win32gui.IsIconic(hwnd)))}
+    now = {line_key(i) for i in walk_uia(hwnd, rect, offscreen_ok=bool(win32gui.IsIconic(hwnd)))}
     before = st["lines"]; st["lines"] = now
     add, rem = sorted(now - before), sorted(before - now)
     if not add and not rem:
@@ -401,7 +421,7 @@ def _size(rect):
 
 def moved_note(old, new):
     """If an element moved (the user moved/resized the window and it was laid out again), a sentence saying so; otherwise ''."""
-    if not old or not new:
+    if not old or not new or old[0] < -20000:               # read while the window was minimized: its rectangles were off screen, not "moved"
         return ""
     ox, oy = (old[0] + old[2]) // 2, (old[1] + old[3]) // 2
     nx, ny = (new[0] + new[2]) // 2, (new[1] + new[3]) // 2
@@ -610,7 +630,16 @@ def _click_menu_item(ctrl, name):
     return None
 
 
-def invoke(query, target):
+def in_title_bar(ctrl):
+    """True if the control is a title-bar button (minimize / maximize / close): those are not part of the client area, so mouse
+    messages sent to the window never reach them."""
+    try:
+        return ctrl.GetParentControl().ControlTypeName == "TitleBarControl"
+    except Exception:
+        return False
+
+
+def invoke(query, target, why="this app ignores mouse messages"):
     """Press an element through its UI Automation pattern (Invoke, Toggle, Select, Expand). Apps whose controls are drawn by the app itself
     (modern Store/XAML apps such as Calculator or Paint) ignore the mouse messages, but a screen reader's Invoke works on them: it neither
     moves the mouse nor needs focus. Returns a result text, or None if the element has no such pattern."""
@@ -624,7 +653,7 @@ def invoke(query, target):
             p = getattr(it.ctrl, getter)()
             if p:
                 getattr(p, call)()
-                return f"ok (UI Automation {label}: this app ignores mouse messages)"
+                return f"ok (UI Automation {label}: {why})"
         except Exception:
             continue
     return None
@@ -637,6 +666,10 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if not st or target not in st["items"]:
             return "unknown id: call look() first"
         it = st["items"][target]
+        if it.ctrl is not None and it.kind == "button" and not right and not double and in_title_bar(it.ctrl):
+            done = invoke(query, target, "title-bar buttons are not reachable with client mouse messages")
+            if done:
+                return done
         if it.ctrl is not None and it.kind == "menuitem" and not right and not double:
             done = _click_menu_item(it.ctrl, it.name)
             if done:
@@ -702,6 +735,17 @@ def word_caret(hwnd):
     return word.caret(hwnd)
 
 
+def _read_back(ctrl, text, replace):
+    """After typing into a field, read what it contains and say whether the typed text is really there (empty if it cannot be read)."""
+    v = field_value(ctrl)
+    if v is None:
+        return ""
+    norm = v.replace("\r\n", "\n").replace("\r", "").strip()
+    ok = (norm == text.strip()) if replace else (text.strip() in norm)
+    tail = norm[-50:] if len(norm) > 50 else norm
+    return " | read back: " + ("the field now contains the text" if ok else "WARNING: the field does NOT contain the typed text") + f' ("{tail}")'
+
+
 def type_text(query, text, target=None, replace=False, progress=None):
     """Order: 1) EM_REPLACESEL/WM_SETTEXT to the control  2) WM_CHAR to the control or to the app's focus. Never activates the window."""
     hwnd = find_window(query); st = _state.get(hwnd)
@@ -718,9 +762,11 @@ def type_text(query, text, target=None, replace=False, progress=None):
         nh, cls = _native(st["items"][target].ctrl)
         if nh and "edit" in cls:
             if replace:
-                win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, text); return "ok (WM_SETTEXT, no focus)"
+                win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, text)
+                return "ok (WM_SETTEXT, no focus)" + _read_back(st["items"][target].ctrl, text, True)
             win32gui.SendMessage(nh, 0x00B1, -1, -1)                     # EM_SETSEL to the end
-            win32gui.SendMessage(nh, 0x00C2, 1, text); return "ok (EM_REPLACESEL, no focus)"
+            win32gui.SendMessage(nh, 0x00C2, 1, text)
+            return "ok (EM_REPLACESEL, no focus)" + _read_back(st["items"][target].ctrl, text, False)
         dest = nh or None
     dest = dest or _focus_hwnd(hwnd)
     for ch in text:

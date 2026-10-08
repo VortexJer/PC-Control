@@ -71,6 +71,20 @@ c["invoke: an element with no pattern returns None (the caller keeps the plain c
 c["invoke: an unknown id returns None"] = core.invoke(str(H), 99) is None
 
 
+# ---- title-bar buttons (minimize / maximize / close) are not in the client area: they are pressed through Invoke ----
+class Par:
+    ControlTypeName = "TitleBarControl"
+class CtrlTB(Ctrl2):
+    def GetParentControl(self): return Par()
+class CtrlOther(Ctrl2):
+    def GetParentControl(self):
+        class P: ControlTypeName = "PaneControl"
+        return P()
+ctb = CtrlTB(invoke=True); item(ctb, "Close", kind="button"); posted.clear()
+r_tb = core.click(str(H), 1)
+c["title-bar button: pressed through Invoke, no mouse message sent"] = r_tb.startswith("ok (UI Automation Invoke") and "title-bar" in r_tb and ctb.log == ["Invoke"] and not posted
+c["in_title_bar: true only for a title-bar child"] = core.in_title_bar(CtrlTB()) and not core.in_title_bar(CtrlOther()) and not core.in_title_bar(object())
+
 # ---- a click that closes the window must not turn into an error ----
 real_isw = core.win32gui.IsWindow
 core.win32gui.IsWindow = lambda h: False

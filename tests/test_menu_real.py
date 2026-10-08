@@ -46,10 +46,19 @@ try:
         r_ok = core.click(str(hw), idc); time.sleep(0.6)                 # by the look number, the way Claude would do it
         c["enabled entry: pressed through accessibility (the REAL menu runs its action)"] = r_ok.startswith("ok (menu entry") and S().get("menu", 0) == 1
         c["... without taking focus"] = win32gui.GetForegroundWindow() == fg0
+        # text fields: look shows what they contain, and type reads the field back to confirm
+        core.look(str(hw)); fid = next(i for i, x in core._state[hw]["items"].items() if x.name == "Name field")
+        r_t = core.type_text(str(hw), "Hello ñ 日本", target=fid); time.sleep(0.3)
+        c["type: reads the field back and says the text is there (even non-Latin characters)"] = "the field now contains the text" in r_t and "日本" in r_t
+        shown = core.look(str(hw), "uia")["text"]
+        c["look: shows what a text field contains"] = 'Name field="Hello ñ 日本"' in shown
+        ctrl = core._state[hw]["items"][fid].ctrl
+        c["read back: warns when the field does NOT contain the text"] = "WARNING: the field does NOT contain" in core._read_back(ctrl, "something else entirely", False)
+        c["read back: replace compares the whole field"] = "the field now contains the text" in core._read_back(ctrl, "Hello ñ 日本", True)
 finally:
     subprocess.run(["taskkill", "/PID", str(p.pid), "/T", "/F"], capture_output=True, creationflags=0x08000000)
 
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
-ok = all(c.values()) and len(c) >= 7
+ok = all(c.values()) and len(c) >= 11
 print(f"menu-real verification passed ({len(c)} checks)" if ok else "menu-real verification FAILED")
 sys.exit(0 if ok else 1)

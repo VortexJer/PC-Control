@@ -96,6 +96,7 @@ try:
         c["the banner says Claude will not be able to act if it is touched"] = "Claude will not be able to act" in server.notice_text(800, 600) and "800x600" in server.notice_text(800, 600)
         c["there is no setting to disable it"] = not hasattr(server, "settings") and not os.path.exists(os.path.join(os.path.dirname(server.__file__), "settings.py"))
         c["button moved: the user is told and given the coordinates"] = "coordinates corrected" in core.moved_note((10, 70, 50, 90), (10, 60, 50, 80)) and core.moved_note((10, 70, 50, 90), (12, 71, 52, 91)) == ""
+        c["a button read while the window was minimized is not reported as moved"] = core.moved_note((-31871, -31986, -31800, -31960), (400, 16, 470, 40)) == ""
         move_resize(hw, w=size0[0], h=size0[1])
 
         # 6) make it small: the controls that do not fit stop being accessible -> clear message, not a lost click
