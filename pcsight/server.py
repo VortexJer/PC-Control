@@ -72,11 +72,8 @@ def _paused():
 
 def _gate(window, act):
     _paused()
-    hwnd = core.find_window(window); proc = _proc(hwnd)
-    if proc in DENY:
-        raise PermissionError(f"'{proc}' esta en la lista de bloqueo.")
-    if act and proc not in _allowed():
-        raise PermissionError(f"actuar sobre '{proc}' no esta permitido. El usuario debe anadirlo a PCSIGHT_ALLOW o ~/.pcsight/allow.txt.")
+    hwnd = core.find_window(window)
+    policy.check_window(policy.mode(), _proc(hwnd), win32gui.GetWindowText(hwnd), act, _allowed())
     return hwnd
 
 
