@@ -46,7 +46,9 @@ class Bookmarks:
     def Exists(self, name):
         if name.startswith("_") and not self.ShowHidden: return False      # los marcadores ocultos solo se ven con ShowHidden
         return name in self.doc.marks
-    def __call__(self, name): return R(self.doc, self.doc.marks[name], self.doc.marks[name])
+    def __call__(self, name):                                        # como en Word: un Bookmark, que tiene .Range
+        p = self.doc.marks[name]
+        return type("Bookmark", (), {"Range": R(self.doc, p, p)})()
     def Add(self, name, rng): self.doc.marks[name] = rng.Start
 
 
