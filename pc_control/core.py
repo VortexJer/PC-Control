@@ -38,12 +38,16 @@ def line_key(it):
     return f"{it.kind}|{it.name}" + (f"={it.value[:30]}" if it.value else "")
 
 
-def field_value(ctrl):
-    """The text a field holds, read through UI Automation (None if it cannot be read or it is a password field)."""
+def field_value(ctrl, editable_only=False):
+    """The text a field holds, read through UI Automation (None if it cannot be read or it is a password field).
+    editable_only: also None for read-only fields (table cells exposed as text boxes repeat what is already listed: it only costs tokens)."""
     try:
         if ctrl.IsPassword:
             return None
-        return ctrl.GetValuePattern().Value
+        pat = ctrl.GetValuePattern()
+        if editable_only and pat.IsReadOnly:
+            return None
+        return pat.Value
     except Exception:
         return None
 
@@ -140,7 +144,7 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
             it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE)
             if kind == "EditControl":
-                v = field_value(c)
+                v = field_value(c, editable_only=True)
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
             items.append(it)
         if d < 28:                                              # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
