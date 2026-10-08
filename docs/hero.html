@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PC-Control</title>
+<style>
+:root{--bg:#0d1015;--panel:#141922;--panel2:#10141b;--line:#2a313d;--text:#e6e9ee;--dim:#8a93a2;--orange:#ff7a1a;--orange2:#ffb066;--paper:#f4f3ee;--ink:#1b1f27}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;height:900px;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;position:relative;overflow:hidden}
+.mono{font-family:"Cascadia Mono",Consolas,monospace}
+body:before{content:"";position:absolute;inset:0;background:radial-gradient(900px 500px at 20% 25%,rgba(255,122,26,.10),transparent 60%),radial-gradient(700px 420px at 90% 70%,rgba(80,110,160,.10),transparent 60%)}
+.abs{position:absolute}
+.kicker{font:600 13px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.22em;text-transform:uppercase;color:var(--orange)}
+h1{font-weight:600;font-size:54px;letter-spacing:-.02em;line-height:1.05}
+.sub{font-size:21px;color:var(--dim);line-height:1.4}
+.sub b{color:var(--text);font-weight:600}
+/* window */
+.win{left:60px;top:200px;width:930px;height:560px;background:#1a1f28;border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.55);overflow:hidden}
+.tb{height:40px;background:#232a35;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 14px;font-size:14px;color:#c8ced8}
+.tb .dots{margin-left:auto;display:flex;gap:18px;color:#7e8794;font-size:15px}
+.tabs{height:36px;background:#1d232d;border-bottom:1px solid var(--line);display:flex;gap:4px;padding:0 14px;align-items:flex-end;font-size:14px;color:#9aa3b1}
+.tabs span{padding:8px 14px;border-radius:6px 6px 0 0}
+.tabs .on{background:#262e3b;color:var(--text);border:1px solid var(--line);border-bottom:none}
+.ribbon{height:84px;background:#262e3b;border-bottom:1px solid var(--line);display:flex;align-items:center;gap:16px;padding:0 20px}
+.grp{display:flex;gap:6px;align-items:center}
+.btn{height:44px;min-width:44px;border:1px solid var(--line);border-radius:6px;background:#2d3644;display:flex;align-items:center;justify-content:center;font-size:17px;color:#cfd5df;padding:0 12px}
+.sty{height:56px;min-width:118px;border:1px solid var(--line);border-radius:6px;background:#2d3644;padding:8px 12px;color:#cfd5df}
+.sty small{display:block;font-size:11px;color:#7f8897;margin-top:2px}
+.sty.hot{border-color:var(--orange);box-shadow:0 0 0 3px rgba(255,122,26,.22)}
+.page{position:absolute;left:150px;top:176px;width:630px;height:384px;background:var(--paper);box-shadow:0 0 0 1px rgba(0,0,0,.4);padding:44px 52px;color:var(--ink)}
+.page h2{font:700 30px/1.15 "Segoe UI",sans-serif;color:#1f4e8c;margin-bottom:18px}
+.page p{font-size:16px;line-height:1.7;color:#30343c}
+.bar{height:9px;border-radius:5px;background:#d4d3cb;margin:11px 0}
+.caret{display:inline-block;width:3px;height:22px;background:var(--orange);vertical-align:-5px;margin-left:1px;border-radius:1px;box-shadow:0 0 12px rgba(255,122,26,.7)}
+/* callouts */
+.co{font:500 13px/1.35 "Cascadia Mono",Consolas,monospace;color:var(--orange2);letter-spacing:.02em}
+.co.dim{color:var(--dim)}
+.leader{position:absolute;height:1px;background:var(--orange);transform-origin:left center}
+/* terminal */
+.term{left:1030px;top:200px;width:510px;height:330px;background:var(--panel2);border:1px solid var(--line);border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.45);overflow:hidden}
+.term .h{height:36px;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 14px;font:500 12px "Cascadia Mono",Consolas,monospace;letter-spacing:.16em;text-transform:uppercase;color:var(--dim)}
+.term pre{font:13px/1.55 "Cascadia Mono",Consolas,monospace;padding:14px 16px;color:#cdd3dd;white-space:pre-wrap}
+.k{color:var(--orange)} .g{color:#7fd6a5} .d{color:#7b8494} .b{color:#8db8ff}
+/* dialog */
+.dlg{left:1030px;top:552px;width:510px;height:208px;background:#1b212b;border:1px solid #3a4352;border-radius:10px;box-shadow:0 20px 60px rgba(0,0,0,.5);padding:18px 20px}
+.dlg .t{font:600 12px "Cascadia Mono",Consolas,monospace;letter-spacing:.16em;text-transform:uppercase;color:#ffcc66;margin-bottom:10px}
+.dlg p{font-size:14.5px;line-height:1.5;color:#d6dbe3}
+.dlg p b{color:#fff}
+.dlg .row{position:absolute;left:20px;bottom:16px;display:flex;gap:10px;font-size:13.5px}
+.dlg .row span{padding:7px 16px;border-radius:6px;border:1px solid var(--line);background:#252d39;color:#cfd5df}
+.dlg .row .y{background:var(--orange);color:#1a0f05;border-color:var(--orange);font-weight:600}
+/* stats */
+.stats{left:60px;top:790px;width:1480px;height:78px;border-top:1px solid var(--line);display:flex}
+.stat{flex:1;padding:16px 0 0 4px;border-right:1px solid var(--line);margin-right:28px}
+.stat:last-child{border-right:none}
+.stat .n{font:600 28px/1 "Cascadia Mono",Consolas,monospace;color:var(--text)}
+.stat .n i{font-style:normal;color:var(--orange)}
+.stat .l{font:500 12px "Cascadia Mono",Consolas,monospace;letter-spacing:.14em;text-transform:uppercase;color:var(--dim);margin-top:8px}
+</style></head><body>
+
+<div class="abs kicker" style="left:60px;top:56px">PC-Control &nbsp;/&nbsp; MCP server for Windows</div>
+<h1 class="abs" style="left:60px;top:82px">Claude uses your apps.<br>You keep your mouse.</h1>
+<div class="abs sub" style="left:760px;top:92px;width:780px">It sees a window <b>without focusing it</b>, clicks and types <b>without moving your mouse</b>,
+and shows what it is doing with its own orange cursor. Nothing here calls <span class="mono" style="color:var(--text)">SendInput</span> or <span class="mono" style="color:var(--text)">SetForegroundWindow</span>.</div>
+
+<!-- app window -->
+<div class="abs win">
+  <div class="tb">Document1 &nbsp;-&nbsp; Word <span class="dots"><span>&#8212;</span><span>&#9633;</span><span>&#10005;</span></span></div>
+  <div class="tabs"><span>File</span><span class="on">Home</span><span>Insert</span><span>Draw</span><span>Design</span><span>Layout</span><span>Review</span></div>
+  <div class="ribbon">
+    <div class="grp"><div class="btn"><b>B</b></div><div class="btn"><i>I</i></div><div class="btn"><u>U</u></div></div>
+    <div class="grp"><div class="sty">Normal<small>Aa</small></div><div class="sty hot" id="h1">Heading 1<small style="color:#ffb066">Aa</small></div><div class="sty">Heading 2<small>Aa</small></div></div>
+  </div>
+  <div class="page">
+    <h2>Quarterly report</h2>
+    <p>Revenue grew 12% over the previous quarter, led by the new subscription tier<span class="caret"></span></p>
+    <div class="bar" style="width:92%"></div><div class="bar" style="width:84%"></div><div class="bar" style="width:70%"></div>
+    <div class="bar" style="width:88%;margin-top:26px"></div><div class="bar" style="width:60%"></div>
+  </div>
+</div>
+
+<!-- claude pointer (arrow + ring) on Heading 1 -->
+<svg class="abs" style="left:0;top:0" width="1600" height="900" viewBox="0 0 1600 900">
+  <defs><filter id="glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="3" result="b"/><feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>
+  <circle cx="470" cy="303" r="26" fill="none" stroke="#ff7a1a" stroke-opacity=".55" stroke-width="2"/>
+  <circle cx="470" cy="303" r="40" fill="none" stroke="#ff7a1a" stroke-opacity=".22" stroke-width="2"/>
+  <path d="M470 303 L470 345 L481 335 L489 354 L497 350 L489 331 L503 331 Z" fill="#ff7a1a" stroke="#fff" stroke-width="2" stroke-linejoin="round" filter="url(#glow)"/>
+  <!-- the user's own mouse, untouched -->
+  <path d="M830 640 L830 676 L840 667 L847 684 L854 681 L847 664 L860 664 Z" fill="#101318" stroke="#e6e9ee" stroke-width="2" stroke-linejoin="round"/>
+  <!-- leaders -->
+  <g stroke="#ff7a1a" stroke-opacity=".7" stroke-width="1.2" fill="none">
+    <path d="M503 331 L560 420 L610 420"/>
+    <path d="M601 359 L640 440 L700 440"/>
+  </g>
+  <path d="M860 664 L900 664 L930 660" stroke="#8a93a2" stroke-width="1.2" fill="none"/>
+</svg>
+
+<div class="abs co" style="left:615px;top:408px;width:300px">CLAUDE'S POINTER<br><span style="color:#8a93a2">click-through, never takes focus</span></div>
+<div class="abs co" style="left:705px;top:428px;width:340px;top:470px">CLAUDE'S OWN INSERTION POINT<br><span style="color:#8a93a2">a hidden bookmark &mdash; not your caret</span></div>
+<div class="abs co dim" style="left:700px;top:658px;width:130px;text-align:right;left:690px">YOUR MOUSE,<br>UNTOUCHED</div>
+
+<!-- terminal -->
+<div class="abs term">
+  <div class="h">Claude Code &nbsp;&middot;&nbsp; PC-Control</div>
+<pre><span class="b">windows</span>
+<span class="d">11624  winword   Document1 - Word  </span><span class="k">[IN USE]</span>
+
+<span class="b">look</span> window="Document1"
+<span class="g">uia 713 tok</span> <span class="d">(a screenshot would cost 851)</span>
+
+<span class="b">click</span> [Heading 1]
+<span class="g">ok</span> | change: + Heading 1 | <span class="g">effect observed</span>
+
+<span class="b">type</span> [Page] "Revenue grew 12%..."
+<span class="g">ok</span> (Word via COM, at Claude's insertion point:
+   your selection is not touched; paragraph 2)
+   <span class="g">typing confirmed by the application itself</span></pre>
+</div>
+
+<!-- permission dialog -->
+<div class="abs dlg">
+  <div class="t">Permission &middot; asked by you, not by the model</div>
+  <p><b>Claude wants to VIEW the contents of</b> the window "PowerShell" (program: windowsterminal).<br>
+  It is a <b>PROTECTED</b> window (terminal or console): it could see or change sensitive things. A "yes" only counts once.</p>
+  <div class="row"><span class="y">Yes</span><span>Yes, and don't ask again for this window</span><span>No</span></div>
+</div>
+
+<!-- stats -->
+<div class="abs stats">
+  <div class="stat"><div class="n"><i>0</i> focus steals</div><div class="l">your window stays in front</div></div>
+  <div class="stat"><div class="n"><i>0</i> mouse moves</div><div class="l">messages go to the window, not the cursor</div></div>
+  <div class="stat"><div class="n"><i>~700</i> tokens / look</div><div class="l">text when it is cheaper than the image</div></div>
+  <div class="stat"><div class="n"><i>2</i> questions only you answer</div><div class="l">protected windows &amp; delicate actions</div></div>
+</div>
+</body></html>
