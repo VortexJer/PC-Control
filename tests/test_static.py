@@ -1,4 +1,4 @@
-"""El codigo del paquete no puede contener llamadas que interfieran con el usuario (analisis del AST, no de texto)."""
+"""The package code must not contain calls that interfere with the user (AST analysis, not text matching)."""
 import ast, glob, os, sys
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -14,16 +14,16 @@ def scan(src):
         elif isinstance(n, ast.ImportFrom) and (n.module or "").split(".")[0] in FORBIDDEN: hits.append((n.lineno, n.module))
     return hits
 
-# controles positivos: el escaner DEBE detectar cada patron y NO marcar comentarios ni docstrings
+# positive controls: the scanner MUST detect each pattern and must NOT flag comments or docstrings
 for w in FORBIDDEN:
-    assert scan(f"import x\nx.{w}(h)\n") == [(2, w)], f"el escaner no detecta x.{w}"
-assert scan("import pyautogui\n"), "no detecta import pyautogui"
-assert scan('"""nunca SetForegroundWindow"""\n# keybd_event\nx = 1\n') == [], "falso positivo en docstring/comentario"
+    assert scan(f"import x\nx.{w}(h)\n") == [(2, w)], f"the scanner does not detect x.{w}"
+assert scan("import pyautogui\n"), "does not detect import pyautogui"
+assert scan('"""never SetForegroundWindow"""\n# keybd_event\nx = 1\n') == [], "false positive on a docstring/comment"
 
-files = glob.glob(os.path.join(ROOT, "pcsight", "*.py"))
-assert files, "no hay codigo que escanear"
+files = glob.glob(os.path.join(ROOT, "pc_control", "*.py"))
+assert files, "there is no code to scan"
 bad = {os.path.basename(f): scan(open(f, encoding="utf-8").read()) for f in files}
 bad = {k: v for k, v in bad.items() if v}
 if bad:
-    print("LLAMADAS INTRUSIVAS:", bad); sys.exit(1)
-print(f"static verification passed ({len(files)} archivos, {len(FORBIDDEN)} patrones, control positivo ok)")
+    print("INTRUSIVE CALLS:", bad); sys.exit(1)
+print(f"static verification passed ({len(files)} files, {len(FORBIDDEN)} patterns, positive control ok)")
