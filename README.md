@@ -154,10 +154,11 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 - Single keys only; shortcuts (`ctrl+s`) would need focus, so they are not supported.
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
-- Modern canvases (for example the Windows 11 Paint drawing area) ignore mouse messages sent to a background window, so `drag` may do nothing there.
+- Modern Store/XAML apps (Calculator, Paint, Settings) ignore mouse messages sent to a background window. For buttons, PC-Control notices that a click had no visible effect and presses the element through UI Automation `Invoke` (what a screen reader does: no mouse, no focus), and the answer says so. A drawing canvas has no such pattern, so `drag` does nothing there (modern Paint).
+- Store apps also ignore "start minimized": opening Calculator brings it to the front.
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
 - A minimized window is read through its UI tree only (no capture: it would have to be shown). If that is not enough, relaunch with `hidden=true`.
-- Store (UWP) apps cannot run on a hidden desktop and ignore "start minimized" (they flash on screen when opened).
+- Store (UWP) apps cannot run on a hidden desktop.
 - Background typing through `WM_CHAR` is not accepted by every app (the modern Notepad ignores it); use element ids.
 - Opening an app while you are typing can let Windows briefly activate its window; PC-Control cannot prevent that without stealing focus itself.
 
