@@ -1,34 +1,34 @@
-"""Adaptador de Word: Claude escribe y da formato en SU PROPIO punto del documento, sin depender de la seleccion del usuario,
-y el usuario puede seguir trabajando en el mismo documento a la vez.
+"""Word adapter: Claude types and formats at ITS OWN point in the document, without depending on the user's selection,
+and the user can keep working in the same document at the same time.
 
-Por que: con la seleccion de Word, lo que Claude escribe va "donde este el cursor", y ese cursor es del usuario. Si el
-usuario hace clic en otro sitio a mitad de una tarea, el texto (y la negrita) se desvian con el. Aqui Claude tiene un marcador
-oculto propio en el documento (`_PCControl`, los marcadores que empiezan por _ no salen en la lista de marcadores): se mueve
-solo si el usuario edita antes de el, no se ve afectado por donde haga clic el usuario, y la seleccion del usuario no se toca.
+Why: with Word's selection, what Claude types goes "wherever the caret is", and that caret belongs to the user. If the
+user clicks somewhere else in the middle of a task, the text (and the bold) drift along with it. Here Claude has its own
+hidden bookmark in the document (`_PCControl`; bookmarks starting with _ do not show in the bookmark list): it moves
+only if the user edits before it, is not affected by where the user clicks, and the user's selection is never touched.
 
-Los botones de formato de la cinta (negrita, cursiva, alineacion...) NO se pulsan de verdad: darian formato a la seleccion del
-usuario. Se anotan como formato pendiente de Claude y se aplican al texto que Claude escribe. Se reconocen por su
-AutomationId (Bold, Italic, AlignCenter...), que no depende del idioma de Windows.
+The ribbon formatting buttons (bold, italic, alignment...) are NOT really pressed: they would format the user's
+selection. They are recorded as Claude's pending format and applied to the text Claude types. They are recognized by their
+AutomationId (Bold, Italic, AlignCenter...), which does not depend on the Windows language.
 
-Si Word esta ocupado atendiendo al usuario (esta escribiendo, abriendo un menu), rechaza las llamadas COM con RPC_E_CALL_REJECTED:
-cada llamada se reintenta unos segundos en vez de fallar.
+If Word is busy serving the user (typing, opening a menu), it rejects COM calls with RPC_E_CALL_REJECTED:
+each call is retried for a few seconds instead of failing.
 """
 import time
 
 BOOKMARK, START = "_PCControl", "_PCControlStart"
-FORMAT_IDS = {                                   # AutomationId del boton de la cinta -> formato
+FORMAT_IDS = {                                   # ribbon button AutomationId -> format
     "Bold": ("bold",), "Italic": ("italic",), "UnderlineGallery": ("underline",), "Strikethrough": ("strike",),
     "Subscript": ("sub",), "Superscript": ("super",),
     "AlignLeft": ("align", 0), "AlignCenter": ("align", 1), "AlignRight": ("align", 2), "AlignJustify": ("align", 3),
 }
-_ALIGN = {0: "izquierda", 1: "centrado", 2: "derecha", 3: "justificado"}
-_pending = {}                                    # hwnd -> formato pendiente de Claude
-_BUSY = {-2147418111, -2147417846}               # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER: Word esta ocupado con el usuario
-RETRY = {"tries": 60, "wait": 0.1}               # hasta ~6 s por llamada
+_ALIGN = {0: "left", 1: "centered", 2: "right", 3: "justified"}
+_pending = {}                                    # hwnd -> Claude's pending format
+_BUSY = {-2147418111, -2147417846}               # RPC_E_CALL_REJECTED, RPC_E_SERVERCALL_RETRYLATER: Word is busy with the user
+RETRY = {"tries": 60, "wait": 0.1}               # up to ~6 s per call
 
 
 def call(fn, *args):
-    """Una llamada COM atomica con reintentos si Word la rechaza por estar ocupado (una llamada rechazada no se ejecuto: reintentar es seguro)."""
+    """One atomic COM call, retried if Word rejects it because it is busy (a rejected call was not executed: retrying is safe)."""
     for i in range(RETRY["tries"]):
         try:
             return fn(*args)
@@ -48,7 +48,7 @@ def _get_app():
 
 
 def window(hwnd):
-    """La ventana de Word con ese hwnd (o None)."""
+    """The Word window with that hwnd (or None)."""
     for w in call(lambda: list(_get_app().Windows)):
         if call(lambda: w.Hwnd) == hwnd:
             return w
@@ -57,12 +57,12 @@ def window(hwnd):
 
 def _bm(doc, name):
     bms = doc.Bookmarks
-    call(setattr, bms, "ShowHidden", True)        # los marcadores ocultos solo se ven con esto
+    call(setattr, bms, "ShowHidden", True)        # hidden bookmarks are only visible with this
     return call(bms.Exists, name)
 
 
 def anchor_pos(doc):
-    """Donde escribe Claude: su marcador, o el final del documento (dentro del ultimo parrafo) la primera vez."""
+    """Where Claude types: its bookmark, or the end of the document (inside the last paragraph) the first time."""
     if _bm(doc, BOOKMARK):
         return call(lambda: doc.Bookmarks(BOOKMARK).Range.Start)
     return max(0, call(lambda: doc.Content.End) - 1)
@@ -79,11 +79,11 @@ def state(hwnd):
 
 def describe(st):
     on = [k for k in ("bold", "italic", "underline", "strike", "sub", "super") if st[k]]
-    return ", ".join(on + ([f"alineacion {_ALIGN[st['align']]}"] if st["align"] is not None else [])) or "normal"
+    return ", ".join(on + ([f"alignment {_ALIGN[st['align']]}"] if st["align"] is not None else [])) or "normal"
 
 
 def format_click(hwnd, automation_id):
-    """Un boton de formato de la cinta: se anota para el texto de Claude (no se toca la seleccion del usuario). None si no es de formato."""
+    """A ribbon formatting button: it is recorded for Claude's text (the user's selection is not touched). None if it is not a formatting button."""
     spec = FORMAT_IDS.get(automation_id)
     if not spec:
         return None
@@ -94,21 +94,26 @@ def format_click(hwnd, automation_id):
         st[spec[0]] = not st[spec[0]]
         if spec[0] == "sub" and st["sub"]: st["super"] = False
         if spec[0] == "super" and st["super"]: st["sub"] = False
-    return f"ok (formato de Claude: {describe(st)}; se aplica a lo que escriba Claude, no a tu seleccion)"
+    return f"ok (Claude format: {describe(st)}; applied to what Claude types, not to your selection)"
 
 
 def _format(rng, st):
     f = call(lambda: rng.Font)
     for name, val in (("Bold", bool(st["bold"])), ("Italic", bool(st["italic"])), ("Underline", 1 if st["underline"] else 0),
                       ("StrikeThrough", bool(st["strike"])), ("Subscript", bool(st["sub"])), ("Superscript", bool(st["super"]))):
-        call(setattr, f, name, val)               # explicito: lo que Claude escribe no hereda el formato del texto anterior
-    if st["align"] is not None:
-        call(setattr, call(lambda: rng.ParagraphFormat), "Alignment", st["align"])
+        call(setattr, f, name, val)               # explicit: what Claude types does not inherit the format of the previous text
+
+
+def _align(doc, positions, value):
+    """Align the paragraphs containing those positions. Only called with NEW Claude paragraphs (or an empty one where it types):
+    a range crossing a paragraph mark would also align the previous paragraph, which may belong to the user."""
+    for p in positions:
+        call(setattr, call(lambda: call(doc.Range, p, p).ParagraphFormat), "Alignment", value)
 
 
 def type_text(hwnd, text, replace=False, progress=None):
-    """Escribe en el punto de Claude. replace=True sustituye lo ULTIMO que escribio Claude (nunca algo del usuario). Con `progress`,
-    escribe en trocitos y avisa de donde esta el punto tras cada uno, para que se vea escribir. Devuelve el mensaje de resultado."""
+    """Type at Claude's point. replace=True replaces what Claude typed LAST (never anything of the user's). With `progress`,
+    it types in small chunks and reports where the point is after each one, so the typing is visible. Returns the result message."""
     w = window(hwnd)
     if w is None:
         return None
@@ -121,30 +126,50 @@ def type_text(hwnd, text, replace=False, progress=None):
         if s0 < pos:
             call(call(doc.Range, s0, pos).Delete); pos = s0
     start = pos
+    before_ch = call(lambda: doc.Range(max(0, pos - 1), pos).Text) if pos else "\r"
+    after_ch = call(lambda: doc.Range(pos, pos + 1).Text)
+    was_empty = before_ch == "\r" and after_ch == "\r"                          # typing into an empty paragraph
     chunks = [text[i:i + 3] for i in range(0, len(text), 3)] if progress else [text]
-    for chunk in chunks:
+    for n, chunk in enumerate(chunks):
         rng = call(doc.Range, pos, pos)
         call(rng.InsertAfter, chunk)
         _format(rng, st)
+        if st["align"] is not None:
+            news = [pos + i + 1 for i, ch in enumerate(chunk) if ch == "\r"]       # paragraphs that START inside the typed text
+            _align(doc, ([pos] if (n == 0 and was_empty) else []) + news, st["align"])
         pos = call(lambda: rng.End)
-        _set(doc, BOOKMARK, pos)                                               # el marcador se mueve con cada trozo
+        _set(doc, BOOKMARK, pos)                                               # the bookmark moves with each chunk
         if progress:
             c = caret(hwnd, w)
             if c: progress(*c)
             time.sleep(0.03)
     _set(doc, START, start); _set(doc, BOOKMARK, pos)
-    par = call(lambda: doc.Range(0, start).Text).count("\r") + 1 if start else 1
+    lead = len(text) - len(text.lstrip("\r"))                                   # line breaks at the start: the text lands in a later paragraph
+    par = (call(lambda: doc.Range(0, start).Text).count("\r") + 1 if start else 1) + lead
     raw = call(lambda: doc.Range(max(0, start - 28), start).Text)
     if start > 28 and " " in raw and raw[0] not in " \r":
-        raw = raw[raw.index(" ") + 1:]                                          # el extracto empieza en una palabra entera, no a medias
+        raw = raw[raw.index(" ") + 1:]                                          # the excerpt starts at a whole word, not mid-word
     ctx = raw.replace("\r", " ¶ ")
     after = call(doc.ComputeStatistics, 0)
-    return (f"ok (Word por COM, en el punto de escritura de Claude: tu seleccion no se toca; palabras {before} -> {after}; "
-            f"escrito en el parrafo {par}" + (f" tras «{ctx.strip()}»" if ctx.strip() else " al principio") + ")")
+    return (f"ok (Word through COM, at Claude's insertion point: your selection is not touched; words {before} -> {after}; "
+            f"typed in paragraph {par}" + (f" after «{ctx.strip()}»" if ctx.strip() else " at the beginning") + ")")
+
+
+def backspace(hwnd):
+    """Delete the last character CLAUDE typed (never the user's text). None if it is not Word."""
+    w = window(hwnd)
+    if w is None:
+        return None
+    doc = call(lambda: w.Document); pos = anchor_pos(doc)
+    s0 = call(lambda: doc.Bookmarks(START).Range.Start) if _bm(doc, START) else pos
+    if pos <= s0:
+        return "did not delete: in Word I only delete what Claude typed, and there is nothing of Claude's before its point"
+    call(call(doc.Range, pos - 1, pos).Delete); _set(doc, BOOKMARK, pos - 1)
+    return "ok (Word through COM: deleted Claude's last character; your selection is not touched; words " + str(call(doc.ComputeStatistics, 0)) + ")"
 
 
 def caret(hwnd, w=None):
-    """(x, centro_y, alto) en pantalla del punto de Claude, o None si no se ve (p. ej. fuera de la zona visible)."""
+    """(x, center_y, height) on screen of Claude's point, or None if it is not visible (e.g. outside the visible area)."""
     try:
         w = w or window(hwnd)
         if w is None:
