@@ -1,9 +1,9 @@
-"""Escritorio oculto: las apps que abre pcsight viven en un escritorio de Windows que el usuario nunca ve.
+"""Hidden desktop: the apps PC-Control opens live on a Windows desktop the user never sees.
 
-Una ventana de otro escritorio no puede aparecer en tu pantalla, ni parpadear, ni robar el foco, ni quedar
-por delante o por detras de nada. Es el mismo mecanismo que usan las herramientas de acceso remoto.
+A window on another desktop cannot appear on your screen, flicker, steal focus, or end up
+in front of or behind anything. It is the same mechanism remote-access tools use.
 
-Todo lo que toque esas ventanas debe ejecutarse en el hilo dedicado (`DESK.run`), que esta atado a ese escritorio.
+Everything that touches those windows must run on the dedicated thread (`DESK.run`), which is bound to that desktop.
 """
 import atexit, ctypes, ctypes.wintypes as wt, os, time
 from concurrent.futures import ThreadPoolExecutor
@@ -32,30 +32,30 @@ class _PROCESS_INFORMATION(ctypes.Structure):
 
 class HiddenDesktop:
     def __init__(self):
-        self.name = f"pcsight_{os.getpid()}"
+        self.name = f"pc_control_{os.getpid()}"
         self.h = None
         self.pool = None
-        self.procs = {}                 # pid -> handle del proceso
+        self.procs = {}                 # pid -> process handle
         atexit.register(self.close)
 
-    # -- ciclo de vida --
+    # -- lifecycle --
     def ensure(self):
         if self.h:
             return
         h = _u.CreateDesktopW(self.name, None, None, 0, 0x10000000, None)      # GENERIC_ALL
         if not h:
-            raise OSError(f"no se pudo crear el escritorio oculto (error {ctypes.get_last_error()})")
+            raise OSError(f"could not create the hidden desktop (error {ctypes.get_last_error()})")
         self.h = h
-        self.pool = ThreadPoolExecutor(1, thread_name_prefix="pcsight-hidden", initializer=self._init_thread)
+        self.pool = ThreadPoolExecutor(1, thread_name_prefix="pc-control-hidden", initializer=self._init_thread)
 
     def _init_thread(self):
         if not _u.SetThreadDesktop(self.h):
-            raise OSError(f"SetThreadDesktop fallo (error {ctypes.get_last_error()})")
+            raise OSError(f"SetThreadDesktop failed (error {ctypes.get_last_error()})")
         self._uia = auto.UIAutomationInitializerInThread()
         self._uia.__enter__()
 
     def run(self, fn, timeout=120):
-        """Ejecuta fn en el hilo atado al escritorio oculto (aqui las ventanas y UIA son visibles)."""
+        """Run fn on the thread bound to the hidden desktop (windows and UIA are visible here)."""
         self.ensure()
         return self.pool.submit(fn).result(timeout=timeout)
 
@@ -70,32 +70,32 @@ class HiddenDesktop:
             _u.CloseDesktop(self.h)
             self.h = None
 
-    # -- procesos y ventanas --
+    # -- processes and windows --
     def launch(self, command):
         self.ensure()
         si = _STARTUPINFOW(); si.cb = ctypes.sizeof(si); si.lpDesktop = self.name
         pi = _PROCESS_INFORMATION()
         buf = ctypes.create_unicode_buffer(command)
         if not _k.CreateProcessW(None, buf, None, None, False, 0x08000000, None, None, ctypes.byref(si), ctypes.byref(pi)):
-            raise OSError(f"no se pudo lanzar la app (error {ctypes.get_last_error()})")
+            raise OSError(f"could not launch the app (error {ctypes.get_last_error()})")
         _k.CloseHandle(pi.hThread)
         self.procs[pi.dwProcessId] = pi.hProcess
         return pi.dwProcessId
 
+    def _enum(self):
+        """Enumerate windows with a title. ONLY inside the hidden desktop's thread (it queues nothing: avoids deadlocks)."""
+        out = []
+        win32gui.EnumWindows(lambda h, _: out.append((h, win32gui.GetWindowText(h), win32process.GetWindowThreadProcessId(h)[1]))
+                             if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h) else None, None)
+        return out
+
     def windows(self):
-        """[(hwnd, titulo, pid)] de las ventanas con titulo del escritorio oculto."""
-        if not self.h:
-            return []
-        def enum():
-            out = []
-            win32gui.EnumWindows(lambda h, _: out.append((h, win32gui.GetWindowText(h), win32process.GetWindowThreadProcessId(h)[1]))
-                                 if win32gui.IsWindowVisible(h) and win32gui.GetWindowText(h) else None, None)
-            return out
-        return self.run(enum)
+        """[(hwnd, title, pid)] of the windows with a title on the hidden desktop (called from outside the thread)."""
+        return self.run(self._enum) if self.h else []
 
     def owns(self, window, main_has):
-        """True si la consulta (hwnd o titulo) se refiere a una ventana del escritorio oculto.
-        Con un titulo que tambien existe en tu escritorio, gana el tuyo (main_has=True)."""
+        """True if the query (hwnd or title) refers to a window on the hidden desktop.
+        With a title that also exists on your desktop, yours wins (main_has=True)."""
         if not self.h:
             return False
         w = str(window)
@@ -105,7 +105,7 @@ class HiddenDesktop:
         return (not main_has) and any(w.lower() in t.lower() for _, t, _ in ws)
 
     def open(self, command, wait_s=10.0):
-        """Lanza la app en el escritorio oculto y espera a su primera ventana con titulo."""
+        """Launch the app on the hidden desktop and wait for its first window with a title."""
         pid = self.launch(command)
         t0 = time.time(); found = []
         while time.time() - t0 < wait_s:
@@ -116,7 +116,7 @@ class HiddenDesktop:
                 break
             time.sleep(0.1)
         return {"pid": pid, "windows": [{"hwnd": h, "title": t[:50]} for h, t in found],
-                "note": "" if found else "ninguna ventana con titulo (la app puede ser de la Tienda, que no admite otro escritorio, o tardar mas)"}
+                "note": "" if found else "no window with a title (the app may be a Store app, which does not support another desktop, or it may take longer)"}
 
 
 DESK = HiddenDesktop()
