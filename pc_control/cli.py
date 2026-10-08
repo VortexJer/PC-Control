@@ -222,7 +222,9 @@ def install(mode="follow", scope="user", allow_reads=False, runner=run_claude, p
         log.append(f"skill written to {skill_md}")
         wrote_skill = True
 
-    md_created = record.get("claude_md_created", False) or _md_add(pth["claude_md"]) if not os.path.exists(pth["claude_md"]) else (_md_add(pth["claude_md"]) or record.get("claude_md_created", False))
+    had_md = os.path.exists(pth["claude_md"])
+    _md_add(pth["claude_md"])
+    md_created = record.get("claude_md_created", False) or not had_md        # if install created the file, uninstall may delete it
     log.append(f"instructions block added to {pth['claude_md']}")
 
     bak = pth["settings"] + ".pc-control-bak"
