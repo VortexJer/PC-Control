@@ -4,11 +4,12 @@ Where apps live
   * Apps opened with open_app() run on a hidden Windows desktop: they never appear on your screen, never
     flicker, never take focus. Apps you already have open are only observed/operated through window messages.
 
-Safety model
-  * look()      works on any window except the deny-list (password managers, terminals, ...).
-  * click/type/key/open_app only work on apps you explicitly allow:
-        env PCSIGHT_ALLOW="notepad,winword"     or     ~/.pcsight/allow.txt (one process name per line)
-  * Create the file ~/.pcsight/PAUSE (or set PCSIGHT_PAUSE=1) to make every tool refuse instantly.
+Permission modes (env PCSIGHT_MODE, see policy.py)
+  * auto (default)  filters apps by category (password managers, terminals, system admin, remote access, banking
+                    titles...) and asks for confirm=true on delicate actions (pay, delete, send, install...).
+  * strict          auto + acting only on apps listed in PCSIGHT_ALLOW or ~/.pcsight/allow.txt.
+  * bypass          like --dangerously-skip-permissions: no filters, no confirmations.
+  * Create the file ~/.pcsight/PAUSE (or set PCSIGHT_PAUSE=1) to make every tool refuse instantly, in any mode.
   * Nothing here ever focuses a window, moves your mouse or injects keystrokes.
 """
 import ctypes, ctypes.wintypes as wt, functools, os, shlex, time, traceback
