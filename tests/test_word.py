@@ -118,8 +118,6 @@ c["el usuario escribe antes: el punto de Claude se desplaza con el texto"] = par
 
 # 4) formato: los botones anotan formato para el texto de Claude, NO tocan la seleccion del usuario
 d = fresh(); d.sel[:] = [0, 4]
-c["un boton de formato se reconoce por su AutomationId (no por el idioma)"] = "negrita" not in (word.format_click(H, "Bold") or "") and "bold" in word.format_click(H, "Bold").replace("Bold", "bold") or True
-d = fresh(); d.sel[:] = [0, 4]
 msg = word.format_click(H, "Bold")
 c["Bold: mensaje claro y no es 'None'"] = bool(msg) and "bold" in msg and "no a tu seleccion" in msg
 word.type_text(H, " NEGRITA")
