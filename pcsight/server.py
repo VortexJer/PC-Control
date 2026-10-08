@@ -173,8 +173,7 @@ def open_app(command: str, visible: bool = False) -> str:
     """Launch an allowed app on a hidden desktop (never shown, no flicker, no focus). Then use windows()/look(). visible=true opens it on the user's desktop but parked off-screen instead."""
     _paused()
     exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
-    if exe in DENY or exe not in _allowed():
-        raise PermissionError(f"abrir '{exe}' no esta permitido (PCSIGHT_ALLOW o ~/.pcsight/allow.txt).")
+    policy.check_launch(policy.mode(), exe, _allowed())
     if visible:
         r = core.open_app(command)
         ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
