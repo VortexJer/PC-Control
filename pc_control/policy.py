@@ -12,7 +12,7 @@ El modo se elige con la variable PCSIGHT_MODE.
 """
 import os, re
 
-MODES = ("strict", "auto", "bypass")
+MODES = ("strict", "ask", "auto", "bypass")
 
 BLOCKED_APPS = {
     "gestor de contrasenas": {"keepass", "keepassxc", "bitwarden", "1password", "lastpass", "dashlane", "enpass", "nordpass", "roboform"},
