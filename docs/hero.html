@@ -24,7 +24,7 @@ h1{font-weight:600;font-size:54px;letter-spacing:-.02em;line-height:1.05}
 .sty{height:56px;min-width:118px;border:1px solid var(--line);border-radius:6px;background:#2d3644;padding:8px 12px;color:#cfd5df}
 .sty small{display:block;font-size:11px;color:#7f8897;margin-top:2px}
 .sty.hot{border-color:var(--orange);box-shadow:0 0 0 3px rgba(255,122,26,.22)}
-.page{position:absolute;left:150px;top:176px;width:630px;height:384px;background:var(--paper);box-shadow:0 0 0 1px rgba(0,0,0,.4);padding:44px 52px;color:var(--ink)}
+.page{position:absolute;left:36px;top:176px;width:540px;height:384px;background:var(--paper);box-shadow:0 0 0 1px rgba(0,0,0,.4);padding:44px 52px;color:var(--ink)}
 .page h2{font:700 30px/1.15 "Segoe UI",sans-serif;color:#1f4e8c;margin-bottom:18px}
 .page p{font-size:16px;line-height:1.7;color:#30343c}
 .bar{height:9px;border-radius:5px;background:#d4d3cb;margin:11px 0}
@@ -70,7 +70,7 @@ and shows what it is doing with its own orange cursor. Nothing here calls <span 
   </div>
   <div class="page">
     <h2>Quarterly report</h2>
-    <p>Revenue grew 12% over the previous quarter, led by the new subscription tier<span class="caret"></span></p>
+    <p>Revenue grew 12% over the previous quarter<span class="caret"></span></p>
     <div class="bar" style="width:92%"></div><div class="bar" style="width:84%"></div><div class="bar" style="width:70%"></div>
     <div class="bar" style="width:88%;margin-top:26px"></div><div class="bar" style="width:60%"></div>
   </div>
@@ -86,15 +86,15 @@ and shows what it is doing with its own orange cursor. Nothing here calls <span 
   <path d="M830 640 L830 676 L840 667 L847 684 L854 681 L847 664 L860 664 Z" fill="#101318" stroke="#e6e9ee" stroke-width="2" stroke-linejoin="round"/>
   <!-- leaders -->
   <g stroke="#ff7a1a" stroke-opacity=".7" stroke-width="1.2" fill="none">
-    <path d="M503 331 L560 420 L610 420"/>
-    <path d="M601 359 L640 440 L700 440"/>
+    <path d="M503 331 L560 360 L690 400"/>
+    <path d="M474 488 L520 488 L690 502"/>
   </g>
-  <path d="M860 664 L900 664 L930 660" stroke="#8a93a2" stroke-width="1.2" fill="none"/>
+  
 </svg>
 
-<div class="abs co" style="left:615px;top:408px;width:300px">CLAUDE'S POINTER<br><span style="color:#8a93a2">click-through, never takes focus</span></div>
-<div class="abs co" style="left:705px;top:428px;width:340px;top:470px">CLAUDE'S OWN INSERTION POINT<br><span style="color:#8a93a2">a hidden bookmark &mdash; not your caret</span></div>
-<div class="abs co dim" style="left:700px;top:658px;width:130px;text-align:right;left:690px">YOUR MOUSE,<br>UNTOUCHED</div>
+<div class="abs co" style="left:700px;top:392px;width:280px">CLAUDE'S POINTER<br><span style="color:#8a93a2">click-through, never takes focus</span></div>
+<div class="abs co" style="left:700px;top:488px;width:280px">CLAUDE'S OWN INSERTION POINT<br><span style="color:#8a93a2">a hidden bookmark, not your caret</span></div>
+<div class="abs co dim" style="left:872px;top:660px;width:120px;text-align:left">YOUR MOUSE,<br>UNTOUCHED</div>
 
 <!-- terminal -->
 <div class="abs term">
@@ -103,7 +103,7 @@ and shows what it is doing with its own orange cursor. Nothing here calls <span 
 <span class="d">11624  winword   Document1 - Word  </span><span class="k">[IN USE]</span>
 
 <span class="b">look</span> window="Document1"
-<span class="g">uia 713 tok</span> <span class="d">(a screenshot would cost 851)</span>
+<span class="g">uia</span> <span class="d">(UI text: cheaper than an image)</span>
 
 <span class="b">click</span> [Heading 1]
 <span class="g">ok</span> | change: + Heading 1 | <span class="g">effect observed</span>
@@ -125,8 +125,8 @@ and shows what it is doing with its own orange cursor. Nothing here calls <span 
 <!-- stats -->
 <div class="abs stats">
   <div class="stat"><div class="n"><i>0</i> focus steals</div><div class="l">your window stays in front</div></div>
-  <div class="stat"><div class="n"><i>0</i> mouse moves</div><div class="l">messages go to the window, not the cursor</div></div>
-  <div class="stat"><div class="n"><i>~700</i> tokens / look</div><div class="l">text when it is cheaper than the image</div></div>
-  <div class="stat"><div class="n"><i>2</i> questions only you answer</div><div class="l">protected windows &amp; delicate actions</div></div>
+  <div class="stat"><div class="n"><i>0</i> mouse moves</div><div class="l">messages go to the window</div></div>
+  <div class="stat"><div class="n"><i>3</i> ways to see</div><div class="l">text, OCR or image: the cheapest</div></div>
+  <div class="stat"><div class="n"><i>1</i> yes = 1 call</div><div class="l">protected windows ask every time</div></div>
 </div>
 </body></html>
