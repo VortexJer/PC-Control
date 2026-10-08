@@ -190,7 +190,7 @@ try:
 
     from pc_control import server, core                     # the block list, by unit
     server._proc = lambda h: "keepass"; core.find_window = lambda q: 1
-    os.environ.pop("PC_CONTROL_MODE", None)
+    os.environ["PC_CONTROL_MODE"] = "auto"                  # pinned: "follow" would depend on the Claude Code session running the test
     try:
         server._gate("x", False); checks["protected category (look): asks for permission"] = False
     except PermissionError:
