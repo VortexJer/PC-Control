@@ -137,7 +137,7 @@ c["un boton que no es de formato devuelve None (sigue el clic normal)"] = word.f
 d = fresh("Linea1")
 word.format_click(H, "AlignCenter"); word.type_text(H, "\nTitulo")
 p2 = d.text.index("Titulo")
-c["\\n se convierte en un parrafo nuevo"] = d.text.split("\r")[:3] == ["Linea1", "Titulo", ""][:2] + [""] or "\rTitulo" in d.text
+c["un salto de linea se convierte en un parrafo nuevo (marca de parrafo)"] = d.text.split("\r")[:2] == ["Linea1", "Titulo"]
 c["alineacion centrada solo en el parrafo de Claude"] = d.align[p2] == 1 and d.align[0] == 0
 word.format_click(H, "AlignLeft"); word.type_text(H, "\rCuerpo")
 c["alineacion a la izquierda para el siguiente parrafo"] = d.align[d.text.index("Cuerpo")] == 0 and d.align[p2] == 1
