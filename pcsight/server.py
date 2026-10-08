@@ -119,6 +119,13 @@ def open_app(command: str) -> str:
     return f"pid {r['pid']} | {ws} | foco_intacto={r['foco_intacto']}"
 
 
+@mcp.tool()
+def reveal(window: str) -> str:
+    """Bring a window that pcsight parked off-screen back to where it was (without focusing it). Only on the user's request."""
+    hwnd = _gate(window, act=True)
+    return "ok (vuelve a su sitio)" if core.unpark(hwnd) else "esa ventana no estaba aparcada por pcsight"
+
+
 def main():
     mcp.run()
 
