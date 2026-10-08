@@ -20,12 +20,10 @@ try:                                              # mcp >= 2
 except ImportError:                               # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image
     from mcp.server.fastmcp.exceptions import ToolError
-from . import core
+from . import core, policy
 from .hidden import DESK
 
 HOME = os.path.join(os.path.expanduser("~"), ".pcsight")
-DENY = {"keepass", "keepassxc", "bitwarden", "1password", "lastpass", "dashlane", "windowsterminal", "cmd",
-        "powershell", "pwsh", "conhost", "mmc", "regedit", "taskmgr", "claude"}
 mcp = FastMCP("pcsight")
 
 
