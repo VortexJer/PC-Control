@@ -1,5 +1,7 @@
 # PC-Control
 
+![PC-Control: Claude works in a Word window with its own orange cursor while your mouse stays untouched](docs/pc-control.png)
+
 Let an AI see and operate Windows apps cheaply, **without stealing focus, moving your mouse or typing on your keyboard**.
 An MCP server for Claude Code (and any MCP client). Early version: it works, but expect rough edges.
 
@@ -16,14 +18,16 @@ Windows 10/11 only. Python 3.10+.
 ## Install
 
 ```powershell
-pip install pc-control
-pc-control install
+git clone https://github.com/VortexJer/PC-Control.git
+cd PC-Control
+\install.ps1                  # installs the package and runs `pc-control install` (options: -Mode ask|auto|strict|bypass, -AllowReads, -Editable)
 ```
 
-From a checkout of this repository you can use the script instead (it installs the package and runs `pc-control install`):
+Or by hand, without cloning:
 
 ```powershell
-.\install.ps1                  # add -Mode ask|auto|strict|bypass, -AllowReads, -Editable
+pip install git+https://github.com/VortexJer/PC-Control.git
+pc-control install
 ```
 
 What `pc-control install` does (and nothing else):
@@ -32,7 +36,7 @@ What `pc-control install` does (and nothing else):
 |---|---|
 | Registers the MCP server as **PC-Control** (`mcp__PC-Control__*`) | `claude mcp add` (scope `user` by default) |
 | Writes the usage skill | `~/.claude/skills/pc-control/SKILL.md` |
-| Adds a short managed block pointing to the skill | `~/.claude/CLAUDE.md` (between `<!-- pc-control:start -->` and `<!-- pc-control:end -->`) |
+| Adds a short managed block pointing to the skill | `~/.claude/CLAUDE.md` (between `<!-- pc-control:begin ... -->` and `<!-- pc-control:end -->`) |
 | Registers the permission hooks (`PreToolUse`, `PermissionRequest`) | `~/.claude/settings.json` |
 | Keeps a record of all of the above | `~/.claude/pc-control-install.json` |
 | Backs up your settings before editing them (once) | `~/.claude/settings.json.pc-control-bak` |
@@ -50,11 +54,18 @@ pc-control uninstall           # removes everything install added, and the ~/.pc
 pip uninstall pc-control       # removes the package itself
 ```
 
-or, from a checkout, `.\uninstall.ps1` (does both; add `-KeepData` to keep `~/.pc-control`, `-KeepPackage` to keep the package).
+or, from the checkout, `.\uninstall.ps1` (does both; add `-KeepData` to keep `~/.pc-control`, `-KeepPackage` to keep the package).
 
 `pc-control uninstall` is exact: it uses the record written by `install`, so it removes the MCP registration, the skill folder, the
 managed block in `CLAUDE.md` (the file itself is deleted only if `install` created it and nothing else is in it), our hooks, any
 read permissions it added, the settings backup and the data folder. Skills, hooks, permissions and notes that are not ours are left untouched.
+
+## Cost
+
+`look` chooses by cost: it estimates what the text would cost and what an image of the window would cost (about `ceil(width/28) * ceil(height/28)`
+tokens at the size it would send, which adapts to your monitor) and sends the cheaper one, never empty text and never text that does not
+cover the window. After an action it sends only what changed. In one measured Word window, the UI-tree text cost 713 tokens against 851 for the screenshot;
+a minimized window is read as text only.
 
 ## Permission modes
 
@@ -173,7 +184,6 @@ python tests/test_drag.py         # drag / draw
 python tests/test_menu.py         # menu entries pressed through accessibility
 python tests/test_menu_real.py    # ... against a real Windows menu
 python tests/test_cli.py          # install / uninstall / status / pause
-python tests/test_html.py         # docs sanity
 python tests/test_hygiene.py      # license, README, no personal data
 ```
 
