@@ -39,7 +39,7 @@ MAIN = ThreadPoolExecutor(1, thread_name_prefix="pc-control-main", initializer=_
 
 
 def tool(fn):
-    """Registra la herramienta y devuelve al modelo el error REAL (y lo guarda en ~/.pc-control/last_error.log)."""
+    """Registra la herramienta y devuelve al modelo el error REAL (y guarda SOLO el ultimo en ~/.pc-control/last_error.log; se sobrescribe y se borra tras un dia)."""
     @functools.wraps(fn)
     def wrapper(*a, **k):
         try:
