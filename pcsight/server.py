@@ -132,11 +132,14 @@ def look(window: str, mode: str = "auto"):
 
 
 @tool
-def click(window: str, target: str, right: bool = False, double: bool = False) -> str:
-    """Click an element id from look(), or 'x,y' in the pixels of the last image. Does not move the mouse or change focus. Returns what changed."""
+def click(window: str, target: str, right: bool = False, double: bool = False, confirm: bool = False) -> str:
+    """Click an element id from look(), or 'x,y' in the pixels of the last image. Does not move the mouse or change focus. Delicate actions (pay, delete, send, install) need confirm=true after asking the user. Returns what changed."""
     def run(hidden):
         hwnd = _gate(window, act=True)
         t = tuple(int(float(v)) for v in target.split(",")) if "," in target else int(target)
+        if isinstance(t, int):
+            it = core._state.get(hwnd, {}).get("items", {}).get(t)
+            policy.check_click(policy.mode(), it.name if it else "", confirm)
         return _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double))
     return _on(window, run)
 
