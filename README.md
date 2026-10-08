@@ -123,7 +123,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 - **Word:** Claude has its own insertion point (a hidden bookmark that follows the text if you edit before it). It writes there through COM
   and the answer says in which paragraph and after which words. The formatting buttons (bold, italic, alignment...) apply to what Claude
-  writes, never to your selection. In Word `key` only offers `enter`, `space` and `backspace`, acting at Claude's own insertion point.
+  writes, never to your selection. The Styles gallery (Heading 1, Normal, Strong...) works the same way: a style is Claude's own and is applied only to the new paragraph it starts (never to a paragraph of yours; if the text lands in one of yours, the answer says so). In Word `key` only offers `enter`, `space` and `backspace`, acting at Claude's own insertion point.
 - **Your mouse:** if you are holding a mouse button (dragging, selecting), Claude waits for you to release it instead of breaking your gesture.
 - **Your keyboard:** a key press waits until you stop typing, so it never lands in the middle of your word.
 - **Right click** opens the app's real context menu, which closes with any click of yours, so Claude only opens it when you have been idle

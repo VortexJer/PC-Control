@@ -17,6 +17,8 @@ class Doc:
         self.text = text + "\r"                                      # a Word document always ends with a paragraph mark
         self.fmt = [dict.fromkeys(FMT, 0) for _ in self.text]
         self.align = [0] * len(self.text)
+        self.pstyle = ["Normal"] * len(self.text)                      # paragraph style of each character
+        self.cstyle = [None] * len(self.text)
         self.marks = {}                                              # collapsed bookmarks: name -> position
         self.sel = [0, 0]                                            # the USER's selection
         self.busy = 0
@@ -27,6 +29,7 @@ class Doc:
         self.text = self.text[:p] + s + self.text[p:]
         self.fmt[p:p] = [dict(self.fmt[max(0, p - 1)]) for _ in s]   # inherits the previous character's format, like Word
         self.align[p:p] = [self.align[max(0, p - 1)]] * len(s)
+        self.pstyle[p:p] = [self.pstyle[max(0, p - 1)]] * len(s); self.cstyle[p:p] = [None] * len(s)
         for k, v in self.marks.items():
             if v > p: self.marks[k] = v + len(s)
         for i in (0, 1):
@@ -34,10 +37,14 @@ class Doc:
 
     def delete(self, a, b):
         n = b - a
-        self.text = self.text[:a] + self.text[b:]; del self.fmt[a:b]; del self.align[a:b]
+        self.text = self.text[:a] + self.text[b:]; del self.fmt[a:b]; del self.align[a:b]; del self.pstyle[a:b]; del self.cstyle[a:b]
         for k, v in self.marks.items(): self.marks[k] = a if a < v <= b else (v - n if v > b else v)
 
     def Range(self, a, b): return R(self, a, b)
+    def Styles(self, name):
+        kinds = {"Heading 1": 1, "Normal": 1, "Title 1": 1, "Strong": 2}
+        if name not in kinds: raise pywintypes.com_error(-2147352567, "no such style", None, None)
+        return type("Style", (), {"Type": kinds[name]})()
     def ComputeStatistics(self, kind): return len(self.text.split())
 
 
@@ -54,9 +61,20 @@ class Bookmarks:
 
 class FontProxy:
     def __init__(self, r): object.__setattr__(self, "r", r)
+    def Reset(self):
+        for i in range(self.r.start, self.r.end): self.r.doc.fmt[i] = dict.fromkeys(FMT, 0)
     def __setattr__(self, name, val):
         key = {"Bold": "bold", "Italic": "italic", "Underline": "underline", "StrikeThrough": "strike", "Subscript": "sub", "Superscript": "super"}[name]
         for i in range(self.r.start, self.r.end): self.r.doc.fmt[i][key] = int(val)
+
+
+class Para:
+    def __init__(self, r): object.__setattr__(self, "r", r)
+    def __setattr__(self, name, val):
+        d, t = self.r.doc, self.r.doc.text
+        a = t.rfind("\r", 0, self.r.start) + 1
+        b = t.find("\r", max(self.r.end - 1, self.r.start)) + 1
+        for i in range(a, b): d.pstyle[i] = val
 
 
 class PF:
@@ -73,6 +91,11 @@ class R:
     Start = property(lambda s: s.start); End = property(lambda s: s.end)
     Text = property(lambda s: s.doc.text[s.start:s.end])
     Font = property(lambda s: FontProxy(s)); ParagraphFormat = property(lambda s: PF(s))
+    def Paragraphs(self, i): return Para(self)
+    def __setattr__(self, name, val):
+        if name == "Style":
+            for i in range(self.start, self.end): self.doc.cstyle[i] = val
+        else: object.__setattr__(self, name, val)
     def InsertAfter(self, s):
         if self.doc.busy > 0:                                        # Word is busy serving the user
             self.doc.busy -= 1
@@ -185,6 +208,36 @@ c["backspace: never deletes the user's text or what Claude did not type"] = "did
 m = core.key(str(H), "left")
 c["arrows in Word: not sent (they would move the user's caret)"] = m.startswith("did not press") and "YOUR caret" in m
 core.win32gui.GetClassName = real_cls
+
+# 11) styles from the ribbon gallery (Heading 1, Normal, Strong): Claude's own, never applied to the user's paragraph
+class Gal:
+    ClassName = "NetUIGalleryButton"; AutomationId = ""
+    def __init__(self, name): self.Name = name
+d = fresh("User paragraph.")
+word.type_text(H, "\r"); d.sel[:] = [3, 3]                                           # a new empty paragraph of Claude's; the user's caret elsewhere
+m = word.format_click(H, "", Gal("Heading 1"))
+c["gallery style: recorded as Claude's style (not pressed)"] = m is not None and "style «Heading 1»" in m and word.state(H)["style"] == "Heading 1"
+word.type_text(H, "My heading")
+i_head = d.text.index("My heading")
+c["a style goes to Claude's NEW paragraph"] = d.pstyle[i_head] == "Heading 1"
+c["... and not to the user's paragraph"] = d.pstyle[0] == "Normal" and d.pstyle[len("User paragraph.") - 1] == "Normal"
+c["... the user's selection is untouched"] = d.sel == [3, 3]
+word.format_click(H, "", Gal("¶ Normal"))
+word.type_text(H, "\rBody text")
+i_body = d.text.index("Body text")
+c["Normal (with the pilcrow of the gallery) brings the next paragraph back to Normal"] = d.pstyle[i_body] == "Normal" and d.pstyle[i_head] == "Heading 1"
+c["a gallery item that is not a style of the document is not swallowed (the normal click goes on)"] = word.format_click(H, "", Gal("Not a style")) is None
+c["a control that is not a gallery button is ignored"] = word.format_click(H, "", type("X", (), {"ClassName": "Other", "AutomationId": "", "Name": "Heading 1"})()) is None
+# a paragraph style needs a NEW paragraph: typing inside an existing user paragraph leaves it alone and says so
+d = fresh("User paragraph.")
+word.format_click(H, "", Gal("Heading 1"))
+mm = word.type_text(H, " extra words")
+c["style + text into an EXISTING user paragraph: the paragraph is NOT restyled and the answer says why"] = d.pstyle[0] == "Normal" and "was NOT applied" in mm and "press enter first" in mm
+# a character style (Strong) applies to the typed text only
+d = fresh("User paragraph.")
+word.format_click(H, "", Gal("Strong")); word.type_text(H, " bold bit")
+i_s = d.text.index(" bold bit")
+c["character style: applied to what Claude typed only"] = d.cstyle[i_s] == "Strong" and d.cstyle[0] is None
 
 bad = [k for k, v in c.items() if not v]
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)

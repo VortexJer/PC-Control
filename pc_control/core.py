@@ -677,7 +677,7 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if it.ctrl is not None and not right and not double and win32gui.GetClassName(hwnd) == "OpusApp":
             try:                                                  # formatting buttons: AutomationId (does not depend on the language)
                 from . import word
-                done = word.format_click(hwnd, it.ctrl.AutomationId)
+                done = word.format_click(hwnd, it.ctrl.AutomationId, it.ctrl)
                 if done:
                     return done
             except Exception:
