@@ -1,21 +1,47 @@
 """pcsight MCP server: lets an AI look at and operate Windows apps without stealing focus or moving the mouse.
 
+Where apps live
+  * Apps opened with open_app() run on a hidden Windows desktop: they never appear on your screen, never
+    flicker, never take focus. Apps you already have open are only observed/operated through window messages.
+
 Safety model
   * look()      works on any window except the deny-list (password managers, terminals, ...).
   * click/type/key/open_app only work on apps you explicitly allow:
         env PCSIGHT_ALLOW="notepad,winword"     or     ~/.pcsight/allow.txt (one process name per line)
   * Create the file ~/.pcsight/PAUSE (or set PCSIGHT_PAUSE=1) to make every tool refuse instantly.
-  * Nothing here ever focuses a window, moves your mouse or injects keystrokes; new windows go to the back.
+  * Nothing here ever focuses a window, moves your mouse or injects keystrokes.
 """
-import ctypes, ctypes.wintypes as wt, os, shlex, time
+import ctypes, ctypes.wintypes as wt, functools, os, shlex, time, traceback
 import win32gui, win32process
-from mcp.server.fastmcp import FastMCP, Image
+try:                                              # mcp >= 2
+    from mcp.server.mcpserver import MCPServer as FastMCP, Image
+    from mcp.server.mcpserver.exceptions import ToolError
+except ImportError:                               # mcp 1.x
+    from mcp.server.fastmcp import FastMCP, Image
+    from mcp.server.fastmcp.exceptions import ToolError
 from . import core
+from .hidden import DESK
 
 HOME = os.path.join(os.path.expanduser("~"), ".pcsight")
 DENY = {"keepass", "keepassxc", "bitwarden", "1password", "lastpass", "dashlane", "windowsterminal", "cmd",
         "powershell", "pwsh", "conhost", "mmc", "regedit", "taskmgr", "claude"}
 mcp = FastMCP("pcsight")
+
+
+def tool(fn):
+    """Registra la herramienta y devuelve al modelo el error REAL (y lo guarda en ~/.pcsight/last_error.log)."""
+    @functools.wraps(fn)
+    def wrapper(*a, **k):
+        try:
+            return fn(*a, **k)
+        except ToolError:
+            raise
+        except Exception as e:
+            os.makedirs(HOME, exist_ok=True)
+            with open(os.path.join(HOME, "last_error.log"), "a", encoding="utf-8") as f:
+                f.write(f"{time.strftime('%F %T')} {fn.__name__}\n{traceback.format_exc()}\n")
+            raise ToolError(f"{type(e).__name__}: {e}")
+    return mcp.tool()(wrapper)
 
 
 def _proc(hwnd):
@@ -55,73 +81,109 @@ def _gate(window, act):
     return hwnd
 
 
-def _after(hwnd, result):
-    """Respuesta barata tras actuar: resultado + solo lo que cambio. Los dialogos nuevos van al fondo."""
+def _is_hidden(window):
+    """Si la ventana vive en el escritorio oculto, todo se ejecuta en su hilo."""
+    if not DESK.h:
+        return False
+    try:
+        core.find_window(window); main_has = True
+    except LookupError:
+        main_has = False
+    return DESK.owns(window, main_has)
+
+
+def _on(window, fn):
+    return DESK.run(lambda: fn(True)) if _is_hidden(window) else fn(False)
+
+
+def _act(hwnd, hidden, fn):
+    """Ejecuta la accion; responde con el resultado y solo lo que cambio. En el escritorio de usuario, las ventanas
+    NUEVAS que salgan se aparcan (salvo que el usuario las este usando)."""
+    before = set(core.top_windows())
+    result = fn()
     time.sleep(0.25)
-    core.tuck_process(win32process.GetWindowThreadProcessId(hwnd)[1])
+    if not hidden:
+        core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
     return f"{result} | cambio: {core.changes(str(hwnd))}"
 
 
-@mcp.tool()
+@tool
 def windows() -> str:
-    """List open windows as 'hwnd | process | title'."""
+    """List open windows as 'hwnd | process | title'. '(oculta)' = lives on pcsight's hidden desktop."""
     _paused()
     out = []
     for h in core.top_windows():
         p = _proc(h)
         if p not in DENY:
             out.append(f"{h} | {p} | {win32gui.GetWindowText(h)[:50]}")
+    if DESK.h:
+        for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK.windows()]):
+            out.append(f"{h} | {p} | {t[:50]} (oculta)")
     return "\n".join(out)
 
 
-@mcp.tool()
+@tool
 def look(window: str, mode: str = "auto"):
     """See a window WITHOUT focusing it. Picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks. Elements are [id:name]; use the id with click/type. window = title substring or hwnd. mode: auto|image|uia."""
-    hwnd = _gate(window, act=False)
-    r = core.look(str(hwnd), mode)
-    head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "")
-    if r["mode"] == "image":
-        return [head + f" | image {r['image_size']}: numbered marks = ids; x,y = image pixels", Image(path=r["image"])]
-    return head + "\n" + (r.get("text") or "")
+    def run(hidden):
+        hwnd = _gate(window, act=False)
+        r = core.look(str(hwnd), mode)
+        head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "")
+        if r["mode"] == "image":
+            return [head + f" | image {r['image_size']}: numbered marks = ids; x,y = image pixels", Image(path=r["image"])]
+        return head + "\n" + (r.get("text") or "")
+    return _on(window, run)
 
 
-@mcp.tool()
+@tool
 def click(window: str, target: str, right: bool = False, double: bool = False) -> str:
     """Click an element id from look(), or 'x,y' in the pixels of the last image. Does not move the mouse or change focus. Returns what changed."""
-    hwnd = _gate(window, act=True)
-    t = tuple(int(float(v)) for v in target.split(",")) if "," in target else int(target)
-    return _after(hwnd, core.click(str(hwnd), t, right, double))
+    def run(hidden):
+        hwnd = _gate(window, act=True)
+        t = tuple(int(float(v)) for v in target.split(",")) if "," in target else int(target)
+        return _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double))
+    return _on(window, run)
 
 
-@mcp.tool()
+@tool
 def type(window: str, target: str, text: str, replace: bool = False) -> str:
     """Type text into the element id (from look()). Appends, or replaces with replace=true. Id is required: no blind typing. Returns what changed."""
-    hwnd = _gate(window, act=True)
-    return _after(hwnd, core.type_text(str(hwnd), text, int(target), replace))
+    def run(hidden):
+        hwnd = _gate(window, act=True)
+        return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, int(target), replace))
+    return _on(window, run)
 
 
-@mcp.tool()
+@tool
 def key(window: str, name: str) -> str:
     """Press a single key (enter, tab, esc, up, down, left, right, backspace, delete, home, end, pgup, pgdn, space). Shortcuts are unsupported."""
-    hwnd = _gate(window, act=True)
-    return _after(hwnd, core.key(str(hwnd), name))
+    def run(hidden):
+        hwnd = _gate(window, act=True)
+        return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
+    return _on(window, run)
 
 
-@mcp.tool()
-def open_app(command: str) -> str:
-    """Launch an allowed app minimized, un-focused and at the back of every window. Then use windows()/look()."""
+@tool
+def open_app(command: str, visible: bool = False) -> str:
+    """Launch an allowed app on a hidden desktop (never shown, no flicker, no focus). Then use windows()/look(). visible=true opens it on the user's desktop but parked off-screen instead."""
     _paused()
     exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
     if exe in DENY or exe not in _allowed():
         raise PermissionError(f"abrir '{exe}' no esta permitido (PCSIGHT_ALLOW o ~/.pcsight/allow.txt).")
-    r = core.open_app(command)
+    if visible:
+        r = core.open_app(command)
+        ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
+        return f"pid {r['pid']} | {ws} | aparcada fuera de pantalla (usa reveal para verla)"
+    r = DESK.open(command)
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
-    return f"pid {r['pid']} | {ws} | foco_intacto={r['foco_intacto']}"
+    return f"pid {r['pid']} | {ws} | en el escritorio oculto"
 
 
-@mcp.tool()
+@tool
 def reveal(window: str) -> str:
-    """Bring a window that pcsight parked off-screen back to where it was (without focusing it). Only on the user's request."""
+    """Bring a window that pcsight parked off-screen (open_app visible=true) back where it was, without focusing it. Only on the user's request."""
+    if _is_hidden(window):
+        return "las apps del escritorio oculto no se pueden mover a tu pantalla; usa look() para verlas, o open_app(visible=true)"
     hwnd = _gate(window, act=True)
     return "ok (vuelve a su sitio)" if core.unpark(hwnd) else "esa ventana no estaba aparcada por pcsight"
 
