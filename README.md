@@ -134,9 +134,9 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | Tool | What it does |
 |---|---|
 | `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)`. |
-| `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. |
-| `click` | Clicks an element id (or `x,y` of the last image); `right` and `double` supported. |
-| `type` | Types into an element id (append, or `replace`). |
+| `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). |
+| `click` | Clicks an element id (or `x,y` of the last image); `right` and `double` supported. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
+| `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. |
 | `drag` | Holds the button and drags through points (freehand, line, rectangle, ellipse) using mouse messages: no real mouse, no focus. Apps with modern canvases may ignore it. |
 | `key` | One key at a time (`enter`, `tab`, `esc`, arrows, ...). No shortcuts. |
 | `open_app` | Launches an app minimized, or on a hidden desktop. |

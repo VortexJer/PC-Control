@@ -227,6 +227,10 @@ def verdict(result, delta):
         return "menu entry pressed through accessibility (the menu closes or opens the submenu: check with look)"
     if "Claude format" in result:
         return "format noted for what Claude types"
+    if "WARNING: the field does NOT contain" in result:
+        return "WARNING: the typed text is not in the field; check with look"
+    if "the field now contains the text" in result:
+        return "typing confirmed by reading the field back"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
     if delta.startswith("the window is gone"):
