@@ -5,16 +5,21 @@ interfiere con tu raton ni tu teclado. Nace ya con el estilo "sin activar" y sol
 (Tk, por ejemplo, activa su ventana al crearla y te quitaria el foco: por eso es Win32 puro).
 Solo se dibuja cuando el usuario esta en la ventana que se esta manejando (modo `user`, por defecto);
 `always` lo dibuja siempre que la ventana sea visible; `off` lo desactiva. Variable de entorno: PCSIGHT_CURSOR=user|always|off
+
+Los tamanos se adaptan a la pantalla: el puntero escala con el DPI de la ventana (como el cursor de Windows) y la barra
+con la altura de la linea de texto, nunca un tamano fijo.
 """
 import ctypes, ctypes.wintypes as wt, os, queue, threading, time
 import numpy as np
 from PIL import Image, ImageDraw
 
 ORANGE, WHITE = (255, 122, 26, 255), (255, 255, 255, 255)
-SIZE, HOT = 80, 40                                    # la punta del puntero esta en el centro de la ventana
+SIZE, HOT = 144, 72                                   # lienzo holgado: cabe el puntero y su anillo hasta ~2,5x de escala
 EX = 0x00080000 | 0x00000020 | 0x08000000 | 0x00000080 | 0x00000008   # LAYERED | TRANSPARENT | NOACTIVATE | TOOLWINDOW | TOPMOST
 TITLE = "pcsight-cursor"
 SS = 4                                                # supermuestreo para suavizar los bordes
+ARROW = [(0, 0), (0, 19), (5, 15), (8, 22), (12, 20), (9, 14), (15, 14)]   # puntero clasico, en pixeles a 96 dpi
+ARROW_K = 0.78                                        # el puntero de Claude es algo mas discreto que el de Windows
 
 
 def mode():
@@ -27,6 +32,24 @@ def should_show(m, is_iconic, is_visible_on_screen, user_is_on_it):
     if m == "off" or is_iconic or not is_visible_on_screen:
         return False
     return True if m == "always" else bool(user_is_on_it)
+
+
+def scale_for(hwnd=0):
+    """Escala de la pantalla de esa ventana (1.0 = 96 dpi, 1.5 = 144 dpi...). Es lo que adapta el tamano del cursor."""
+    try:
+        u = ctypes.windll.user32
+        dpi = u.GetDpiForWindow(hwnd) if hwnd else u.GetDpiForSystem()
+        return max(0.75, min(3.0, (dpi or 96) / 96.0))
+    except Exception:
+        return 1.0
+
+
+def caret_height(element_h, s):
+    """Altura de la barra de escribir: la de una linea de texto, NO la del elemento (una pagina entera de Word no es una linea).
+    Si el elemento es de una linea (un campo, una celda) la barra mide ~70% de el; si es grande, una linea normal."""
+    one_line = 17 * s
+    h = 0.7 * element_h if 0 < element_h <= 48 * s else one_line
+    return int(round(max(12 * s, min(32 * s, h))))
 
 
 # ---------- dibujo ----------
@@ -43,22 +66,25 @@ def _canvas():
     return im, ImageDraw.Draw(im)
 
 
-def render_arrow(ring=0):
+def render_arrow(s=1.0, ring=0):
     im, d = _canvas()
+    k = ARROW_K * s
     if ring:                                          # anillo del clic centrado en la punta
-        r = (4 + ring * 2) * SS
-        d.ellipse([HOT * SS - r, HOT * SS - r, HOT * SS + r, HOT * SS + r], outline=ORANGE, width=3 * SS)
-    pts = [(0, 0), (0, 19), (5, 15), (8, 22), (12, 20), (9, 14), (15, 14)]
-    d.polygon([((HOT + x) * SS, (HOT + y) * SS) for x, y in pts], fill=ORANGE, outline=WHITE, width=SS)
+        r = (3 + ring * 1.6) * s * SS
+        d.ellipse([HOT * SS - r, HOT * SS - r, HOT * SS + r, HOT * SS + r], outline=ORANGE, width=max(2, round(2.2 * s * SS)))
+    d.polygon([((HOT + x * k) * SS, (HOT + y * k) * SS) for x, y in ARROW], fill=ORANGE, outline=WHITE, width=max(2, round(1.4 * s * SS)))
     return _bgra(im)
 
 
-def render_caret(h):
+def render_caret(h, s=1.0):
+    """Barra en I: fina, de la altura de una linea, con remates pequenos."""
     im, d = _canvas()
-    x, top, bot = HOT * SS, (HOT - h // 2) * SS, (HOT + h // 2) * SS
-    d.rounded_rectangle([x - 2 * SS, top, x + 2 * SS, bot], radius=SS, fill=ORANGE, outline=WHITE, width=SS // 2)
-    for y in (top, bot):                              # remates de la I
-        d.rounded_rectangle([x - 5 * SS, y - SS, x + 5 * SS, y + SS], radius=SS // 2, fill=ORANGE, outline=WHITE, width=SS // 2)
+    x, top, bot = HOT * SS, (HOT - h / 2) * SS, (HOT + h / 2) * SS
+    half = max(1.0, 0.9 * s) * SS                     # medio grosor (la barra mide ~2 px a 96 dpi)
+    serif = max(2.5, 3.2 * s) * SS
+    d.rounded_rectangle([x - half, top, x + half, bot], radius=half, fill=ORANGE)
+    for y in (top, bot):
+        d.rounded_rectangle([x - serif, y - half, x + serif, y + half], radius=half, fill=ORANGE)
     return _bgra(im)
 
 
@@ -80,13 +106,13 @@ class ClaudeCursor:
         self.hwnd = 0
 
     # -- API (se llama desde cualquier hilo) --
-    def pointer(self, x, y, click=False, ms=300):
+    def pointer(self, x, y, click=False, ms=300, scale=1.0):
         """Mueve el puntero naranja a (x, y) en pantalla con una curva suave y, si click, marca el clic con un anillo."""
-        self._ensure(); self.q.put(("pointer", int(x), int(y), click, ms))
+        self._ensure(); self.q.put(("pointer", int(x), int(y), click, ms, float(scale)))
 
-    def caret(self, x, y, h=24, hold=1.3):
-        """Muestra la barra parpadeante de escritura en (x, y) (centro vertical) durante `hold` segundos."""
-        self._ensure(); self.q.put(("caret", int(x), int(y), int(h), hold))
+    def caret(self, x, y, h=17, hold=1.3, scale=1.0):
+        """Muestra la barra parpadeante de escritura en (x, y) (centro vertical, h px de alto) durante `hold` segundos."""
+        self._ensure(); self.q.put(("caret", int(x), int(y), int(h), hold, float(scale)))
 
     def hide(self):
         if self.thread and self.thread.is_alive():
@@ -123,9 +149,14 @@ class ClaudeCursor:
         hbm = g.CreateDIBSection(memdc, ctypes.byref(bmi), 0, ctypes.byref(bits), None, 0)
         g.SelectObject(memdc, hbm)
         blank = bytes(SIZE * SIZE * 4)
-        frames = {"arrow": render_arrow(), "rings": [render_arrow(r) for r in range(1, 13)]}
+        cache = {}
+        def frame(kind, s, extra=0):
+            key = (kind, round(s * 20), extra)
+            if key not in cache:
+                cache[key] = render_arrow(s, extra) if kind == "arrow" else render_caret(extra, s)
+            return cache[key]
         S = {"shown": False, "img": None, "kind": None, "pos": (None, None), "t0": 0, "dur": 0.3, "from": (0, 0), "to": (0, 0),
-             "click": False, "until": 0.0, "ring": 0, "caret": {}, "last_blink": None}
+             "click": False, "until": 0.0, "ring": 0, "s": 1.0, "caret_h": 17, "last_blink": None}
 
         def present(x, y, data=None):
             if data is not None and data is not S["img"]:
@@ -149,14 +180,17 @@ class ClaudeCursor:
                 while True:
                     cmd = self.q.get_nowait()
                     if cmd[0] == "pointer":
-                        _, x, y, click, ms = cmd
-                        cur = S["pos"] if S["kind"] and S["pos"][0] is not None else (x - 60, y + 40)
-                        S.update(kind="pointer", t0=now, dur=max(ms, 1) / 1000.0, to=(x, y), click=click, ring=0,
+                        _, x, y, click, ms, s = cmd
+                        cur = S["pos"] if S["kind"] and S["pos"][0] is not None else (x - 60 * s, y + 40 * s)
+                        S.update(kind="pointer", t0=now, dur=max(ms, 1) / 1000.0, to=(x, y), click=click, ring=0, s=s,
                                  until=now + max(ms, 1) / 1000.0 + 1.3)
                         S["from"] = cur; S["img"] = None
                     elif cmd[0] == "caret":
-                        _, x, y, hh, hold = cmd
-                        S.update(kind="caret", t0=now, until=now + hold, pos=(x, y), caret={"on": render_caret(hh)}, last_blink=None)
+                        _, x, y, hh, hold, s = cmd
+                        moved = S["kind"] == "caret"
+                        S.update(kind="caret", t0=S["t0"] if moved else now, until=now + hold, pos=(x, y), caret_h=hh, s=s)
+                        if not moved: S["last_blink"] = None
+                        S["img"] = None; S["last_blink"] = None if not moved else S["last_blink"]
                     elif cmd[0] == "hide":
                         hide()
             except queue.Empty:
@@ -170,16 +204,18 @@ class ClaudeCursor:
                 y = (1 - e) ** 2 * y0 + 2 * (1 - e) * e * my + e ** 2 * y1
                 S["pos"] = (x, y)
                 if p >= 1.0 and S["click"] and S["ring"] < 12:
-                    S["ring"] += 1; present(x, y, frames["rings"][S["ring"] - 1])
+                    S["ring"] += 1; present(x, y, frame("arrow", S["s"], S["ring"]))
                 else:
-                    present(x, y, frames["rings"][11] if (p >= 1.0 and S["click"]) else frames["arrow"])
+                    present(x, y, frame("arrow", S["s"], 0))
                 if now > S["until"]:
                     hide()
             elif k == "caret":
                 on = int((now - S["t0"]) * 2.2) % 2 == 0 or now - S["t0"] < 0.25     # parpadea ~2 veces por segundo
-                if on != S["last_blink"]:
-                    S["last_blink"] = on; S["img"] = None
-                    present(*S["pos"], S["caret"]["on"] if on else blank)
+                if on != S["last_blink"] or S["img"] is None:
+                    S["last_blink"] = on
+                    present(*S["pos"], frame("caret", S["s"], S["caret_h"]) if on else blank)
+                else:
+                    present(*S["pos"])                                                  # sigue a la posicion si se movio
                 if now > S["until"]:
                     hide()
             time.sleep(0.012)
