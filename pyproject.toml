@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pc-control"
+version = "0.3.0"
+description = "Let an AI see and operate Windows apps cheaply, without stealing focus or moving your mouse."
+readme = "README.md"
+license = {text = "MIT"}
+requires-python = ">=3.10"
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: Microsoft :: Windows",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Topic :: Software Development :: Libraries",
+]
+authors = [{name = "PC-Control contributors"}]
+keywords = ["mcp", "claude", "automation", "windows", "ui-automation"]
+dependencies = [
+    "mcp>=1.2", "uiautomation>=2.0", "pywin32>=306", "opencv-python-headless>=4.8", "numpy>=1.26", "Pillow>=10",
+    "winrt-runtime", "winrt-Windows.Media.Ocr", "winrt-Windows.Graphics.Imaging", "winrt-Windows.Storage.Streams",
+    "winrt-Windows.Globalization", "winrt-Windows.Foundation", "winrt-Windows.Foundation.Collections",
+]
+
+[project.urls]
+Homepage = "https://github.com/VortexJer/PC-Control"
+Issues = "https://github.com/VortexJer/PC-Control/issues"
+
+[project.scripts]
+pc-control = "pc_control.cli:main"
+pc-control-mcp = "pc_control.server:main"
+
+[tool.setuptools]
+packages = ["pc_control"]
