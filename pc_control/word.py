@@ -134,7 +134,10 @@ def type_text(hwnd, text, replace=False, progress=None):
             time.sleep(0.03)
     _set(doc, START, start); _set(doc, BOOKMARK, pos)
     par = call(lambda: doc.Range(0, start).Text).count("\r") + 1 if start else 1
-    ctx = call(lambda: doc.Range(max(0, start - 28), start).Text).replace("\r", " ¶ ")
+    raw = call(lambda: doc.Range(max(0, start - 28), start).Text)
+    if start > 28 and " " in raw and raw[0] not in " \r":
+        raw = raw[raw.index(" ") + 1:]                                          # el extracto empieza en una palabra entera, no a medias
+    ctx = raw.replace("\r", " ¶ ")
     after = call(doc.ComputeStatistics, 0)
     return (f"ok (Word por COM, en el punto de escritura de Claude: tu seleccion no se toca; palabras {before} -> {after}; "
             f"escrito en el parrafo {par}" + (f" tras «{ctx.strip()}»" if ctx.strip() else " al principio") + ")")
