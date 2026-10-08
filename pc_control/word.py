@@ -74,19 +74,38 @@ def _set(doc, name, pos):
 
 
 def state(hwnd):
-    return _pending.setdefault(hwnd, {"bold": False, "italic": False, "underline": False, "strike": False, "sub": False, "super": False, "align": None})
+    return _pending.setdefault(hwnd, {"bold": False, "italic": False, "underline": False, "strike": False, "sub": False, "super": False,
+                                      "align": None, "style": None, "style_kind": None})
 
 
 def describe(st):
     on = [k for k in ("bold", "italic", "underline", "strike", "sub", "super") if st[k]]
-    return ", ".join(on + ([f"alignment {_ALIGN[st['align']]}"] if st["align"] is not None else [])) or "normal"
+    extra = ([f"alignment {_ALIGN[st['align']]}"] if st["align"] is not None else []) + ([f"style «{st['style']}»"] if st.get("style") else [])
+    return ", ".join(on + extra) or "normal"
 
 
-def format_click(hwnd, automation_id):
+def _style_click(hwnd, ctrl):
+    """An item of the Styles gallery (Heading 1, Normal, Strong...): recorded as Claude's style instead of being applied to the user's paragraph."""
+    try:
+        if ctrl.ClassName != "NetUIGalleryButton":
+            return None
+        name = (ctrl.Name or "").replace("¶", "").strip()
+        w = window(hwnd)
+        if w is None or not name:
+            return None
+        style = call(lambda: w.Document.Styles(name))              # raises if that gallery item is not a style of this document
+        kind = "paragraph" if call(lambda: style.Type) == 1 else "character"
+    except Exception:
+        return None
+    st = state(hwnd); st["style"], st["style_kind"] = name, kind
+    return f"ok (Claude format: style «{name}»; applied to what Claude types in a NEW paragraph, not to your selection)"
+
+
+def format_click(hwnd, automation_id, ctrl=None):
     """A ribbon formatting button: it is recorded for Claude's text (the user's selection is not touched). None if it is not a formatting button."""
     spec = FORMAT_IDS.get(automation_id)
     if not spec:
-        return None
+        return _style_click(hwnd, ctrl) if ctrl is not None else None
     st = state(hwnd)
     if spec[0] == "align":
         st["align"] = spec[1]
@@ -102,6 +121,12 @@ def _format(rng, st):
     for name, val in (("Bold", bool(st["bold"])), ("Italic", bool(st["italic"])), ("Underline", 1 if st["underline"] else 0),
                       ("StrikeThrough", bool(st["strike"])), ("Subscript", bool(st["sub"])), ("Superscript", bool(st["super"]))):
         call(setattr, f, name, val)               # explicit: what Claude types does not inherit the format of the previous text
+
+
+def _apply_style(doc, positions, name):
+    """Give those paragraphs a paragraph style. Only called with NEW Claude paragraphs (or the empty one it types in)."""
+    for p in positions:
+        call(setattr, call(lambda: call(doc.Range, p, p).Paragraphs(1)), "Style", name)
 
 
 def _align(doc, positions, value):
@@ -129,14 +154,31 @@ def type_text(hwnd, text, replace=False, progress=None):
     before_ch = call(lambda: doc.Range(max(0, pos - 1), pos).Text) if pos else "\r"
     after_ch = call(lambda: doc.Range(pos, pos + 1).Text)
     was_empty = before_ch == "\r" and after_ch == "\r"                          # typing into an empty paragraph
+    style_skipped = False
     chunks = [text[i:i + 3] for i in range(0, len(text), 3)] if progress else [text]
     for n, chunk in enumerate(chunks):
         rng = call(doc.Range, pos, pos)
         call(rng.InsertAfter, chunk)
-        _format(rng, st)
+        news = [pos + i + 1 for i, ch in enumerate(chunk) if ch == "\r"]           # paragraphs that START inside the typed text
+        mine = ([pos] if (n == 0 and was_empty) else []) + news                     # paragraphs that are Claude's own (never the user's)
+        sty = st.get("style")
+        if sty and st.get("style_kind") == "paragraph":
+            if mine:
+                _apply_style(doc, mine, sty)
+            else:
+                style_skipped = True                                                # the text went into an existing paragraph: left alone
+            if any(st[k] for k in ("bold", "italic", "underline", "strike", "sub", "super")):
+                _format(rng, st)
+            else:
+                call(rng.Font.Reset)                                                # no direct formatting: the style shows through
+        elif sty:                                                                   # character style (Strong, Emphasis...)
+            call(setattr, rng, "Style", sty)
+            if any(st[k] for k in ("bold", "italic", "underline", "strike", "sub", "super")):
+                _format(rng, st)
+        else:
+            _format(rng, st)
         if st["align"] is not None:
-            news = [pos + i + 1 for i, ch in enumerate(chunk) if ch == "\r"]       # paragraphs that START inside the typed text
-            _align(doc, ([pos] if (n == 0 and was_empty) else []) + news, st["align"])
+            _align(doc, mine, st["align"])
         pos = call(lambda: rng.End)
         _set(doc, BOOKMARK, pos)                                               # the bookmark moves with each chunk
         if progress:
@@ -152,7 +194,8 @@ def type_text(hwnd, text, replace=False, progress=None):
     ctx = raw.replace("\r", " ¶ ")
     after = call(doc.ComputeStatistics, 0)
     return (f"ok (Word through COM, at Claude's insertion point: your selection is not touched; words {before} -> {after}; "
-            f"typed in paragraph {par}" + (f" after «{ctx.strip()}»" if ctx.strip() else " at the beginning") + ")")
+            f"typed in paragraph {par}" + (f" after «{ctx.strip()}»" if ctx.strip() else " at the beginning") + ")"
+            + (f" | the style «{st['style']}» was NOT applied: the text went into an existing paragraph (press enter first to start a new one)" if style_skipped else ""))
 
 
 def backspace(hwnd):
