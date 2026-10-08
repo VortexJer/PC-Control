@@ -143,7 +143,7 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                 v = field_value(c)
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
             items.append(it)
-        if d < 12:
+        if d < 28:                                              # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
             try:
                 stack.extend((ch, d + 1) for ch in reversed(c.GetChildren()))
             except Exception:
@@ -767,6 +767,15 @@ def type_text(query, text, target=None, replace=False, progress=None):
             win32gui.SendMessage(nh, 0x00B1, -1, -1)                     # EM_SETSEL to the end
             win32gui.SendMessage(nh, 0x00C2, 1, text)
             return "ok (EM_REPLACESEL, no focus)" + _read_back(st["items"][target].ctrl, text, False)
+        ctrl = st["items"][target].ctrl
+        if not nh:                                                       # no native edit window (web page, WPF, XAML): UI Automation value
+            try:
+                pat = ctrl.GetValuePattern()
+                if pat and not pat.IsReadOnly:
+                    pat.SetValue(text if replace else (pat.Value or "") + text)
+                    return "ok (UI Automation SetValue, no focus)" + _read_back(ctrl, text, replace)
+            except Exception:
+                pass
         dest = nh or None
     dest = dest or _focus_hwnd(hwnd)
     for ch in text:

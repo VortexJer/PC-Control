@@ -156,6 +156,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
 - Modern Store/XAML apps (Calculator, Paint, Settings) ignore mouse messages sent to a background window. For buttons, PC-Control notices that a click had no visible effect and presses the element through UI Automation `Invoke` (what a screen reader does: no mouse, no focus), and the answer says so. A drawing canvas has no such pattern, so `drag` does nothing there (modern Paint).
 - Store apps also ignore "start minimized": opening Calculator brings it to the front.
+- Chromium browsers (Chrome, Edge) and Electron apps expose the page contents only while their accessibility support is on; if a page shows only the browser's own controls, start it with `--force-renderer-accessibility`. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
 - A minimized window is read through its UI tree only (no capture: it would have to be shown). If that is not enough, relaunch with `hidden=true`.
 - Store (UWP) apps cannot run on a hidden desktop.
