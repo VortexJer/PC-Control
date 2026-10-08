@@ -334,7 +334,12 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
     """Type text into the element id (from look()). Appends, or replaces with replace=true. Id is required: no blind typing. Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
-        it = core._state.get(hwnd, {}).get("items", {}).get(int(target))
+        try:
+            it = core._state.get(hwnd, {}).get("items", {}).get(int(target))
+        except ValueError:
+            it = None
+        if it is None:                                     # no blind typing: the id must come from a look() of this window
+            raise ToolError("unknown id: call look() on this window first and use an id from its answer (typing without a valid id is not allowed)")
         try:
             is_pw = bool(it and it.ctrl is not None and it.ctrl.IsPassword)
         except Exception:

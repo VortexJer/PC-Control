@@ -173,6 +173,7 @@ try:
              "del_no": await call(s, "click", window=hw, target=g("Delete"))}
         await asyncio.sleep(0.3); r["d1"] = S(st)["deletes"]
         ANS["v"] = "accept"; r["del_yes"] = await call(s, "click", window=hw, target=g("Delete"))
+        r["badid"] = await call(s, "type", window=hw, target="9999", text="blind")      # an id that does not come from look(): no blind typing
         r["pw"] = await call(s, "type", window=hw, target=g("Secret"), text="abc")
         await asyncio.sleep(0.4); r["state"] = S(st)
         return r
@@ -181,6 +182,7 @@ try:
     checks["auto: opens and acts without an allowlist"] = (not ra["open"][0]) and (not ra["push"][0])
     checks["auto: a sensitive action requires confirm"] = ra["del_no"][0] and "did NOT give permission" in ra["del_no"][1] and ra["d1"] == 0
     checks["auto: with the user's yes it is executed"] = (not ra["del_yes"][0]) and ra["state"]["deletes"] == 1
+    checks["type with an id that does not come from look() is refused (no blind typing)"] = ra["badid"][0] and "unknown id" in ra["badid"][1] and ra["state"]["text"] == ""
     checks["auto: does not type into a password field"] = ra["pw"][0] and "password" in ra["pw"][1] and ra["state"]["secret"] == ""
     rb = asyncio.run(session({"PC_CONTROL_MODE": "bypass"}, lambda s: modes(s, st4)))
     checks["bypass: no confirmations"] = (not rb["del_no"][0]) and rb["d1"] == 1 and rb["state"]["deletes"] == 2

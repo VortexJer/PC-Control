@@ -85,6 +85,28 @@ r_tb = core.click(str(H), 1)
 c["title-bar button: pressed through Invoke, no mouse message sent"] = r_tb.startswith("ok (UI Automation Invoke") and "title-bar" in r_tb and ctb.log == ["Invoke"] and not posted
 c["in_title_bar: true only for a title-bar child"] = core.in_title_bar(CtrlTB()) and not core.in_title_bar(CtrlOther()) and not core.in_title_bar(object())
 
+
+# ---- fields that are not native edit windows (web pages, WPF, XAML): filled through the UI Automation value ----
+class ValPat:
+    def __init__(self, value="", ro=False): self.Value, self.IsReadOnly = value, ro
+    def SetValue(self, v): self.Value = v
+class CtrlV:
+    IsPassword = False
+    def __init__(self, value="", ro=False): self.pat = ValPat(value, ro)
+    def GetValuePattern(self): return self.pat
+cv = CtrlV("Ana"); item(cv, "Your name", kind="edit")
+r_v = core.type_text(str(H), " y Luis", target=1)
+c["web/WPF field: typed through UI Automation SetValue (append) and read back"] = r_v.startswith("ok (UI Automation SetValue") and cv.pat.Value == "Ana y Luis" and "the field now contains the text" in r_v
+r_r = core.type_text(str(H), "Nuevo", target=1, replace=True)
+c["web/WPF field: replace sets the whole value"] = cv.pat.Value == "Nuevo" and "the field now contains the text" in r_r
+ro = CtrlV("fijo", ro=True); item(ro, "Read only", kind="edit")
+posted_chars = []
+real_pm = core.win32gui.PostMessage; core.win32gui.PostMessage = lambda *a: posted_chars.append(a)
+core._focus_hwnd = lambda h: 1234
+r_ro = core.type_text(str(H), "x", target=1)
+core.win32gui.PostMessage = real_pm
+c["a read-only field is not overwritten (falls back, and says it is unconfirmed)"] = ro.pat.Value == "fijo" and "unconfirmed" in r_ro
+
 # ---- a click that closes the window must not turn into an error ----
 real_isw = core.win32gui.IsWindow
 core.win32gui.IsWindow = lambda h: False
