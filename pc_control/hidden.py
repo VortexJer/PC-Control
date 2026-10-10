@@ -16,6 +16,7 @@ _u.CreateDesktopW.restype = wt.HANDLE
 _u.CreateDesktopW.argtypes = [wt.LPCWSTR, wt.LPCWSTR, ctypes.c_void_p, wt.DWORD, wt.DWORD, ctypes.c_void_p]
 _u.SetThreadDesktop.argtypes = [wt.HANDLE]
 _u.CloseDesktop.argtypes = [wt.HANDLE]
+_k.OpenProcess.restype = wt.HANDLE
 
 
 class _STARTUPINFOW(ctypes.Structure):
@@ -60,6 +61,15 @@ class HiddenDesktop:
         return self.pool.submit(fn).result(timeout=timeout)
 
     def close(self):
+        if self.h and self.pool:                         # apps that re-launch themselves (Store apps) run under another pid: end them too
+            try:
+                own = {p for _, _, p in self.windows()} - set(self.procs) - {os.getpid()}
+            except Exception:
+                own = set()
+            for pid in own:
+                hp = _k.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+                if hp:
+                    _k.TerminateProcess(hp, 0); _k.CloseHandle(hp)
         for pid, hp in list(self.procs.items()):
             _k.TerminateProcess(hp, 0)
             _k.CloseHandle(hp)
@@ -120,3 +130,14 @@ class HiddenDesktop:
 
 
 DESK = HiddenDesktop()
+
+
+def on_hidden_thread():
+    """True if the calling thread runs on PC-Control's hidden desktop (nothing done there can reach the user's screen or focus)."""
+    try:
+        h = _u.GetThreadDesktop(_k.GetCurrentThreadId())
+        buf = ctypes.create_unicode_buffer(256); n = wt.DWORD(0)
+        _u.GetUserObjectInformationW(ctypes.c_void_p(h), 2, buf, 512, ctypes.byref(n))      # UOI_NAME
+        return buf.value.lower().startswith("pc_control")
+    except Exception:
+        return False
