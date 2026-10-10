@@ -253,6 +253,11 @@ def read_text(query, target=None, start=0, length=6000):
                 return out
         except Exception as e:
             return f"could not read the workbook through COM ({e.__class__.__name__}): if the user is editing a cell, Excel refuses until they finish"
+    elif office.is_powerpoint(hwnd):                                        # PowerPoint: every slide and its notes through COM
+        try:
+            text = office.powerpoint_text(hwnd); src = "PowerPoint presentation (COM)"
+        except Exception:
+            text = None
     elif win32gui.GetClassName(hwnd) == "OpusApp":                          # Word: the document through COM
         try:
             from . import word

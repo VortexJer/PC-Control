@@ -161,3 +161,54 @@ def save(hwnd):
         word.call(doc.Save)
         return f"ok (Word document «{word.call(lambda: doc.Name)}» saved through COM; no keys pressed)"
     return None
+
+
+def native_window(hwnd, child_class):
+    """The Office object model of a window, through its child window `child_class` (WM_GETOBJECT + OBJID_NATIVEOM). None if absent."""
+    import pythoncom, win32com.client, win32gui
+    pythoncom.CoInitialize()
+    found = []
+    win32gui.EnumChildWindows(hwnd, lambda h, _: found.append(h) if win32gui.GetClassName(h) == child_class else None, None)
+    for ch in found:
+        lres = win32gui.SendMessage(ch, 0x003D, 0, 0xFFFFFFF0)
+        if lres:
+            return win32com.client.Dispatch(pythoncom.ObjectFromLresult(lres, pythoncom.IID_IDispatch, 0))
+    return None
+
+
+def is_powerpoint(hwnd):
+    import win32gui
+    try:
+        return win32gui.GetClassName(hwnd) == "PPTFrameClass"
+    except Exception:
+        return False
+
+
+def powerpoint_text(hwnd):
+    """Every slide's text (titles, boxes, tables) and its speaker notes, through COM. None if the presentation cannot be reached."""
+    w = native_window(hwnd, "mdiClass")
+    pres = word.call(lambda: w.Presentation) if w is not None else None
+    if pres is None:
+        return None
+    out = []
+    for n in range(1, word.call(lambda: pres.Slides.Count) + 1):
+        sl = word.call(lambda n=n: pres.Slides(n)); out.append(f"--- slide {n} ---")
+        for k in range(1, word.call(lambda: sl.Shapes.Count) + 1):
+            sh = word.call(lambda k=k: sl.Shapes(k))
+            try:
+                if word.call(lambda: sh.HasTextFrame) and word.call(lambda: sh.TextFrame.HasText):
+                    out.append(word.call(lambda: sh.TextFrame.TextRange.Text))
+                elif word.call(lambda: sh.HasTable):
+                    t = word.call(lambda: sh.Table)
+                    for r in range(1, word.call(lambda: t.Rows.Count) + 1):
+                        out.append("\t".join(word.call(lambda r=r, c=c: t.Cell(r, c).Shape.TextFrame.TextRange.Text)
+                                             for c in range(1, word.call(lambda: t.Columns.Count) + 1)))
+            except Exception:
+                continue
+        try:
+            notes = word.call(lambda: sl.NotesPage.Shapes.Placeholders(2).TextFrame.TextRange.Text).strip()
+            if notes:
+                out.append(f"(notes) {notes}")
+        except Exception:
+            pass
+    return "\n".join(out)
