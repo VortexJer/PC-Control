@@ -45,6 +45,7 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
    - `read(window)` gives the WHOLE text of a document, page or editor (in pieces); do not scroll and look page by page to read.
    - `scroll(window, "down", target=id, amount=2)` scrolls by pages, or `top`/`bottom`.
    - `type` on a drop-down or list picks the entry with that text.
+   - Excel: the grid is not in `look`; `read(window)` gives the cells and `type(window, "B3", text)` writes one (`=...` = formula).
    - Keep `look` in mode auto: ask for `mode=image` only when the text really is not enough (an image costs several times more).
 
 ## Rules

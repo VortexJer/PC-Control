@@ -10,7 +10,7 @@ find(query, terms, wait)                  -> only the elements whose text matche
 import ctypes, re, time
 import uiautomation as auto
 import win32api, win32con, win32gui
-from . import core
+from . import core, office
 
 SB = {"up": 0, "down": 1, "pageup": 2, "pagedown": 3, "top": 6, "bottom": 7, "end": 8}      # SB_LINEUP.. SB_TOP/SB_BOTTOM, SB_ENDSCROLL
 _CONTAINERS = {"PaneControl", "DocumentControl", "ListControl", "TreeControl", "DataGridControl", "TableControl", "WindowControl",
@@ -246,6 +246,13 @@ def read_text(query, target=None, start=0, length=6000):
             text = _ctrl_text(it.ctrl); src = f"element «{it.name[:40]}»"
         if text is None:
             text = it.name; src = "element name only (it exposes no text)"
+    elif office.is_excel(hwnd):                                             # Excel: the cells of the sheet through COM
+        try:
+            out = office.read(hwnd, int(start or 0), max(200, min(int(length or 6000), 40000)))
+            if out:
+                return out
+        except Exception as e:
+            return f"could not read the workbook through COM ({e.__class__.__name__}): if the user is editing a cell, Excel refuses until they finish"
     elif win32gui.GetClassName(hwnd) == "OpusApp":                          # Word: the document through COM
         try:
             from . import word
@@ -438,6 +445,13 @@ def shortcut(query, combo_text):
     hwnd = core.find_window(query); combo = norm_combo(combo_text)
     if not combo:
         return "did not press: write the shortcut like ctrl+s, ctrl+shift+n or alt+f4"
+    if win32gui.GetClassName(hwnd) in ("XLMAIN", "OpusApp") and combo in (("ctrl", "s"), ("ctrl", "g")):
+        save_key = office.save_combo(hwnd)
+        if combo == save_key:
+            return office.save(hwnd)
+        if combo == ("ctrl", "s"):
+            return (f"did not press ctrl+s: in this Office (its language) save is {'+'.join(save_key)} and ctrl+s means something else "
+                    f"(underline in Spanish). To save, use {'+'.join(save_key)}.")
     if combo == ("alt", "f4"):
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
         return "ok (close request sent to the window, like alt+f4; if there are unsaved changes the app asks)"

@@ -25,7 +25,7 @@ try:                                              # mcp >= 2
 except ImportError:                               # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image, Context
     from mcp.server.fastmcp.exceptions import ToolError
-from . import actions, core, cursor, envvars, perm, policy
+from . import actions, core, cursor, envvars, office, perm, policy
 from .hidden import DESK
 
 NOTICE_SECONDS = 10.0                 # how long the notice banner lasts, and how long to wait for the user to put the window back as it was
@@ -290,6 +290,8 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
             return actions.find(str(hwnd), find, wait)
         r = core.look(str(hwnd), mode)
         head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "")
+        if office.is_excel(hwnd):                          # the grid is not in the UI tree: say how to reach the cells
+            head += "\n" + office.summary(hwnd)
         if r["mode"] == "image":
             return [head + f" | image {r['image_size']}: numbered marks = ids; x,y = image pixels", Image(path=r["image"])]
         return head + "\n" + (r.get("text") or "")
@@ -333,9 +335,12 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
 
 @tool
 def type(window: str, target: str, text: str, replace: bool = False, confirm: bool = False) -> str:
-    """Type text into the element id (from look()). Appends, or replaces with replace=true. On a drop-down or list it selects the entry with that text. Id is required: no blind typing. Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
+    """Type text into the element id (from look()). Appends, or replaces with replace=true. On a drop-down or list it selects the entry with that text. Id is required: no blind typing. In Excel, target can be a cell address (B3, Sheet2!A1; '=...' writes a formula). Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
+        if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
+            policy.check_type(policy.mode(), str(target), False)
+            return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
         try:
             it = core._state.get(hwnd, {}).get("items", {}).get(int(target))
         except ValueError:

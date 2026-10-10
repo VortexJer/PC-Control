@@ -137,11 +137,11 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)`. |
 | `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). `find="Save|Cancel"` returns only the matching elements, also those scrolled out of view; `find="!Loading"` with `wait=10` waits until that text is gone. |
 | `click` | Clicks an element id (or `x,y` of the last image); `right` and `double` supported. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
-| `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. On a drop-down or list (classic, WinForms, web `<select>`) it picks the entry with that text, and the app's change event fires. |
+| `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. On a drop-down or list (classic, WinForms, web `<select>`) it picks the entry with that text, and the app's change event fires. In Excel the target can be a cell address (`B3`, `Sheet2!A1`): numbers stay numbers, `=...` is a formula, and the answer says what the cell now shows. |
 | `drag` | Holds the button and drags through points (freehand, line, rectangle, ellipse) using mouse messages: no real mouse, no focus. Apps with modern canvases may ignore it. |
 | `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
-| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. Never reads password fields. |
+| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). Never reads password fields. |
 | `open_app` | Launches an app minimized, or on a hidden desktop. |
 
 ## Adapts to your PC
@@ -154,6 +154,8 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Multi-monitor setups and negative coordinates are handled.
 
 ## Known limits
+
+- Excel and Word are reached through COM from their own window: Claude writes cells by address and text at its own insertion point, never through your selection. While you are editing a cell Excel refuses COM calls; PC-Control retries for a few seconds and then says so. Save (`ctrl+s`, or `ctrl+g` in a Spanish Office, where `ctrl+s` is underline) only works for files that already have a name.
 
 - Shortcuts work only where the app exposes them as a command (a classic menu, a menu entry or element with that shortcut, or a text box). Modern menus (WinUI, WPF) only exist while open, so they are searched only for apps on the hidden desktop: opening them on your desktop could take the focus.
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
@@ -189,6 +191,7 @@ python tests/test_drag.py         # drag / draw
 python tests/test_menu.py         # menu entries pressed through accessibility
 python tests/test_menu_real.py    # ... against a real Windows menu
 python tests/test_more.py         # scroll, read, shortcuts, drop-downs, find and wait
+python tests/test_excel.py        # Excel: read and write cells, formulas, save (skipped without Excel)
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
 python tests/test_cli.py          # install / uninstall / status / pause
