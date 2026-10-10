@@ -10,6 +10,7 @@ An MCP server for Claude Code (and any MCP client). Early version: it works, but
 - **Acts on a window without focusing it.** Clicks and typing go straight to the control (`BM_CLICK`, `EM_REPLACESEL`, UI Automation patterns...).
   Nothing in the package calls `SetForegroundWindow`, `SendInput`, `keybd_event` or `SetCursorPos` (a test scans the code for them).
 - **Answers with only what changed** after each action, not the whole screen again, and says whether the action had a visible effect.
+- **Does what people ask for, still without focus.** Scroll, read a whole document or page, keyboard shortcuts, drop-downs, find an element (even scrolled out of view) and wait for something to appear.
 - **Opens apps out of your way.** `open_app` starts the app minimized (nothing on screen, no focus, its button in the taskbar), or on a hidden desktop with `hidden=true`.
 - **Lets you keep working.** You and Claude can use the same app at the same time (see [You and Claude in the same app](#you-and-claude-in-the-same-app)).
 
@@ -134,11 +135,13 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | Tool | What it does |
 |---|---|
 | `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)`. |
-| `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). |
+| `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). `find="Save|Cancel"` returns only the matching elements, also those scrolled out of view; `find="!Loading"` with `wait=10` waits until that text is gone. |
 | `click` | Clicks an element id (or `x,y` of the last image); `right` and `double` supported. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
-| `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. |
+| `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. On a drop-down or list (classic, WinForms, web `<select>`) it picks the entry with that text, and the app's change event fires. |
 | `drag` | Holds the button and drags through points (freehand, line, rectangle, ellipse) using mouse messages: no real mouse, no focus. Apps with modern canvases may ignore it. |
-| `key` | One key at a time (`enter`, `tab`, `esc`, arrows, ...). No shortcuts. |
+| `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
+| `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
+| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. Never reads password fields. |
 | `open_app` | Launches an app minimized, or on a hidden desktop. |
 
 ## Adapts to your PC
@@ -152,7 +155,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 ## Known limits
 
-- Single keys only; shortcuts (`ctrl+s`) would need focus, so they are not supported.
+- Shortcuts work only where the app exposes them as a command (a classic menu, a menu entry or element with that shortcut, or a text box). Modern menus (WinUI, WPF) only exist while open, so they are searched only for apps on the hidden desktop: opening them on your desktop could take the focus.
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
 - Modern Store/XAML apps (Calculator, Paint, Settings) ignore mouse messages sent to a background window. For buttons, PC-Control notices that a click had no visible effect and presses the element through UI Automation `Invoke` (what a screen reader does: no mouse, no focus), and the answer says so. A drawing canvas has no such pattern, so `drag` does nothing there (modern Paint).
 - Store apps also ignore "start minimized": opening Calculator brings it to the front.
@@ -185,6 +188,9 @@ python tests/test_input_share.py  # you and Claude working in the same app
 python tests/test_drag.py         # drag / draw
 python tests/test_menu.py         # menu entries pressed through accessibility
 python tests/test_menu_real.py    # ... against a real Windows menu
+python tests/test_more.py         # scroll, read, shortcuts, drop-downs, find and wait
+python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
+python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
 ```
