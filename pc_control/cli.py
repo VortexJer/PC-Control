@@ -31,7 +31,7 @@ description: Use when the user asks you to see, read or operate an app or window
 
 # PC-Control: Claude on the PC
 
-Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `drag`, `key`, `open_app`.
+Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`, `key`, `drag`, `open_app`.
 
 ## Flow
 1. `windows` lists the windows, most recent first. `[IN USE]` = where the user is working right now;
@@ -39,9 +39,18 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `drag`, `key`, `
 2. `look(window)` returns the cheapest thing that works (UI-tree text, OCR, or an image with numbered marks). Elements appear
    as `[id:name]`.
 3. `click(window, id)` and `type(window, id, text)` act by id. They return only what changed: no need to look again.
+4. Cheaper ways to get what you need:
+   - `look(window, find="Save|Cancel")` returns only the matching elements, also those scrolled out of view (click scrolls to them).
+   - `look(window, find="!Loading", wait=15)` waits until that text is gone (or `find="Done", wait=15` until it appears).
+   - `read(window)` gives the WHOLE text of a document, page or editor (in pieces); do not scroll and look page by page to read.
+   - `scroll(window, "down", target=id, amount=2)` scrolls by pages, or `top`/`bottom`.
+   - `type` on a drop-down or list picks the entry with that text.
+   - Keep `look` in mode auto: ask for `mode=image` only when the text really is not enough (an image costs several times more).
 
 ## Rules
-- Nothing is focused; the user's mouse and keyboard are never touched. Do not ask for shortcuts (`ctrl+s`): they are not supported.
+- Nothing is focused; the user's mouse and keyboard are never touched. `key` accepts shortcuts (`ctrl+s`), but they run the app's own
+  command instead of pressing keys; shortcuts depend on the app's language (Spanish Notepad saves with `ctrl+g`): if one does not exist,
+  the answer lists the ones the app has.
 - Delicate actions (pay, delete, send, install) and protected windows are asked by PC-Control itself (you cannot answer for the user).
   PC-Control never types into password fields.
 - `open_app` opens the app minimized with its taskbar button; with `hidden=true`, on a hidden desktop. A minimized app is read as text, not as an image.
