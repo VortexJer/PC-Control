@@ -58,9 +58,9 @@ try:
                 await call(s, "click", window="Program Manager", target="1"), await call(s, "type", window="Program Manager", target="1", text="x"),
                 await call(s, "key", window="Program Manager", name="enter"), await call(s, "open_app", command="calc.exe"))
     names, tool_tok, ck, ty, ky, op = asyncio.run(session({"PC_CONTROL_MODE": "strict"}, a))
-    checks["tools"] = names == {"windows", "look", "click", "type", "key", "open_app", "drag"}
+    checks["tools"] = names == {"windows", "look", "click", "type", "key", "open_app", "drag", "scroll", "read"}
     checks["the model has NO confirm parameter (it cannot grant itself permissions)"] = "confirm" not in json.dumps(SCHEMAS)
-    checks["definitions < 1350 tok"] = tool_tok < 1350
+    checks["definitions < 1700 tok (9 tools)"] = tool_tok < 1700
     checks["click blocked without an allowlist"] = ck[0] and "is not allowed" in ck[1]
     checks["type blocked without an allowlist"] = ty[0] and "is not allowed" in ty[1]
     checks["key blocked without an allowlist"] = ky[0] and "is not allowed" in ky[1]

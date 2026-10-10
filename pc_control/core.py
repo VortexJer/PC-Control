@@ -21,7 +21,8 @@ CLICKABLE = {"ButtonControl", "EditControl", "MenuItemControl", "TabItemControl"
              "CheckBoxControl", "ComboBoxControl", "HyperlinkControl", "RadioButtonControl",
              "TreeItemControl", "SplitButtonControl", "DataItemControl"}
 NAMELESS_OK = {"EditControl", "ComboBoxControl", "CheckBoxControl", "RadioButtonControl", "ButtonControl", "SplitButtonControl"}
-TEXTY = CLICKABLE | {"TextControl", "DocumentControl"}
+LISTS = {"ListControl", "TreeControl", "DataGridControl", "TableControl"}       # named lists get an id too: scroll() and type() (select) aim at them
+TEXTY = CLICKABLE | LISTS | {"TextControl", "DocumentControl"}
 
 _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
@@ -158,7 +159,7 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
         if not name and kind in NAMELESS_OK:                     # Chromium drops a field's name once used; icon buttons often have none: keep them
             name = fallback_name(c, kind)
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
-            it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE)
+            it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE or kind in LISTS)
             if kind == "EditControl":
                 v = field_value(c, editable_only=True)
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
@@ -691,6 +692,14 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if not st or target not in st["items"]:
             return "unknown id: call look() first"
         it = st["items"][target]
+        if it.ctrl is not None:
+            from . import actions
+            if actions.scroll_into_view(it.ctrl):                         # out of view (found with look(find=...)): bring it in first
+                rel = None
+            elif not right and actions._off(it):
+                done = actions.press_out_of_view(it)
+                if done:
+                    return done
         if it.ctrl is not None and it.kind == "button" and not right and not double and in_title_bar(it.ctrl):
             done = invoke(query, target, "title-bar buttons are not reachable with client mouse messages")
             if done:
@@ -793,6 +802,15 @@ def type_text(query, text, target=None, replace=False, progress=None):
             win32gui.SendMessage(nh, 0x00C2, 1, text)
             return "ok (EM_REPLACESEL, no focus)" + _read_back(st["items"][target].ctrl, text, False)
         ctrl = st["items"][target].ctrl
+        from . import actions
+        picked = actions.select_option(ctrl, text)                       # drop-down or list: pick the entry with that text
+        if picked:
+            return picked
+        if nh and "combobox" in cls:                                     # editable classic combo: its inner text box
+            inner = win32gui.FindWindowEx(nh, 0, "Edit", None)
+            if inner:
+                win32gui.SendMessage(inner, win32con.WM_SETTEXT, 0, text)
+                return "ok (WM_SETTEXT into the drop-down's text box, no focus)" + _read_back(ctrl, text, True)
         if not nh:                                                       # no native edit window (web page, WPF, XAML): UI Automation value
             try:
                 pat = ctrl.GetValuePattern()
@@ -808,10 +826,11 @@ def type_text(query, text, target=None, replace=False, progress=None):
     return f"ok ({len(text)} characters through WM_CHAR; unconfirmed)"
 
 _VK = {"enter": 0x0D, "tab": 0x09, "esc": 0x1B, "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
-       "backspace": 0x08, "delete": 0x2E, "home": 0x24, "end": 0x23, "pgup": 0x21, "pgdn": 0x22, "space": 0x20}
+       "backspace": 0x08, "delete": 0x2E, "home": 0x24, "end": 0x23, "pgup": 0x21, "pgdn": 0x22, "space": 0x20,
+       **{f"f{i}": 0x6F + i for i in range(1, 13)}}
 
 def key(query, name):
-    """Single keys by message, no focus. Shortcuts (ctrl+s...) are not supported: they would require activating the window."""
+    """Single keys by message, no focus. Shortcuts (ctrl+s...) go through actions.shortcut: the app's own command, never real keys."""
     hwnd = find_window(query); parts = name.lower().split("+")
     if len(parts) == 1 and parts[0] in _VK and win32gui.GetClassName(hwnd) == "OpusApp":
         from . import word                                       # Word: the key would go to the USER's caret; it is done at Claude's point instead
@@ -832,7 +851,8 @@ def key(query, name):
         tgt = _focus_hwnd(hwnd); vk = _VK[parts[0]]
         win32gui.PostMessage(tgt, win32con.WM_KEYDOWN, vk, 0); win32gui.PostMessage(tgt, win32con.WM_KEYUP, vk, 0xC0000001)
         return "ok (key sent by message to the app, at its focus point)"
-    return "not supported: shortcuts would require activating the window and interfering with your keyboard"
+    from . import actions
+    return actions.shortcut(query, name)
 
 
 # ---------- windows always at the back ----------
