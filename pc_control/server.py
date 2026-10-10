@@ -25,7 +25,7 @@ try:                                              # mcp >= 2
 except ImportError:                               # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image, Context
     from mcp.server.fastmcp.exceptions import ToolError
-from . import core, cursor, envvars, perm, policy
+from . import actions, core, cursor, envvars, perm, policy
 from .hidden import DESK
 
 NOTICE_SECONDS = 10.0                 # how long the notice banner lasts, and how long to wait for the user to put the window back as it was
@@ -282,10 +282,12 @@ def windows() -> str:
 
 
 @tool
-def look(window: str, mode: str = "auto", confirm: bool = False):
-    """See a window WITHOUT focusing it. Picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks. Elements are [id:name]; use the id with click/type. window = title substring or hwnd. mode: auto|image|uia. Protected windows (terminal, password manager...) trigger a permission question to the user, asked by PC-Control."""
+def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confirm: bool = False):
+    """See a window WITHOUT focusing it. Picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks (keep mode=auto: image only if text is not enough). Elements are [id:name]; use the id with click/type. window = title substring or hwnd. find="Save|Cancel" returns ONLY the matching elements, also those scrolled out of view (cheapest way to locate something); "!Loading" means until that text is gone; wait=N seconds polls until found. Protected windows trigger a permission question to the user."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
+        if find:
+            return actions.find(str(hwnd), find, wait)
         r = core.look(str(hwnd), mode)
         head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "")
         if r["mode"] == "image":
@@ -331,7 +333,7 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
 
 @tool
 def type(window: str, target: str, text: str, replace: bool = False, confirm: bool = False) -> str:
-    """Type text into the element id (from look()). Appends, or replaces with replace=true. Id is required: no blind typing. Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
+    """Type text into the element id (from look()). Appends, or replaces with replace=true. On a drop-down or list it selects the entry with that text. Id is required: no blind typing. Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         try:
@@ -383,10 +385,28 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 @tool
 def key(window: str, name: str, confirm: bool = False) -> str:
-    """Press a single key (enter, tab, esc, up, down, left, right, backspace, delete, home, end, pgup, pgdn, space). Shortcuts are unsupported. In Word only enter, space and backspace work, and they act at Claude's own insertion point (never the user's caret) and say where. Protected windows trigger a permission question to the user."""
+    """Press a key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, ctrl+shift+n, alt+f4). Shortcuts never press real keys: they run the app's own menu command or the element declaring that shortcut, or the text-box command (ctrl+a/c/x/v/z); if the app exposes none, it says so. In Word only enter, space and backspace, at Claude's own insertion point. Protected windows trigger a permission question to the user."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
+    return _on(window, run)
+
+
+@tool
+def scroll(window: str, direction: str = "down", target: str = "", amount: int = 1, confirm: bool = False) -> str:
+    """Scroll a window, or the element id from look(), by `amount` pages: direction up|down|left|right|top|bottom. No focus, no mouse. Then look again (ids still work)."""
+    def run(hidden):
+        hwnd = _gate(window, False, confirm)
+        return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), target or None, direction, amount))
+    return _on(window, run)
+
+
+@tool
+def read(window: str, target: str = "", start: int = 0, length: int = 6000, confirm: bool = False) -> str:
+    """The WHOLE text of the window's document, web page or editor (also what is scrolled out of view), or of an element id; in pieces: start/length. Cheaper than scrolling and looking. Password fields are never read."""
+    def run(hidden):
+        hwnd = _gate(window, False, confirm)
+        return actions.read_text(str(hwnd), target or None, start, length)
     return _on(window, run)
 
 
