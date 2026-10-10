@@ -6,7 +6,7 @@ type_text(query, text, target=None, replace=False)
 key(query, name, focus=False)
 FIXED RULE: never SetForegroundWindow, keybd_event/SendInput or SetCursorPos. The user keeps working without noticing anything.
 """
-import asyncio, contextlib, ctypes, ctypes.wintypes, io, math, os, subprocess, tempfile, time
+import asyncio, contextlib, ctypes, ctypes.wintypes, io, math, os, subprocess, tempfile, time, unicodedata
 ctypes.windll.shcore.SetProcessDpiAwareness(2)
 import cv2, numpy as np, uiautomation as auto
 import win32api, win32con, win32gui, win32process
@@ -133,15 +133,41 @@ def grab(hwnd, rect):
 # ---------- text extraction ----------
 def fallback_name(c, kind):
     """Label for a control that exposes no Name: its AutomationId, its help text, or the kind (so look() still offers an id to aim at)."""
-    for attr in ("AutomationId", "HelpText"):
+    for attr in ("HelpText", "AutomationId"):
         try:
             v = (getattr(c, attr) or "").strip()
-            if v:
+            if v and not v.startswith("PART_") and not v.isdigit():        # PART_xxx / numbers: internal parts of a control, not a label
                 return v[:40]
         except Exception:
             pass
+    if kind in ("ButtonControl", "SplitButtonControl"):
+        return ""                                                          # an icon button with no label at all: nothing to tell the model
     return "(unnamed " + {"EditControl": "text field", "ComboBoxControl": "dropdown", "CheckBoxControl": "checkbox",
-                          "RadioButtonControl": "radio button", "SplitButtonControl": "button"}.get(kind, "button") + ")"
+                          "RadioButtonControl": "radio button"}.get(kind, "field") + ")"
+
+
+ROW_CELLS = {"EditControl", "TextControl", "ImageControl"}
+
+
+def row_cells(c, name):
+    """A list row whose children are only cells (File Explorer: name, date, type, size): their VALUES joined, so the row reads as one
+    line instead of repeating the column headers. None if the row holds anything else (buttons, toggles): then it is walked as usual."""
+    try:
+        kids = c.GetChildren()
+    except Exception:
+        return None
+    if not kids or len(kids) > 12 or any(k.ControlTypeName not in ROW_CELLS for k in kids):
+        return None
+    parts = []
+    for k in kids:
+        try:
+            v = field_value(k)
+            v = "".join(ch for ch in (v if v is not None else (k.Name or "")) if unicodedata.category(ch) != "Cf").strip()   # LTR/RTL marks
+        except Exception:
+            continue
+        if v and v != name and v not in parts:
+            parts.append(v)
+    return " · ".join(parts)
 
 
 def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
@@ -156,6 +182,8 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
             kind = c.ControlTypeName; name = (c.Name or "").strip(); r = c.BoundingRectangle; off = c.IsOffscreen
         except Exception:
             continue
+        if kind in ("ScrollBarControl", "ThumbControl"):         # "line up", "page down"...: noise in every app; scroll() does that job
+            continue
         if not name and kind in NAMELESS_OK:                     # Chromium drops a field's name once used; icon buttons often have none: keep them
             name = fallback_name(c, kind)
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
@@ -164,6 +192,11 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                 v = field_value(c, editable_only=True)
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
             items.append(it)
+            if kind in ("ListItemControl", "DataItemControl"):
+                cells = row_cells(c, name)
+                if cells is not None:                                  # one line per row: its cells' values, not its headers again
+                    it.value = cells[:80]
+                    continue
         if d < 28:                                              # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
             try:
                 stack.extend((ch, d + 1) for ch in reversed(c.GetChildren()))
@@ -231,7 +264,7 @@ def grid(items, w, h):
     rows = {}
     for it in sorted(items, key=lambda i: (i.rect[1] // max(1, h // rows_n), i.rect[0])):
         r = min(rows_n - 1, it.rect[1] * rows_n // max(1, h)); c = it.rect[0] * cols // max(1, w)
-        tag = (f"[{it.id}:{it.name[:26]}" + (f'="{it.value[:40]}"' if it.value else "") + "]") if it.clickable else it.name[:44]
+        tag = (f"[{it.id}:{it.name[:26]}" + (f'="{it.value[:56]}"' if it.value else "") + "]") if it.clickable else it.name[:44]
         row = rows.setdefault(r, "")
         pad = max(1, c - len(row)) if row else c
         rows[r] = row + " " * pad + tag
