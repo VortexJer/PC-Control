@@ -98,7 +98,7 @@ def find_window(query):
         raise LookupError("no window given: use a title substring or an hwnd from windows()")
     if q.isdigit():
         if not win32gui.IsWindow(int(q)):
-            raise LookupError(f"no window with hwnd {q} (closed?): call windows()")
+            raise LookupError(f"no window with hwnd {q} : it was closed, or the app replaced it (a start-up window often becomes the main one): call windows() to find it again")
         return int(q)
     hits = []
     def cb(h, _):
@@ -554,7 +554,7 @@ def _size(rect):
 
 def moved_note(old, new):
     """If an element moved (the user moved/resized the window and it was laid out again), a sentence saying so; otherwise ''."""
-    if not old or not new or old[0] < -20000:               # read while the window was minimized: its rectangles were off screen, not "moved"
+    if not old or not new or old[0] < -20000 or abs(new[0]) > 20000 or abs(new[1]) > 20000:             # read while the window was minimized: its rectangles were off screen, not "moved"
         return ""
     ox, oy = (old[0] + old[2]) // 2, (old[1] + old[3]) // 2
     nx, ny = (new[0] + new[2]) // 2, (new[1] + new[3]) // 2
@@ -1039,16 +1039,24 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
     before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
     p = subprocess.Popen(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
     found, honored, t0, last = {}, True, time.time(), 0.0
+    family = {p.pid}
+    via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")     # shell:AppsFolder\... (Store apps)
+    next_tree = 0.0
     while time.time() - t0 < wait_s:
+        if time.time() >= next_tree:              # launchers hand the window to a child (wmplayer -> setup_wm, git-gui -> wish)
+            family |= _descendants(family); next_tree = time.time() + 0.1
         mine = []
-        win32gui.EnumWindows(lambda h, _: mine.append(h) if win32gui.IsWindowVisible(h)
-                             and win32process.GetWindowThreadProcessId(h)[1] == p.pid else None, None)
+        win32gui.EnumWindows(lambda h, _: mine.append(h) if win32gui.IsWindowVisible(h) and (
+            win32process.GetWindowThreadProcessId(h)[1] in family
+            or (via_shell and h not in before and win32gui.GetWindowText(h) and win32gui.GetClassName(h) != "PC-Control-Overlay")) else None, None)
         for h in mine:
             if h in before or h in found:
                 continue
             if not win32gui.IsIconic(h) and win32gui.GetWindowText(h):
                 honored = False
-                ctypes.windll.user32.ShowWindow(h, 7)            # the app ignored nCmdShow: minimize without activating
+                # the app ignored nCmdShow: minimize it. If it already took the focus, SW_MINIMIZE (6) hands the focus back to the next
+                # window (the user's); otherwise SW_SHOWMINNOACTIVE (7) leaves the focus where it is.
+                ctypes.windll.user32.ShowWindow(h, 6 if h == win32gui.GetForegroundWindow() else 7)
             found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
         if any(found.values()) and time.time() - last > 0.6:
             break
@@ -1056,6 +1064,24 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
     return {"pid": p.pid, "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
             "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
+
+
+def _exe_of(command):
+    import shlex
+    try:
+        return shlex.split(command, posix=False)[0].strip('"')
+    except (ValueError, IndexError):
+        return ""
+
+
+def _descendants(pids):
+    """Child processes (any depth) of these pids: the window of a launcher often belongs to a process it started."""
+    from .perm import _procs
+    procs = _procs(); out = set(pids); grew = True
+    while grew:
+        new = {pid for pid, (ppid, _) in procs.items() if ppid in out and pid not in out}
+        out |= new; grew = bool(new)
+    return out
 
 
 def app_dir(command):

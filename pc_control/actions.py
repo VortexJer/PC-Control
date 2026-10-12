@@ -642,6 +642,9 @@ def find(query, terms, wait=0.0):
         items = core.walk_uia(hwnd, win32gui.GetWindowRect(hwnd), offscreen_ok=True)
         text_of = lambda i: (i.name + " " + (i.value or "")).lower()
         hits = [i for i in items if any(p in text_of(i) for p in present)]
+        if present and not hits and not win32gui.IsIconic(hwnd):
+            items = items + _ocr_now(hwnd)                       # apps that draw their own text (VS Code, games): read the screen
+            hits = [i for i in items if any(p in text_of(i) for p in present)]
         still = [g for g in gone if any(g in text_of(i) for i in items)]
         ok = (not present or hits) and not still
         if ok or time.time() >= deadline:
@@ -675,6 +678,15 @@ def find(query, terms, wait=0.0):
         head += f" | still present: {', '.join(still)}"
     more = f" (first 25 shown: use more precise words)" if len(hits) > 25 else ""
     return f"{head} | {len(hits)} match(es){more}\n" + "\n".join(lines)
+
+
+def _ocr_now(hwnd):
+    """Text lines read from the window's pixels (Windows OCR), as clickable items with positions inside the window."""
+    try:
+        img = core.grab(hwnd, win32gui.GetWindowRect(hwnd))
+        return core.ocr_items(img) if img is not None else []
+    except Exception:
+        return []
 
 
 def _min_hint(hwnd):
