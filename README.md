@@ -274,3 +274,12 @@ capture, so you can check that PC-Control never takes your focus or input.
 ## License
 
 MIT
+
+## Disclaimer
+
+PC-Control lets an AI assistant operate your computer. The creator of this tool is not responsible for any action Claude (or any other
+model) takes through it, nor for its consequences. Nor is the creator responsible for bugs, errors or unexpected behavior of the tool
+itself (a click or keystroke that lands on the wrong element, a protection that fails, lost or modified data, and so on). The permission
+system reduces risk, it does not remove it. By using PC-Control you accept all the risks, including those of errors in the tool: review
+what you allow, keep backups of anything important, and use it at your own risk. The software is provided "as is", without warranty of
+any kind, as stated in the MIT license.
