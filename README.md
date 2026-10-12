@@ -12,11 +12,11 @@ Windows 10/11, Python 3.10+ and [Claude Code](https://claude.com/claude-code). I
 **Install**
 
 ```powershell
-pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip
+pip install claude-pc-control
 pc-control install
 ```
 
-**Update** (from any earlier version)
+**Update** (from any earlier version, including installs made before the package was renamed)
 
 ```powershell
 pc-control update
@@ -55,13 +55,26 @@ cd PC-Control
 Or by hand, without cloning:
 
 ```powershell
-pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip     # no git needed
+pip install claude-pc-control                                                       # from PyPI
+pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip     # or the latest code from GitHub (no git needed)
 pc-control install
 ```
 
 The package is called **`claude-pc-control`** (before 0.6 it was `pc-control`; the commands `pc-control` and `pc-control-mcp` and the `pc_control`
 code did not change). If you have an older install, do not pip-install over it: run `pc-control update` or `.\install.ps1`, which remove the old
 package first (both install the same files, so removing the old one afterwards would delete the new code).
+
+All the commands:
+
+| Command | What it does |
+|---|---|
+| `pc-control install [--mode ...] [--scope ...] [--allow-reads]` | Registers PC-Control in Claude Code (see the table below). |
+| `pc-control update` | Gets the latest code (git pull for a checkout, otherwise GitHub), then `reinstall`. |
+| `pc-control reinstall` | `install` again with the mode, scope and options recorded by the previous install. |
+| `pc-control uninstall [--keep-data]` | Undoes everything `install` added. |
+| `pc-control status` | Shows whether it is registered, connected, which mode, and whether it is paused. |
+| `pc-control pause` / `pc-control resume` | The kill switch: every tool refuses while paused. |
+| `pc-control serve` | Starts the MCP server (what Claude Code runs; you normally never call it). |
 
 What `pc-control install` does (and nothing else):
 
@@ -88,9 +101,9 @@ From **any** earlier version (including the first one, then called `pcsight`):
 pc-control update            # or .\update.ps1
 ```
 
-It pulls the source if you installed from a git checkout, otherwise installs the latest version from GitHub (first removing the package
+It pulls the source if you installed from a git checkout, otherwise installs the latest code from GitHub (first removing the package
 under its old name `pc-control`, if you have one: it is `claude-pc-control` since 0.6), then runs
-`pc-control install` again with the same mode, scope and options. On the way it removes whatever an earlier version left behind
+`pc-control install` again with the same mode, scope and options, which also registers the current launcher. On the way it removes whatever an earlier version left behind
 (the old `pcsight` server, skill, CLAUDE.md block, hooks, install record and package, and old `ask` rules for PC-Control's tools,
 which would force a dialog on every call), and only that: your own skills, hooks, rules and notes are kept. Then open a new
 Claude Code session.
@@ -284,7 +297,8 @@ python tests/test_unnamed_field.py # fields and buttons without an accessible na
 python tests/test_launcher.py     # a launcher whose window belongs to a child process: found, minimized, focus kept
 python tests/test_identity.py     # what is re-verified before acting (mocks + a real Buy/Sell toggle)
 python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
-python tests/test_cli.py          # install / uninstall / status / pause
+python tests/test_cli.py          # install / uninstall / status / pause, the package rename and its migration
+python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data
 ```
 
