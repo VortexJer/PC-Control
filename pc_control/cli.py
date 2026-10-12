@@ -397,6 +397,28 @@ def run_claude(args):
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
+def server_exe():
+    """Full path of the `pc-control-mcp` launcher pip put next to this Python (its own folder, or the per-user one), or None."""
+    import sysconfig
+    dirs = [sysconfig.get_path("scripts")]
+    try:
+        dirs.append(sysconfig.get_path("scripts", "nt_user"))
+    except KeyError:
+        pass
+    for d in dirs:
+        f = os.path.join(d or "", "pc-control-mcp.exe")
+        if os.path.exists(f):
+            return f
+    return None
+
+
+def server_command(python=None):
+    """What Claude Code runs. By default the `pc-control-mcp` launcher: a program with its own name, which tools that police agents (Guard)
+    can recognize, unlike `python -m ...` (every Python program is `python`). With no launcher, or an explicit python, the module form."""
+    exe = None if python else server_exe()
+    return [exe] if exe else [python or sys.executable, "-m", "pc_control.server"]
+
+
 def install(mode="follow", scope="user", allow_reads=False, runner=run_claude, python=None):
     """Register PC-Control in Claude Code and leave its skill. Returns a list of lines to show."""
     if mode not in ("follow", "auto", "ask", "strict", "bypass"):
@@ -405,7 +427,7 @@ def install(mode="follow", scope="user", allow_reads=False, runner=run_claude, p
     pth = _paths(); log = migrate(runner)                                 # whatever an earlier version left behind goes first
     record = _load(pth["record"], {})
     runner(["mcp", "remove", SERVER_NAME, "-s", scope])                    # idempotent: if it was there, it is redone
-    code, out = runner(["mcp", "add", SERVER_NAME, "-s", scope, "-e", f"PC_CONTROL_MODE={mode}", "-e", "PYTHONUTF8=1", "--", py, "-m", "pc_control.server"])
+    code, out = runner(["mcp", "add", SERVER_NAME, "-s", scope, "-e", f"PC_CONTROL_MODE={mode}", "-e", "PYTHONUTF8=1", "--"] + server_command(python))
     if code != 0:
         raise RuntimeError(f"claude mcp add failed: {out}")
     log.append(f"MCP server registered ({scope}, mode {mode})")

@@ -67,7 +67,7 @@ What `pc-control install` does (and nothing else):
 
 | Step | Where |
 |---|---|
-| Registers the MCP server as **PC-Control** (`mcp__PC-Control__*`) | `claude mcp add` (scope `user` by default) |
+| Registers the MCP server as **PC-Control** (`mcp__PC-Control__*`). It runs the `pc-control-mcp` launcher (full path; a program with its own name, so policy tools can recognize it, unlike `python -m ...`); without a launcher it falls back to `python -m pc_control.server`. An update re-registers it, so old installs switch by themselves | `claude mcp add` (scope `user` by default) |
 | Writes the usage skill | `~/.claude/skills/pc-control/SKILL.md` |
 | Adds a short managed block pointing to the skill | `~/.claude/CLAUDE.md` (between `<!-- pc-control:begin ... -->` and `<!-- pc-control:end -->`) |
 | Registers the permission hooks (`PreToolUse`, `PermissionRequest`) | `~/.claude/settings.json` |

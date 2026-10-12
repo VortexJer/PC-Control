@@ -536,7 +536,8 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         _tr("layout+rel")
         if it is not None and not hidden and rel is None and it.ctrl is not None:
             return "did not press: the element is no longer where it was (or there are several like it now): look again | NOT EXECUTED"
-        if _cursor_wanted(hwnd, hidden):                   # the orange cursor travels to the element and then the click happens
+        if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None):   # an id that was never seen: nothing to travel to, core answers it
+            # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
             cursor.CURSOR.pointer(x, y, click=True, ms=240, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.27)
             x2, y2, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)     # the user may have moved/resized while it was travelling

@@ -126,6 +126,15 @@ try:
         st["permissions"].get("allow") == ["Bash(ls)"] and st["permissions"].get("ask") == ["Bash(git push)"])
     c["migrate: the old install record is removed"] = not os.path.exists(os.path.join(ch, "pcsight-install.json"))
     c["update: detects a git checkout as the source to pull"] = cli._installed()[1] == os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+    # 13b) what Claude Code runs: the `pc-control-mcp` launcher (a name Guard-like tools can recognize), the module form as a fallback
+    exe = cli.server_exe()
+    c["server command: an explicit python always gets the module form"] = cli.server_command("PY") == ["PY", "-m", "pc_control.server"]
+    c["server command: default is the pc-control-mcp launcher when pip made one (full path, so it does not depend on PATH)"] = (
+        cli.server_command() == [exe] if exe else cli.server_command() == [sys.executable, "-m", "pc_control.server"])
+    calls.clear(); cli.install("follow", runner=fake)
+    add = next(x for x in calls if x[:2] == ["mcp", "add"])
+    c["install: registers the launcher (or the module form without one)"] = (add[add.index("--") + 1:] == [exe] if exe else add[-2:] == ["-m", "pc_control.server"])
+    c["install: the launcher path has no shell-eaten backslash problem (it is passed as one argument)"] = (not exe) or os.path.isabs(add[-1])
     # 14) the package was renamed (pc-control -> claude-pc-control) and both own the SAME files: the old one has to go FIRST
     import importlib.metadata as imd
     real_dist, real_run, real_inst, real_ver = imd.distribution, cli.subprocess.run, cli._installed, cli._code_version
