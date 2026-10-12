@@ -6,6 +6,7 @@ import json, os, re, shutil, sys, tempfile
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tmp = tempfile.mkdtemp(prefix="pc-control_cli_")
 ch, ph = os.path.join(tmp, "claude"), os.path.join(tmp, "home")
 os.environ["PC_CONTROL_CLAUDE_HOME"], os.environ["PC_CONTROL_HOME"] = ch, ph
@@ -71,7 +72,7 @@ try:
     c["uninstall: removes our hooks and leaves no empty 'hooks'"] = "hooks" not in st
     c["uninstall: leaves settings exactly as they were"] = st == original
     c["uninstall: removes the record, the settings backup and the data folder"] = not os.path.exists(record) and not os.path.exists(bak) and not os.path.isdir(ph)
-    c["uninstall: tells how to remove the package"] = any("pip uninstall pc-control" in l for l in log)
+    c["uninstall: tells how to remove the package"] = any("pip uninstall claude-pc-control" in l for l in log)
     # 7) --keep-data keeps the data folder
     os.makedirs(ph); open(os.path.join(ph, "allow.txt"), "w").write("winword\n")
     cli.install("auto", runner=fake, python="PY"); cli.uninstall(keep_data=True, runner=fake)
@@ -125,6 +126,57 @@ try:
         st["permissions"].get("allow") == ["Bash(ls)"] and st["permissions"].get("ask") == ["Bash(git push)"])
     c["migrate: the old install record is removed"] = not os.path.exists(os.path.join(ch, "pcsight-install.json"))
     c["update: detects a git checkout as the source to pull"] = cli._installed()[1] == os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
+    # 14) the package was renamed (pc-control -> claude-pc-control) and both own the SAME files: the old one has to go FIRST
+    import importlib.metadata as imd
+    real_dist, real_run, real_inst, real_ver = imd.distribution, cli.subprocess.run, cli._installed, cli._code_version
+    present, ran, fail = {"pc-control"}, [], []
+    class Fake:
+        def __init__(self, rc=0): self.returncode = rc; self.stdout = ""; self.stderr = ""
+    def fake_run(cmd, *a, **k):
+        ran.append(list(cmd))
+        return Fake(1 if fail and any(f in cmd for f in fail) else 0)
+    class D: version = "0.5.3"
+    def fake_dist(name):
+        if name in present: return D()
+        raise imd.PackageNotFoundError(name)
+    pip_i = lambda cmd: cmd[1:4] == ["-m", "pip", "install"]
+    pip_u = lambda cmd: cmd[1:4] == ["-m", "pip", "uninstall"]
+    try:
+        imd.distribution, cli.subprocess.run, cli._code_version = fake_dist, fake_run, lambda: "x"
+        log = cli.drop_legacy_dist()
+        c["rename: the old 'pc-control' package is uninstalled when present"] = (len(ran) == 1 and pip_u(ran[0]) and ran[0][-1] == "pc-control"
+                                                                               and any("claude-pc-control" in l for l in log))
+        ran.clear(); present.clear(); present.add("claude-pc-control")
+        c["rename: nothing is uninstalled when only the new package is there"] = cli.drop_legacy_dist() == [] and ran == []
+        c["rename: the new name is the one looked up first"] = cli._dist(imd) is not None
+        present.clear(); present.add("pc-control")
+        c["rename: an install that only has the old name is still found (status/update)"] = cli._dist(imd) is not None
+        ran.clear(); present.clear(); present.add("pc-control"); fail.append("pc-control")
+        try: cli.drop_legacy_dist(); c["rename: a failed uninstall is reported, not swallowed"] = False
+        except RuntimeError: c["rename: a failed uninstall is reported, not swallowed"] = True
+        fail.clear()
+        # update() of a normal install: uninstall old -> install new (uninstalling AFTER would delete the new files)
+        ran.clear(); present.clear(); present.add("pc-control"); cli._installed = lambda: ("0.5.3", None)
+        cli.update()
+        iu = next((i for i, x in enumerate(ran) if pip_u(x)), -1); ii = next((i for i, x in enumerate(ran) if pip_i(x) and cli.REPO_ZIP in x), -1)
+        c["update (normal install): the old package is removed BEFORE the new one is installed"] = 0 <= iu < ii
+        # update() of a git checkout: pull -> uninstall old -> pip install -e
+        ran.clear(); present.clear(); present.add("pc-control"); cli._installed = lambda: ("0.5.3", ROOT_DIR)
+        cli.update()
+        ig = next((i for i, x in enumerate(ran) if x[:1] == ["git"]), -1); iu = next((i for i, x in enumerate(ran) if pip_u(x)), -1)
+        ii = next((i for i, x in enumerate(ran) if pip_i(x) and "-e" in x), -1)
+        c["update (git checkout): pull, then remove the old package, then install the checkout"] = 0 <= ig < iu < ii
+        # update() when only the new package exists: no uninstall at all
+        ran.clear(); present.clear(); present.add("claude-pc-control")
+        cli.update()
+        c["update: nothing is uninstalled when there is no old package"] = not any(pip_u(x) for x in ran)
+        # an OLD update got the new code without knowing about the rename: reinstall puts the new package back after dropping the old
+        ran.clear(); present.clear(); present.add("pc-control"); present.add("claude-pc-control"); cli._installed = lambda: ("0.6.0", None)
+        h = cli._heal_legacy_dist()
+        iu = next((i for i, x in enumerate(ran) if pip_u(x)), -1); ii = next((i for i, x in enumerate(ran) if pip_i(x) and "--force-reinstall" in x and "--no-deps" in x), -1)
+        c["heal: both packages present -> old removed, then the new one is forced back in"] = 0 <= iu < ii and bool(h)
+    finally:
+        imd.distribution, cli.subprocess.run, cli._installed, cli._code_version = real_dist, real_run, real_inst, real_ver
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
@@ -132,6 +184,12 @@ ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # the Pow
 for ps1 in ("install.ps1", "uninstall.ps1"):
     src = open(os.path.join(ROOT, ps1), encoding="utf-8").read()
     c[f"{ps1} runs the CLI with its own arguments ($cliArgs, not the empty $args)"] = "& python @cliArgs" in src and "& python @args" not in src
+rd_ps = lambda n: open(os.path.join(ROOT, n), encoding="utf-8").read()
+for ps1 in ("install.ps1", "update.ps1"):                    # the old package goes before the first pip install of the new one
+    s = rd_ps(ps1); iu = s.find("pip uninstall -y pc-control"); ii = s.find("pip install", iu if iu >= 0 else 0)
+    c[f"{ps1}: removes the old 'pc-control' package before installing claude-pc-control"] = 0 <= iu < ii
+c["update.ps1: both the checkout and the zip install go through Remove-LegacyPackage"] = rd_ps("update.ps1").count("Remove-LegacyPackage") == 3
+c["uninstall.ps1: removes the package under either name"] = "pip uninstall -y claude-pc-control pc-control" in rd_ps("uninstall.ps1")
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")

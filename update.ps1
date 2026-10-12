@@ -11,13 +11,26 @@ $ErrorActionPreference = 'Stop'
 $zip = 'https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip'
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'Python was not found in PATH.' }
 
+# Before 0.6 the package was called "pc-control"; it is now "claude-pc-control" and both install the same files (pc_control/), so the old
+# one has to go BEFORE the new one is installed (removing it afterwards would delete the new code).
+function Remove-LegacyPackage {
+    & python -c "import importlib.metadata as m, sys; m.distribution('pc-control')" 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "Removing the old 'pc-control' package (now 'claude-pc-control')..."
+        & python -m pip uninstall -y pc-control
+        if ($LASTEXITCODE -ne 0) { throw "Could not uninstall the old 'pc-control' package." }
+    }
+}
+
 # where the installed code lives (empty if PC-Control is not installed, e.g. only the old "pcsight" is)
 $src = & python -c "import os, pc_control; print(os.path.dirname(os.path.dirname(os.path.abspath(pc_control.__file__))))" 2>$null
 if ($LASTEXITCODE -eq 0 -and $src -and (Test-Path (Join-Path $src '.git')) -and (Test-Path (Join-Path $src 'pyproject.toml'))) {
     & git -C $src pull --ff-only
     if ($LASTEXITCODE -ne 0) { throw "git pull failed in $src" }
+    Remove-LegacyPackage
     & python -m pip install -q -e $src
 } else {
+    Remove-LegacyPackage
     & python -m pip install -q --upgrade $zip
 }
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }

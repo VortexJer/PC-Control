@@ -3,8 +3,8 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "pc-control"
-version = "0.5.3"
+name = "claude-pc-control"
+version = "0.6.0"
 description = "Let an AI see and operate Windows apps cheaply, without stealing focus or moving your mouse."
 readme = "README.md"
 license = {text = "MIT"}

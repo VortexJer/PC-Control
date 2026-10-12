@@ -279,12 +279,63 @@ def migrate(runner=None):
     return log
 
 
+DIST = "claude-pc-control"        # the package name on PyPI ("pc-control" is too close to an existing project there)
+LEGACY_DISTS = ("pc-control",)    # what versions before 0.6 were installed as: same `pc_control` code, so it must go BEFORE the new one lands
+
+
+def _dist(md):
+    """The installed distribution of PC-Control under its current name or an earlier one, or None."""
+    for name in (DIST,) + LEGACY_DISTS:
+        try:
+            return md.distribution(name)
+        except md.PackageNotFoundError:
+            continue
+    return None
+
+
+def drop_legacy_dist():
+    """Uninstall the package under its old name. Old and new install the same files (`pc_control/`), so removing the old one AFTER
+    the new one is in place would delete the new code: it has to happen first. Returns log lines."""
+    import importlib.metadata as md
+    log = []
+    for name in LEGACY_DISTS:
+        try:
+            md.distribution(name)
+        except md.PackageNotFoundError:
+            continue
+        p = subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", name], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"could not uninstall the old '{name}' package: {(p.stdout + p.stderr).strip()[-300:]}")
+        log.append(f"old package '{name}' uninstalled (now '{DIST}')")
+        try:                                                              # a checkout keeps the old build metadata (`pc_control.egg-info`): pip
+            left = md.distribution(name)                                  # does not own it, but Python still reports the old name from it
+            path = str(getattr(left, "_path", ""))
+            if path.endswith(".egg-info") and os.path.exists(os.path.join(os.path.dirname(path), "pyproject.toml")):
+                shutil.rmtree(path, ignore_errors=True); log.append(f"stale build metadata removed ({path})")
+        except md.PackageNotFoundError:
+            pass
+    return log
+
+
+def _heal_legacy_dist():
+    """The old package is still there next to the new one (an OLD `update` got the new code without knowing about the rename).
+    Both own the same files, so removing the old one takes the new code with it: put the new one back right after."""
+    log = drop_legacy_dist()
+    if log:
+        _, src = _installed()
+        target = ["-e", src] if src else [REPO_ZIP]
+        q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps"] + target, capture_output=True, text=True)
+        if q.returncode != 0:
+            raise RuntimeError(f"could not put '{DIST}' back after removing the old package: {(q.stdout + q.stderr).strip()[-300:]}")
+        log.append(f"'{DIST}' reinstalled")
+    return log
+
+
 def _installed():
     """(version, editable source folder or None) of the installed package."""
     import importlib.metadata as md
-    try:
-        d = md.distribution("pc-control")
-    except md.PackageNotFoundError:
+    d = _dist(md)
+    if d is None:
         return None, None
     # running from a git checkout (pip install -e, or straight from the folder): the code's own folder has .git and pyproject.toml
     here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -308,8 +359,10 @@ def update():
         if p.returncode != 0:
             raise RuntimeError(f"git pull failed in {src}: {(p.stdout + p.stderr).strip()[:300]}")
         log.append(f"source updated ({src}): {(p.stdout.strip().splitlines() or ['ok'])[-1]}")
+        log += drop_legacy_dist()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", src], capture_output=True, text=True)
     else:                                                             # a normal install: the latest version from GitHub (no git needed)
+        log += drop_legacy_dist()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
     if q.returncode != 0:
         raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
@@ -330,7 +383,8 @@ def reinstall(runner=None):
     mode = rec.get("mode") or {"auto": "follow"}.get(old.get("mode"), old.get("mode")) or "follow"
     if mode not in ("follow", "auto", "ask", "strict", "bypass"):
         mode = "follow"
-    return install(mode, rec.get("scope") or old.get("scope") or "user", bool(rec.get("allow_added") or old.get("allow_added")),
+    healed = _heal_legacy_dist()
+    return healed + install(mode, rec.get("scope") or old.get("scope") or "user", bool(rec.get("allow_added") or old.get("allow_added")),
                    **({"runner": runner} if runner else {}))
 
 
@@ -427,7 +481,7 @@ def uninstall(keep_data=False, scope="user", runner=run_claude):
         os.remove(pth["record"])
     if not keep_data and os.path.isdir(data_home()):
         shutil.rmtree(data_home(), ignore_errors=True); log.append(f"data folder {data_home()} removed")
-    log.append("done. To remove the package itself: pip uninstall pc-control")
+    log.append(f"done. To remove the package itself: pip uninstall {DIST}")
     return log
 
 

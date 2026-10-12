@@ -16,6 +16,7 @@ if ($KeepData) { $cliArgs += '--keep-data' }
 if ($LASTEXITCODE -ne 0) { Write-Warning 'pc-control uninstall reported a problem (is the package still installed?). Continuing.' }
 
 if (-not $KeepPackage) {
-    & python -m pip uninstall -y pc-control
+    # the package is "claude-pc-control" since 0.6 and was "pc-control" before: remove whichever (or both) is there
+    & python -m pip uninstall -y claude-pc-control pc-control
 }
 Write-Host "`nPC-Control removed. Open a new Claude Code session to see the change." -ForegroundColor Green

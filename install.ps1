@@ -27,6 +27,15 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Warning "The 'claude' command was not found in PATH: install Claude Code first (https://claude.com/claude-code), then run this script again."
 }
 
+# Before 0.6 the package was called "pc-control"; it is now "claude-pc-control" and both install the same files (pc_control/), so an old
+# install has to be removed BEFORE the new one goes in (removing it afterwards would delete the new code).
+& python -c "import importlib.metadata as m, sys; m.distribution('pc-control')" 2>$null
+if ($LASTEXITCODE -eq 0) {
+    Write-Host "Removing the old 'pc-control' package (now 'claude-pc-control')..."
+    & python -m pip uninstall -y pc-control
+    if ($LASTEXITCODE -ne 0) { throw "Could not uninstall the old 'pc-control' package." }
+}
+
 $hasSource = Test-Path (Join-Path $PSScriptRoot 'pyproject.toml')
 if ($Editable) {
     if (-not $hasSource) { throw '-Editable needs the full source folder (pyproject.toml next to this script).' }

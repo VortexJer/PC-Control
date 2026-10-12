@@ -26,7 +26,7 @@ pc-control update
 
 ```powershell
 pc-control uninstall
-pip uninstall -y pc-control
+pip uninstall -y claude-pc-control pc-control     # whichever of the two names is installed
 ```
 
 Then open a **new** Claude Code session and ask, for example, *"what do I have open in Word?"*. Details in [Install](#install),
@@ -59,6 +59,10 @@ pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip 
 pc-control install
 ```
 
+The package is called **`claude-pc-control`** (before 0.6 it was `pc-control`; the commands `pc-control` and `pc-control-mcp` and the `pc_control`
+code did not change). If you have an older install, do not pip-install over it: run `pc-control update` or `.\install.ps1`, which remove the old
+package first (both install the same files, so removing the old one afterwards would delete the new code).
+
 What `pc-control install` does (and nothing else):
 
 | Step | Where |
@@ -84,7 +88,8 @@ From **any** earlier version (including the first one, then called `pcsight`):
 pc-control update            # or .\update.ps1
 ```
 
-It pulls the source if you installed from a git checkout, otherwise installs the latest version from GitHub, then runs
+It pulls the source if you installed from a git checkout, otherwise installs the latest version from GitHub (first removing the package
+under its old name `pc-control`, if you have one: it is `claude-pc-control` since 0.6), then runs
 `pc-control install` again with the same mode, scope and options. On the way it removes whatever an earlier version left behind
 (the old `pcsight` server, skill, CLAUDE.md block, hooks, install record and package, and old `ask` rules for PC-Control's tools,
 which would force a dialog on every call), and only that: your own skills, hooks, rules and notes are kept. Then open a new
@@ -94,7 +99,7 @@ Claude Code session.
 
 ```powershell
 pc-control uninstall           # removes everything install added, and the ~/.pc-control data folder
-pip uninstall pc-control       # removes the package itself
+pip uninstall claude-pc-control   # removes the package itself (pc-control if you installed before 0.6)
 ```
 
 or, from the checkout, `.\uninstall.ps1` (does both; add `-KeepData` to keep `~/.pc-control`, `-KeepPackage` to keep the package).
