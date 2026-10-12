@@ -184,10 +184,15 @@ def check_launch(m, exe, allowed, confirm=False):
         raise PermissionError(f"opening '{exe}' is not allowed (strict mode). Add it to PC_CONTROL_ALLOW or ~/.pc-control/allow.txt.")
 
 
+def _press(name):
+    from .ui_text import T
+    return T("press_button", name=name)
+
+
 def check_click(m, name, confirm):
     """A sensitive action requires confirm=True, which only the server sets after asking the user."""
     if m != "bypass" and not confirm and name and SENSITIVE_ACTION.search(name):
-        raise NeedsPermission(f"Claude wants to press a sensitive action: '{name[:40]}'. Do you allow it?", detail=f"press the button «{name[:60]}», which looks like a sensitive action (pay, delete, send, install...)")
+        raise NeedsPermission(f"Claude wants to press a sensitive action: '{name[:40]}'. Do you allow it?", detail=_press(name[:60]))
 
 
 def check_type(m, name, is_password):

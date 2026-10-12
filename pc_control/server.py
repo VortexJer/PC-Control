@@ -216,7 +216,7 @@ def _layout_ok(hwnd, it, st):
     """True if what is about to be touched is still there: the element (through its live control) or, with no element, the same window size."""
     if win32gui.IsIconic(hwnd):
         return True
-    if st and core._size(win32gui.GetWindowRect(hwnd)) == core._size(st["rect"]):
+    if not st or core._size(st["rect"]) == (0, 0) or core._size(win32gui.GetWindowRect(hwnd)) == core._size(st["rect"]):
         return True                     # same size: the user did not resize it (an element out of view is click's job, not the user's)
     if it is not None:
         return core.live_rel(hwnd, it) is not None
@@ -506,7 +506,13 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
     if hidden:
         r = DESK.open(command); where = "hidden desktop (no taskbar button)"
     else:
-        r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
+        if exe in core.CHROMIUM:                     # browsers hide the page while minimized: behind the user's windows instead
+            tok = shlex.split(command, posix=False)[0]
+            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in command]
+            r = core.open_behind(command.replace(tok, tok + " " + " ".join(extra), 1) if extra else command, exe)
+            where = "behind the user's windows, not minimized (a minimized browser hides the page), with its button in the taskbar"
+        else:
+            r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
     OPENED.add(r["pid"]); OPENED.update(win32process.GetWindowThreadProcessId(w["hwnd"])[1] for w in r["windows"])
     return f"pid {r['pid']} | {ws} | {where}"

@@ -362,9 +362,16 @@ def assign_ids(hwnd, items):
     by_key = {}
     for i, o in prev.items():
         by_key.setdefault((o.kind, o.name), []).append((i, o))
+    counts = {}
     for it in items:
-        same = next((i for i, o in by_key.get((it.kind, it.name), ()) if i not in used
-                     and abs(o.rect[0] - it.rect[0]) <= 6 and abs(o.rect[1] - it.rect[1]) <= 6), None)
+        counts[(it.kind, it.name)] = counts.get((it.kind, it.name), 0) + 1
+    for it in items:
+        cands = by_key.get((it.kind, it.name), ())
+        if len(cands) == 1 and counts[(it.kind, it.name)] == 1 and cands[0][0] not in used:
+            same = cands[0][0]                                       # the only one with that name: the same element, even if it moved
+        else:
+            same = next((i for i, o in cands if i not in used
+                         and abs(o.rect[0] - it.rect[0]) <= 6 and abs(o.rect[1] - it.rect[1]) <= 6), None)
         if same is None:
             same = nxt; nxt += 1
         it.id = same; used.add(same)
@@ -521,7 +528,7 @@ def changes(query):
         if st.get("mode") == "uia+ocr":              # the window's real text came from OCR: the tree not changing proves nothing
             return "no change in the UI tree (this window's text comes from OCR, so the effect cannot be measured): check with look"
         return "no changes"
-    if len(add) > 8 and len(rem) > 8:                 # the view scrolled or was replaced: a list of lines would be noise
+    if len(add) + len(rem) > 12:                 # the view scrolled or was replaced: a list of lines would be noise
         return f"the view changed a lot (+{len(add)} / -{len(rem)} lines): look to see it"
     f = lambda L: "; ".join(x.split("|", 1)[1][:30] for x in L[:6]) + (f" (+{len(L) - 6})" if len(L) > 6 else "")
     return (f"+ {f(add)}" if add else "") + (" | " if add and rem else "") + (f"- {f(rem)}" if rem else "")
@@ -1036,3 +1043,46 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
     return {"pid": p.pid, "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
             "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
+
+
+CHROMIUM = {"msedge", "chrome", "brave", "opera", "vivaldi", "chromium", "arc", "thorium"}
+
+
+def open_behind(command, exe, wait_s=15.0):
+    """Browsers hide the page from accessibility while minimized, so a browser is opened NOT minimized but behind your windows and
+    without activating it: its button is in the taskbar and the page can be read and used. The focus is never taken."""
+    si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
+    before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
+    p = subprocess.Popen(command, startupinfo=si)
+    found, t0, last = {}, time.time(), 0.0
+    while time.time() - t0 < wait_s:
+        for h in top_windows():
+            if h in before or h in found:
+                continue
+            try:
+                pid = win32process.GetWindowThreadProcessId(h)[1]
+            except Exception:
+                continue
+            if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
+                ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)        # HWND_BOTTOM | NOSIZE | NOMOVE | NOACTIVATE
+                found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+        if found and time.time() - last > 1.0:
+            break
+        time.sleep(0.01)
+    time.sleep(0.8)                                                            # the title settles once the page has loaded
+    wins = [{"hwnd": h, "title": win32gui.GetWindowText(h)[:50]} for h in found if win32gui.IsWindow(h)]
+    return {"pid": p.pid, "windows": [w for w in wins if w["title"]], "foco_intacto": win32gui.GetForegroundWindow() == fg0,
+            "note": "" if wins else "no window with a title (it may have joined a browser that was already open)"}
+
+
+def psutil_name(pid):
+    k = ctypes.windll.kernel32
+    h = k.OpenProcess(0x1000, False, pid)
+    if not h:
+        return ""
+    try:
+        buf = ctypes.create_unicode_buffer(520); n = ctypes.wintypes.DWORD(520)
+        k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
+        return os.path.splitext(os.path.basename(buf.value))[0].lower()
+    finally:
+        k.CloseHandle(h)

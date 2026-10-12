@@ -13,11 +13,11 @@ hook.win32gui = types.SimpleNamespace(GetWindowText=lambda h: "PowerShell")
 look = {"tool_name": "mcp__PC-Control__look", "tool_input": {"window": "PowerShell"}}
 
 r = hook.decide(look)
-c["protected window: the hook asks for permission"] = bool(r) and "PROTECTED" in r
+c["protected window: the hook asks for permission"] = bool(r) and "protected" in r
 s = perm.sig("look", {"window": "PowerShell"})
-c["the dialog says WHICH app, WHICH window and WHAT it will do (not a window number)"] = "PowerShell" in r and "windowsterminal" in r and "VIEW the contents" in r and "9701696" not in r
+c["the dialog says in ONE short sentence which window and what it will do (not a window number)"] = "PowerShell" in r and "terminal or console" in r and "view the contents" in r and "9701696" not in r and len(r) < 160
 rt = hook.decide({"tool_name": "mcp__PC-Control__type", "tool_input": {"window": "9701696", "target": "3", "text": "rm -rf /tmp/x"}})
-c["typing: shows the text it will type"] = bool(rt) and "TYPE «rm -rf /tmp/x»" in rt
+c["typing: shows the text it will type"] = bool(rt) and "type «rm -rf /tmp/x»" in rt
 perm.take("asked", perm.sig("type", {"window": "9701696", "target": "3", "text": "rm -rf /tmp/x"}))
 c["... and leaves the 'asked' mark so the server knows the user saw it"] = perm.fresh("asked", s)
 c["the mark is spent only once"] = perm.take("asked", s) and not perm.take("asked", s)
@@ -39,7 +39,7 @@ hook.policy.blocked_category = lambda p, t="": None             # normal window
 c["normal window: does not ask"] = hook.decide({"tool_name": "mcp__PC-Control__click", "tool_input": {"window": "Word", "target": "5"}}) is None
 perm.mark("pending", perm.sig("click", {"window": "Word", "target": "5"}), "press the button «Delete all»")
 r2 = hook.decide({"tool_name": "mcp__PC-Control__click", "tool_input": {"window": "Word", "target": "5"}})
-c["action the server asked to confirm (same call repeated): asks and says which button"] = bool(r2) and "sensitive" in r2 and "«Delete all»" in r2
+c["action the server asked to confirm (same call repeated): asks and says which button"] = bool(r2) and "delicate" in r2 and "«Delete all»" in r2
 c["... and does not ask again the next time"] = hook.decide({"tool_name": "mcp__PC-Control__click", "tool_input": {"window": "Word", "target": "5"}}) is None
 
 # the signature is the same whether the hook sees the arguments as given or the server sees them with their default values
@@ -77,7 +77,7 @@ hook.policy.blocked_category = lambda p, t="": None
 hook._proc = lambda h: "notepad"
 ask_in = {"tool_name": "mcp__PC-Control__click", "tool_input": {"window": "Notepad", "target": "2"}}
 ra = hook.decide(ask_in)
-c["ask mode: a normal window ALSO asks, with the mode's notice"] = bool(ra) and "every window" in ra and "PROTECTED" not in ra and "only counts for THIS time" in ra
+c["ask mode: a normal window ALSO asks, with the mode's notice"] = bool(ra) and "Claude wants to" in ra and "protected" not in ra
 perm.take("asked", perm.sig("click", ask_in["tool_input"]))
 perm.approve(hook.policy.window_key(hook.policy.ASK_ALL, "notepad", 1234))
 c["ask mode: after the yes to THAT window it no longer asks in the session"] = hook.decide(ask_in) is None
@@ -124,7 +124,7 @@ sl = os.path.join(proj, ".claude", "settings.local.json")
 hook._find = lambda q: 111                                           # window A
 a_in = {"tool_name": "mcp__PC-Control__look", "tool_input": {"window": "A"}, "cwd": proj}
 ra = hook.decide(a_in)                                                # asks about A; the hook records that A was the last one for `look`
-c["new window A: asks"] = bool(ra) and "THIS window" in ra
+c["new window A: asks"] = bool(ra) and "Claude wants to" in ra
 perm.take("asked", perm.sig("look", a_in["tool_input"]))
 time.sleep(0.05)
 json.dump({"permissions": {"allow": ["Bash(ls)", "mcp__PC-Control__look"]}, "model": "x"}, open(sl, "w"))   # the user chooses "don't ask again"
@@ -181,7 +181,7 @@ hook.policy.blocked_category = lambda p, t="": "terminal or console"
 sys.stdin = io.StringIO(json.dumps(look)); buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
 code = hook.main(); sys.stdout = old
 out = json.loads(buf.getvalue())["hookSpecificOutput"]
-c["output: permissionDecision=ask with a reason (Claude Code shows its dialog)"] = code == 0 and out["permissionDecision"] == "ask" and out["hookEventName"] == "PreToolUse" and "PROTECTED" in out["permissionDecisionReason"]
+c["output: permissionDecision=ask with a reason (Claude Code shows its dialog)"] = code == 0 and out["permissionDecision"] == "ask" and out["hookEventName"] == "PreToolUse" and "protected" in out["permissionDecisionReason"]
 sys.stdin = io.StringIO("this is not json"); buf = io.StringIO(); sys.stdout = buf
 code = hook.main(); sys.stdout = old
 c["a hook failure never breaks the tool (exits 0 and silently)"] = code == 0 and buf.getvalue() == ""

@@ -84,7 +84,7 @@ try:
     check("clicking it scrolls it into view and presses it", S()["pick"] == "City 70", out)
     before = dict(core._state[hw]["items"])
     out = run(lambda: actions.find(q, "Deep button"))
-    check("find keeps the ids of the last look (no renumbering)", all(core._state[hw]["items"].get(k) is v for k, v in before.items()), out)
+    check("find keeps the ids of the last look (no renumbering)", all(core._state[hw]["items"].get(k) is not None and core._state[hw]["items"][k].name == v.name for k, v in before.items()), out)
     out = run(lambda: core.click(q, fid(out))); time.sleep(0.5)
     check("find, then click by its id", S()["deep"] == 1, out)
     out = run(lambda: core.click(q, color))

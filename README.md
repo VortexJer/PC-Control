@@ -87,7 +87,8 @@ In every mode: creating `~/.pc-control/PAUSE` (or `PC_CONTROL_PAUSE=1`) makes ev
 Protected windows are **not blocked**; you decide, not the model. The model has no `confirm` flag it could set.
 
 - **Claude Code:** the `PreToolUse` hook (`python -m pc_control.hook`) answers `ask`, so **Claude Code itself shows you its permission
-  dialog** (with a plain-language description of what Claude wants to do) and Claude cannot answer it. A plain "yes" counts once.
+  dialog** with one short sentence, in the language of your Windows (for example *"Claude wants to read the whole text of «Terminal»
+  (protected window: terminal or console)."*), and Claude cannot answer it. A plain "yes" counts once.
   If you pick Claude Code's "Yes, and don't ask again", PC-Control narrows it to **that one window** for the rest of the session
   (Claude Code saves a per-tool rule; the hook turns it into a per-window approval and removes the rule).
 - The `PermissionRequest` hook answers by itself when you do not need to be bothered (a normal window outside the filter, bypass).
@@ -142,7 +143,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
 | `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
-| `open_app` | Launches an app minimized, or on a hidden desktop. |
+| `open_app` | Launches an app minimized with its taskbar button, so you can open it and watch. Browsers (Edge, Chrome, Brave...) open behind your windows instead, not minimized, because a minimized browser hides its page from accessibility; the focus is never taken. `hidden=true` uses an invisible desktop, only when you ask for it. |
 
 ## Adapts to your PC
 
@@ -154,6 +155,8 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Multi-monitor setups and negative coordinates are handled.
 
 ## Known limits
+
+- A browser or Electron app that is minimized hides its page: PC-Control says so instead of answering "not found". Browsers opened with `open_app` are placed behind your windows for that reason.
 
 - Excel and Word are reached through COM from their own window: Claude writes cells by address and text at its own insertion point, never through your selection. While you are editing a cell Excel refuses COM calls; PC-Control retries for a few seconds and then says so. Save (`ctrl+s`, or `ctrl+g` in a Spanish Office, where `ctrl+s` is underline) only works for files that already have a name.
 

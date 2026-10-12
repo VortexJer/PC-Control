@@ -105,6 +105,10 @@ try:
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))     # the PowerShell installers really pass their arguments
+for ps1 in ("install.ps1", "uninstall.ps1"):
+    src = open(os.path.join(ROOT, ps1), encoding="utf-8").read()
+    c[f"{ps1} runs the CLI with its own arguments ($cliArgs, not the empty $args)"] = "& python @cliArgs" in src and "& python @args" not in src
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
