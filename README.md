@@ -195,6 +195,7 @@ python tests/test_excel.py        # Excel: read and write cells, formulas, save 
 python tests/test_powerpoint.py   # PowerPoint: slides and notes (skipped without PowerPoint)
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
+python tests/test_fuzz.py         # 52 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
 ```
@@ -206,6 +207,9 @@ cursor and a caption for each step: picking in a drop-down, scrolling, finding a
 through the app's menu, and reading the whole text. Then it closes the window.
 
 ## Diagnostics
+
+`python tools/token_bench.py [other_checkout]` runs a fixed scenario through the MCP protocol and counts the tokens of the tool
+definitions and of every answer (needs `pip install tiktoken`), to compare two versions before and after a change.
 
 `python tools/input_monitor.py out.log stop.flag` logs focus changes, new windows, the desktop that receives input, mouse clipping and
 capture, so you can check that PC-Control never takes your focus or input.
