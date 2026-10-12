@@ -141,7 +141,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | `drag` | Holds the button and drags through points (freehand, line, rectangle, ellipse) using mouse messages: no real mouse, no focus. Apps with modern canvases may ignore it. |
 | `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
-| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). Never reads password fields. |
+| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
 | `open_app` | Launches an app minimized, or on a hidden desktop. |
 
 ## Adapts to your PC
@@ -192,11 +192,18 @@ python tests/test_menu.py         # menu entries pressed through accessibility
 python tests/test_menu_real.py    # ... against a real Windows menu
 python tests/test_more.py         # scroll, read, shortcuts, drop-downs, find and wait
 python tests/test_excel.py        # Excel: read and write cells, formulas, save (skipped without Excel)
+python tests/test_powerpoint.py   # PowerPoint: slides and notes (skipped without PowerPoint)
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
 ```
+
+## Demo
+
+`python tools/demo.py` opens a small test window on your screen (it does not take the focus) and shows, with Claude's orange
+cursor and a caption for each step: picking in a drop-down, scrolling, finding an entry out of view and clicking it, a shortcut run
+through the app's menu, and reading the whole text. Then it closes the window.
 
 ## Diagnostics
 

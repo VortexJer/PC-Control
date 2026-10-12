@@ -596,7 +596,7 @@ def _readback(ctrl, text):
         except Exception:
             return ""
     ok = text.strip().lower() in (v or "").lower()
-    return f" | read back: " + ("the drop-down now shows it" if ok else "WARNING: it shows something else") + f' ("{(v or "")[:40]}")'
+    return f" | read back: " + ("the control now shows it" if ok else "WARNING: it shows something else") + f' ("{(v or "")[:40]}")'
 
 
 # ---------- find (and wait) ----------
