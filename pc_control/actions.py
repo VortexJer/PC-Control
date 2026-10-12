@@ -665,14 +665,14 @@ def find(query, terms, wait=0.0):
     core._state[hwnd] = {"items": known, "lines": visible, "rect": old.get("rect") or rect,
                          "scale": old.get("scale", 1.0), "mode": old.get("mode", "uia")}
     lines = []
-    for it in hits[:40]:
+    for it in hits[:25]:
         off = _off(it)
         lab = f"[{it.id}:{it.name[:70]}" + (f'="{it.value[:50]}"' if it.value else "") + "]" if it.clickable else f"{it.id}: {it.name[:90]}"
         lines.append(f"{lab} ({it.kind}{', out of view: click scrolls to it' if off else ''})")
     head = ("found" if ok else "NOT found") + (f" after {waited} s" if wait else "")
     if still:
         head += f" | still present: {', '.join(still)}"
-    more = f" (+{len(hits) - 40} more)" if len(hits) > 40 else ""
+    more = f" (first 25 shown: use more precise words)" if len(hits) > 25 else ""
     return f"{head} | {len(hits)} match(es){more}\n" + "\n".join(lines)
 
 

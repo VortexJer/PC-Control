@@ -41,6 +41,9 @@ try:
     # drop-down and list
     out = run(lambda: core.type_text(q, "green", target=color)); time.sleep(0.3)
     check("type on a drop-down selects the entry (case-insensitive)", S()["color"] == "Green", out)
+    lk2 = run(lambda: core.look(q, "uia"))
+    check("look shows what a drop-down holds", 'Color="Green"' in lk2["text"], [l for l in lk2["text"].splitlines() if "Color" in l][:1])
+    check("a full look keeps the ids (stable)", core._state[hw]["items"].get(color) is not None and core._state[hw]["items"][color].name == "Color")
     out = run(lambda: core.type_text(q, "Dark", target=color)); time.sleep(0.3)
     check("a prefix selects the matching entry", S()["color"] == "Dark blue", out)
     out = run(lambda: core.type_text(q, "City 57", target=cities)); time.sleep(0.3)

@@ -154,6 +154,24 @@ def fallback_name(c, kind):
                           "RadioButtonControl": "radio button"}.get(kind, "field") + ")"
 
 
+def state_value(c, kind):
+    """The current choice of a drop-down, or on/off of a checkbox, or 'selected' for the chosen radio button ('' if unknown)."""
+    try:
+        if kind == "ComboBoxControl":
+            v = field_value(c)
+            if not v:
+                sel = c.GetSelectionPattern().GetSelection()
+                v = sel[0].Name if sel else ""
+            return (v or "").strip()[:60]
+        if kind == "CheckBoxControl":
+            return {0: "off", 1: "on", 2: "mixed"}.get(c.GetTogglePattern().ToggleState, "")
+        if kind == "RadioButtonControl":
+            return "selected" if c.GetSelectionItemPattern().IsSelected else ""
+    except Exception:
+        pass
+    return ""
+
+
 ROW_CELLS = {"EditControl", "TextControl", "ImageControl"}
 
 
@@ -199,6 +217,8 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
             if kind == "EditControl":
                 v = field_value(c, editable_only=True)
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
+            elif kind in ("ComboBoxControl", "CheckBoxControl", "RadioButtonControl"):
+                it.value = state_value(c, kind)                 # what is chosen / ticked: visible in look and in "what changed"
             items.append(it)
             if kind in ("ListItemControl", "DataItemControl"):
                 cells = row_cells(c, name)
@@ -334,6 +354,23 @@ def dedupe(items):
     return [it for it in items if it.clickable or it.src != "uia" or not shown_by(it)]
 
 
+def assign_ids(hwnd, items):
+    """Stable ids: an element that was in the last reading keeps its id (same kind and name, about the same place); only new
+    elements get new numbers. A model can keep using an id it saw earlier instead of re-reading everything."""
+    prev = _state.get(hwnd, {}).get("items", {})
+    used, nxt = set(), max(prev, default=0) + 1
+    by_key = {}
+    for i, o in prev.items():
+        by_key.setdefault((o.kind, o.name), []).append((i, o))
+    for it in items:
+        same = next((i for i, o in by_key.get((it.kind, it.name), ()) if i not in used
+                     and abs(o.rect[0] - it.rect[0]) <= 6 and abs(o.rect[1] - it.rect[1]) <= 6), None)
+        if same is None:
+            same = nxt; nxt += 1
+        it.id = same; used.add(same)
+    return items
+
+
 def list_format(items):
     """Text without positions (minimized windows: their rectangles mean nothing)."""
     return "\n".join((f"[{it.id}:{it.name[:60]}" + (f'="{it.value[:60]}"' if it.value else "") + "]" if it.clickable else it.name[:80]) for it in items)
@@ -350,8 +387,7 @@ def _look_minimized(hwnd, mode, edge):
     if mode != "image":
         items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True)
         if sum(len(i.name) for i in items) >= 40:            # a minimized window has no image alternative: any tree with real text is worth sending
-            for n, it in enumerate(items, 1):
-                it.id = n
+            assign_ids(hwnd, items)
             text = list_format(items); tok = txt_cost(text)
             _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items},
                             "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia"}
@@ -399,8 +435,7 @@ def _look(hwnd, mode, edge):
 
     def finish(kind, why, items=None, text=None, tokens=None):
         items = items if items is not None else known
-        for i, it in enumerate(items, 1):
-            it.id = i
+        assign_ids(hwnd, items)
         res.update(mode=kind, why=why)
         scale = 1.0
         if kind == "image":
@@ -416,8 +451,7 @@ def _look(hwnd, mode, edge):
         return res
 
     def numbered(items):
-        for i, it in enumerate(items, 1):
-            it.id = i
+        assign_ids(hwnd, items)
         return items
 
     if mode == "image":

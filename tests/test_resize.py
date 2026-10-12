@@ -6,6 +6,7 @@ import json, os, subprocess, sys, tempfile, time
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, os.path.dirname(HERE))
+os.environ["PC_CONTROL_LANG"] = "en"                      # the banner text is checked in English
 os.environ["PC_CONTROL_CURSOR"] = "off"                       # this test draws nothing on screen
 from pc_control import core, server
 import threading

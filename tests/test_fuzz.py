@@ -96,6 +96,8 @@ async def run(s):
                   or "elements match" in results[-1][2]))
     NAMED.append(("a name found only out of view still works", (await call(s, "click", window=w, target="City 77")).startswith("ok")))
     NAMED.append(("an unknown name says so", "no element named" in await call(s, "click", window=w, target="Nope Button")))
+    out = await call(s, "read", window=w, target="Long text", find="Line 77 ")
+    NAMED.append(("read(find=) returns only the matching lines, numbered", out.count("Line 77 of the long text") == 1 and "77: " in out and "Line 78" not in out))
     # the window closes in the middle: every tool must say so, not crash
     await call(s, "key", window=w, name="alt+f4")
     await asyncio.sleep(1.5)
