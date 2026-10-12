@@ -201,6 +201,7 @@ python tests/test_excel.py        # Excel: read and write cells, formulas, save 
 python tests/test_powerpoint.py   # PowerPoint: slides and notes (skipped without PowerPoint)
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
+python tests/test_launcher.py     # a launcher whose window belongs to a child process: found, minimized, focus kept
 python tests/test_fuzz.py         # 52 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
