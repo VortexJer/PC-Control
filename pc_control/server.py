@@ -135,7 +135,8 @@ def _by_name(hwnd, name):
     raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(f"[{i}:{it.name[:30]}] ({it.kind})" for i, it in hits[:8]) + " - use the id")
 
 
-OPENED = set()                                            # pids of the apps Claude opened in this session (windows() marks them)
+OPENED = set()                                            # WINDOWS (hwnds) Claude opened in this session: never whole processes, which
+                                                          # can be shared (explorer.exe = desktop + folders; ApplicationFrameHost = every Store app)
 
 
 def _proc(hwnd):
@@ -333,7 +334,7 @@ def windows() -> str:
         using = h == fg or h == fg_root
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
-        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(h) else "") + (" (opened by Claude)" if win32process.GetWindowThreadProcessId(h)[1] in OPENED else "") + tag
+        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(h) else "") + (" (opened by Claude)" if h in OPENED else "") + tag
                    + (" [ASKS PERMISSION from the user the first time]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}; asks the user for permission before use]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
@@ -514,7 +515,7 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
         else:
             r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
-    OPENED.add(r["pid"]); OPENED.update(win32process.GetWindowThreadProcessId(w["hwnd"])[1] for w in r["windows"])
+    OPENED.update(w["hwnd"] for w in r["windows"])
     return f"pid {r['pid']} | {ws} | {where}"
 
 
