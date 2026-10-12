@@ -207,7 +207,7 @@ def check_click(m, name, confirm):
         raise NeedsPermission(f"Claude wants to press a sensitive action: '{name[:40]}'. Do you allow it?", detail=_press(name[:60]))
 
 
-def check_type(m, name, is_password):
-    """Never type into a password field (except in bypass)."""
-    if m != "bypass" and (is_password or (name and PASSWORD_NAME.search(name))):
+def check_type(m, name, is_password, ident=""):
+    """Never type into a password field (except in bypass). `ident` (its AutomationId...) is judged too but never shown."""
+    if m != "bypass" and (is_password or (name and PASSWORD_NAME.search(name)) or (ident and PASSWORD_NAME.search(ident))):
         raise PermissionError(f"typing into password or secret fields is not allowed ('{(name or '')[:40]}'). It is disabled with PC_CONTROL_MODE=bypass.")

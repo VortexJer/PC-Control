@@ -97,7 +97,7 @@ c["... and a yes (confirm) lets it through"] = server._guard_element(1, sit, Tru
 fld = Ctl("Edit", "Search", "txtSearch"); fit = item("edit", "Search", fld, "txtSearch")
 fld.Name = "Password (again)"                                         # edits skip the name comparison: the secret check must not
 try:
-    policy.check_type(policy.mode(), server._live_name(fit) + " " + fit.aid, core.is_secret_field(fit)); c["a field that now says Password is not typed into"] = False
+    policy.check_type(policy.mode(), server._live_name(fit), core.is_secret_field(fit), fit.aid); c["a field that now says Password is not typed into"] = False
 except PermissionError:
     c["a field that now says Password is not typed into"] = True
 hid = Ctl("Edit", "Value", "pwdBox"); hit = item("edit", "Value", hid, "pwdBox")

@@ -589,7 +589,7 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
         bad = core.identity_problem(it)
         if bad:
             return f"did not type: {bad}: look again | NOT EXECUTED"
-        policy.check_type(policy.mode(), _live_name(it) + " " + (it.aid or ""), core.is_secret_field(it))      # judged on what the field is NOW
+        policy.check_type(policy.mode(), _live_name(it), core.is_secret_field(it), it.aid)      # judged on what the field is NOW
         if it and win32gui.GetClassName(hwnd) != "OpusApp" and (it.ctrl is None or not core._native(it.ctrl)[0]):
             warn = _ensure_layout(hwnd, hidden, it)
             if warn:
@@ -609,7 +609,7 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
         bad = core.identity_problem(it)
         if bad:
             return f"did not type: {bad}: look again | NOT EXECUTED"
-        policy.check_type(policy.mode(), _live_name(it) + " " + (it.aid or ""), core.is_secret_field(it))
+        policy.check_type(policy.mode(), _live_name(it), core.is_secret_field(it), it.aid)
         return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress))
     return _on(window, run)
 
@@ -681,7 +681,7 @@ def read(window: str, target: str = "", start: int = 0, length: int = 6000, find
 
 @tool
 def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
-    """Show the USER where something is (for "where do I click to...?"): an orange circle around an element (id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
+    """Show the USER where something is (for "where do I click to...?"): an orange circle around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
         if hidden:
