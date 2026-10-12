@@ -81,15 +81,14 @@ def _decide(data):
             action = T("open", what=what)
         else:
             action = _action(tool, args, what)
-        note = " " + T("once")
-        if cat == policy.ASK_ALL:
-            return T("wants", action=action) + "\n\n" + T("ask_all") + note + "\n\n" + T("allow")
-        return T("wants", action=action) + "\n\n" + T("protected", cat=category(cat)) + note + "\n\n" + T("allow")
+        if cat == policy.ASK_ALL:                       # one short sentence: Claude Code itself shows yes / no / don't ask again
+            return T("wants", action=action)
+        return T("wants_protected", action=action, cat=category(cat))
     detail = perm.take("pending", s)                # the server asked to confirm this action (e.g. a sensitive action)
     if detail:
         PENDING.append((s, tool, None))
         det = detail if isinstance(detail, str) else tool
-        return T("sensitive", what_action=det, what=what) + "\n\n" + T("sensitive2") + "\n\n" + T("allow")
+        return T("sensitive", what_action=det, what=what)
     return None
 
 

@@ -36,6 +36,6 @@ if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
 
 $cliArgs = @('-m', 'pc_control.cli', 'install', '--mode', $Mode)
 if ($AllowReads) { $cliArgs += '--allow-reads' }
-& python @args
+& python @cliArgs
 if ($LASTEXITCODE -ne 0) { throw 'pc-control install failed.' }
 Write-Host "`nPC-Control installed. Open a NEW Claude Code session; the tools appear as PC-Control." -ForegroundColor Green

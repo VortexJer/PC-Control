@@ -12,7 +12,7 @@ $ErrorActionPreference = 'Stop'
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'Python was not found in PATH.' }
 $cliArgs = @('-m', 'pc_control.cli', 'uninstall')
 if ($KeepData) { $cliArgs += '--keep-data' }
-& python @args
+& python @cliArgs
 if ($LASTEXITCODE -ne 0) { Write-Warning 'pc-control uninstall reported a problem (is the package still installed?). Continuing.' }
 
 if (-not $KeepPackage) {

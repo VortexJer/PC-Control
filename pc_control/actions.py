@@ -280,13 +280,13 @@ def read_text(query, target=None, start=0, length=6000):
         text = "\n".join(lines); src = "all texts of the window (no document found)"
     text = _clean(text or "")
     if not text:
-        return "no text found in this window (an image-only app: use look mode=image)"
+        return "no text found in this window (an image-only app: use look mode=image)" + _min_hint(hwnd)
     start = max(0, int(start or 0)); length = max(200, min(int(length or 6000), 40000))
     if start >= len(text):
         return f"{src}: start={start} is past the end: the text has {len(text)} characters"
     part = text[start:start + length]
     more = f" | more: read(start={start + len(part)})" if start + len(part) < len(text) else " | end of text"
-    return f"{src}: characters {start}-{start + len(part)} of {len(text)}{more}\n{part}"
+    return f"{src}: characters {start}-{start + len(part)} of {len(text)}{more}{_min_hint(hwnd)}\n{part}"
 
 
 # ---------- shortcuts without pressing keys ----------
@@ -653,8 +653,9 @@ def find(query, terms, wait=0.0):
     known = dict(old.get("items", {}))                                       # ids from the last look stay valid: find never renumbers them
     nxt = max(known, default=0) + 1
     for it in hits:
-        same = next((i for i, o in known.items() if o.kind == it.kind and o.name == it.name
-                     and abs(o.rect[0] - it.rect[0]) <= 4 and abs(o.rect[1] - it.rect[1]) <= 4), None)
+        cands = [i for i, o in known.items() if o.kind == it.kind and o.name == it.name]
+        same = cands[0] if len(cands) == 1 else next((i for i in cands if abs(known[i].rect[0] - it.rect[0]) <= 4
+                                                      and abs(known[i].rect[1] - it.rect[1]) <= 4), None)
         if same is not None:
             it.id = same
         else:
@@ -669,11 +670,22 @@ def find(query, terms, wait=0.0):
         off = _off(it)
         lab = f"[{it.id}:{it.name[:70]}" + (f'="{it.value[:50]}"' if it.value else "") + "]" if it.clickable else f"{it.id}: {it.name[:90]}"
         lines.append(f"{lab} ({it.kind}{', out of view: click scrolls to it' if off else ''})")
-    head = ("found" if ok else "NOT found") + (f" after {waited} s" if wait else "")
+    head = ("found" if ok else "NOT found" + _min_hint(hwnd)) + (f" after {waited} s" if wait else "")
     if still:
         head += f" | still present: {', '.join(still)}"
     more = f" (first 25 shown: use more precise words)" if len(hits) > 25 else ""
     return f"{head} | {len(hits)} match(es){more}\n" + "\n".join(lines)
+
+
+def _min_hint(hwnd):
+    """Browsers and Electron apps hide their page from accessibility while minimized: say so instead of a bare 'not found'."""
+    try:
+        if win32gui.IsIconic(hwnd) and win32gui.GetClassName(hwnd) == "Chrome_WidgetWin_1":
+            return (" (this window is a minimized browser/Electron app: it hides its page while minimized. Ask the user to click its"
+                    " taskbar button, or reopen it with open_app, which opens browsers behind the user's windows instead)")
+    except Exception:
+        pass
+    return ""
 
 
 def _off(it):
