@@ -4,7 +4,7 @@ sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SKIP_DIRS = {"__pycache__", ".git", ".unlazy", "dist", "build", "pc_control.egg-info"}
 SKIP_FILES = {"GATES.md", "@AutomationLog.txt", ".hygiene-local.txt", "test_hygiene.py"}   # local/ignored; this test carries no data
-GENERIC = [r"c:[\\/]users", r"/c/users", r"app" + r"data", r"@(gmail|outlook|hotmail|yahoo)\.", r"github\.com/[a-z0-9-]+/"]
+GENERIC = [r"c:[\\/]users", r"/c/users", r"app" + r"data", r"[\w.+-]+@[\w-]+\.[a-z]{2,}",r"github\.com/[a-z0-9-]+/"]
 LOCAL = os.path.join(ROOT, ".hygiene-local.txt")        # your own names/usernames, one per line (regex); NOT published
 PERSONAL = GENERIC + ([l.strip() for l in open(LOCAL, encoding="utf-8") if l.strip()] if os.path.exists(LOCAL) else [])
 
@@ -17,7 +17,8 @@ def scan(text, patterns):
     return [p for p in patterns if re.search(p, text, re.I)]
 
 # positive control: the scanner MUST detect each kind of personal data
-for sample in ["C:" + chr(92) + "Users" + chr(92) + "Pepe", "C:/Users/Pepe", "my email pepe@gmail.com", "https://github.com/someone/repo", "/c/Users/pepe"]:
+# samples use reserved names that can never belong to anyone (example.com is reserved for this by RFC 2606)
+for sample in ["C:" + chr(92) + "Users" + chr(92) + "Example", "C:/Users/Example", "my email someone@example.com", "https://github.com/octocat/repo", "/c/Users/example"]:
     assert scan(sample, GENERIC), f"the scanner does not detect: {sample}"
 assert not scan("neutral text about windows and tokens", GENERIC), "false positive"
 
