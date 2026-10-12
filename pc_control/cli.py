@@ -309,16 +309,25 @@ def update():
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
     if q.returncode != 0:
         raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
-    rec = _load(_paths()["record"], {})
-    args = [sys.executable, "-m", "pc_control.cli", "install", "--mode", rec.get("mode", "follow"), "--scope", rec.get("scope", "user")]
-    if rec.get("allow_added"):
-        args.append("--allow-reads")
-    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")   # the NEW code installs itself
+    r = subprocess.run([sys.executable, "-m", "pc_control.cli", "reinstall"], capture_output=True, text=True,
+                       encoding="utf-8", errors="replace")                          # the NEW code installs itself
     if r.returncode != 0:
         raise RuntimeError(f"reinstall failed: {(r.stdout + r.stderr).strip()[-300:]}")
     log += r.stdout.strip().splitlines()
     log.append(f"PC-Control {before} -> {_code_version()}. Open a NEW Claude Code session to load it.")
     return log
+
+
+def reinstall(runner=None):
+    """`install` again with the mode, scope and options recorded by the previous install (or the defaults if there is no record:
+    a very old version, or the old 'pcsight' one)."""
+    rec = _load(_paths()["record"], {})
+    old = _load(os.path.join(claude_home(), LEGACY_RECORDS[0]), {})
+    mode = rec.get("mode") or {"auto": "follow"}.get(old.get("mode"), old.get("mode")) or "follow"
+    if mode not in ("follow", "auto", "ask", "strict", "bypass"):
+        mode = "follow"
+    return install(mode, rec.get("scope") or old.get("scope") or "user", bool(rec.get("allow_added") or old.get("allow_added")),
+                   **({"runner": runner} if runner else {}))
 
 
 def run_claude(args):
@@ -451,6 +460,7 @@ def main(argv=None):
     sub.add_parser("resume", help="remove the pause")
     sub.add_parser("serve", help="launch the MCP server (what Claude Code runs)")
     sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
+    sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "install":
@@ -463,6 +473,8 @@ def main(argv=None):
             set_pause(a.cmd == "pause"); print("paused" if a.cmd == "pause" else "resumed")
         elif a.cmd == "update":
             print("\n".join(update()))
+        elif a.cmd == "reinstall":
+            print("\n".join(reinstall()))
         elif a.cmd == "serve":
             from .server import main as serve
             serve()
