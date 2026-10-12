@@ -17,7 +17,7 @@ $f.Text = "pc-control-test2"; $f.Width = 520; $f.Height = 420; $f.StartPosition 
 $mm = New-Object System.Windows.Forms.MainMenu
 $file = $mm.MenuItems.Add("&File")
 $sv = New-Object System.Windows.Forms.MenuItem("&Save"); $sv.Shortcut = [System.Windows.Forms.Shortcut]::CtrlS
-$sv.Add_Click({ $script:st.saved++; Save }); [void]$file.MenuItems.Add($sv)
+$sv.Add_Click({ $script:st.saved++; $f.Text = "pc-control-test2 (saved " + $script:st.saved + ")"; Save }); [void]$file.MenuItems.Add($sv)
 $nw = New-Object System.Windows.Forms.MenuItem("&New"); $nw.Shortcut = [System.Windows.Forms.Shortcut]::CtrlShiftN
 $nw.Add_Click({ $script:st.newdoc++; Save }); [void]$file.MenuItems.Add($nw)
 $pr = New-Object System.Windows.Forms.MenuItem("&Print"); $pr.Shortcut = [System.Windows.Forms.Shortcut]::CtrlP; $pr.Enabled = $false
