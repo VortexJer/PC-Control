@@ -5,6 +5,26 @@
 Let an AI see and operate Windows apps cheaply, **without stealing focus, moving your mouse or typing on your keyboard**.
 An MCP server for Claude Code (and any MCP client). Early version: it works, but expect rough edges.
 
+## Quick start
+
+Windows 10/11, Python 3.10+ and [Claude Code](https://claude.com/claude-code). In PowerShell:
+
+```powershell
+# install
+pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip
+pc-control install
+
+# update (from any earlier version)
+pc-control update
+
+# uninstall (everything it added, then the package)
+pc-control uninstall
+pip uninstall pc-control
+```
+
+Then open a **new** Claude Code session and ask, for example, *"what do I have open in Word?"*. Details in [Install](#install),
+[Update](#update) and [Uninstall](#uninstall).
+
 - **Sees a window without focusing it.** `look` picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks.
   It never sends empty text, text that costs more than the image, or text that does not cover the window.
 - **Acts on a window without focusing it.** Clicks and typing go straight to the control (`BM_CLICK`, `EM_REPLACESEL`, UI Automation patterns...).
