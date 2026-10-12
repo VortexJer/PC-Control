@@ -1037,7 +1037,7 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
     taskbar so you can open it with a click. If the app ignores the request and appears open, it is minimized immediately."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
     before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
-    p = subprocess.Popen(command, startupinfo=si, creationflags=creationflags)
+    p = subprocess.Popen(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
     found, honored, t0, last = {}, True, time.time(), 0.0
     while time.time() - t0 < wait_s:
         mine = []
@@ -1058,6 +1058,18 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
             "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
 
 
+def app_dir(command):
+    """The folder of the program being launched, used as its working folder (what Windows shortcuts do). Some apps (OBS...) only
+    find their own files from there. None if the program is not given with a path."""
+    import shlex
+    try:
+        exe = shlex.split(command, posix=False)[0].strip('"')
+    except (ValueError, IndexError):
+        return None
+    d = os.path.dirname(os.path.expandvars(exe))
+    return d if d and os.path.isdir(d) else None
+
+
 CHROMIUM = {"msedge", "chrome", "brave", "opera", "vivaldi", "chromium", "arc", "thorium"}
 
 
@@ -1066,7 +1078,7 @@ def open_behind(command, exe, wait_s=15.0):
     without activating it: its button is in the taskbar and the page can be read and used. The focus is never taken."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
     before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
-    p = subprocess.Popen(command, startupinfo=si)
+    p = subprocess.Popen(command, startupinfo=si, cwd=app_dir(command))
     found, t0, last = {}, time.time(), 0.0
     while time.time() - t0 < wait_s:
         for h in top_windows():

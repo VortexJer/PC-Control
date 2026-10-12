@@ -86,7 +86,8 @@ class HiddenDesktop:
         si = _STARTUPINFOW(); si.cb = ctypes.sizeof(si); si.lpDesktop = self.name
         pi = _PROCESS_INFORMATION()
         buf = ctypes.create_unicode_buffer(command)
-        if not _k.CreateProcessW(None, buf, None, None, False, 0x08000000, None, None, ctypes.byref(si), ctypes.byref(pi)):
+        from .core import app_dir
+        if not _k.CreateProcessW(None, buf, None, None, False, 0x08000000, None, app_dir(command), ctypes.byref(si), ctypes.byref(pi)):
             raise OSError(f"could not launch the app (error {ctypes.get_last_error()})")
         _k.CloseHandle(pi.hThread)
         self.procs[pi.dwProcessId] = pi.hProcess
