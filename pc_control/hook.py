@@ -28,9 +28,11 @@ def _find(query):
     q = str(query).strip()
     if q.isdigit() and win32gui.IsWindow(int(q)):
         return int(q)
-    found = []
-    win32gui.EnumWindows(lambda h, _: found.append(h) if win32gui.IsWindowVisible(h) and q.lower() in win32gui.GetWindowText(h).lower() else None, None)
-    return found[0] if found else 0
+    try:                                                   # the SAME rule as the server, so the question is about the window it will touch
+        from .core import find_window
+        return find_window(q)
+    except Exception:
+        return 0                                           # not found or ambiguous: the server refuses it anyway, nothing to ask
 
 
 _VERBS = T("verbs")                   # in the user's language (see ui_text.py)
@@ -49,6 +51,8 @@ def _action(tool, args, what):
 
 
 PENDING = []          # (signature, tool, window key): "asked" marks that are written ONLY after the question has been delivered (see main)
+FORCE_ASK = [False]   # the server already reported that Claude Code's own dialog was skipped for this call: ask through the hook instead
+NATIVE_MODES = ("default", "acceptedits", "plan")   # Claude Code modes whose own permission dialog always appears for a tool not allowed
 
 
 def _decide(data):
@@ -58,6 +62,7 @@ def _decide(data):
     if tool in ("windows",) or policy.mode() == "bypass":
         return None
     s = perm.sig(tool, args)
+    FORCE_ASK[0] = perm.fresh("pending", s)
     if tool == "open_app":
         try:
             import shlex
@@ -199,15 +204,37 @@ def main():
                 sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PermissionRequest", "decision": {"behavior": "allow"}}}))
                 sys.stdout.flush()
             else:
-                perm.mark("shown", perm.sig(str(data.get("tool_name", "")).rsplit("__", 1)[-1], data.get("tool_input") or {}))   # the dialog IS GOING to be shown
+                s = perm.sig(str(data.get("tool_name", "")).rsplit("__", 1)[-1], data.get("tool_input") or {})
+                perm.mark("shown", s)                                  # the dialog IS GOING to be shown
+                perm.mark("asked", s)                                  # and the call only reaches the server if the user says yes
             return 0
         reason = decide(data, commit=False)
-        if reason:
+        native = str(data.get("permission_mode", "")).lower() in NATIVE_MODES and not FORCE_ASK[0]
+        if reason and native:
+            # Claude Code's OWN dialog (Tool use ... 1. Yes / 2. Yes, don't ask again / 3. No), with our sentence shown among the
+            # parameters and no "Hook ... requires confirmation" line. Nothing is decided here: the dialog appears because PC-Control's
+            # tools are not pre-allowed. The PermissionRequest hook below records that it was shown; if a rule skipped it, the server refuses
+            # and the repeated call is asked through the hook.
+            args = dict(data.get("tool_input") or {})
+            perm.take("asked", perm.sig(str(data.get("tool_name", "")).rsplit("__", 1)[-1], args))      # no stale yes from before
+            args = {T("param"): reason, **args}                     # first, so it is read before the other parameters
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "updatedInput": args}}, ensure_ascii=True))
+            sys.stdout.flush()
+            for _s, tool, key in PENDING:
+                if key:
+                    perm.set_last(tool, key)                       # so "don't ask again" applies to THIS window only
+            PENDING.clear()
+        elif reason:
             # ensure_ascii: ASCII-only output (accents and symbols travel as \uXXXX) so NO console encoding can break it
             sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "ask",
                                                                 "permissionDecisionReason": reason}}, ensure_ascii=True))
             sys.stdout.flush()
             commit_marks()                                          # only after delivering the question
+        elif str(data.get("tool_name", "")).startswith("mcp__PC-Control__") and native:
+            # Nothing to ask: say so BEFORE Claude Code draws its dialog. Answering later (PermissionRequest) let the dialog flash for an instant.
+            sys.stdout.write(json.dumps({"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow",
+                                                                "permissionDecisionReason": "PC-Control: no question needed"}}))
+            sys.stdout.flush()
     except Exception:
         return 0                                           # a hook failure must never break the tool: the server keeps protecting
     return 0
