@@ -32,7 +32,7 @@ description: Use when the user asks you to see, read or operate an app or window
 
 # PC-Control: Claude on the PC
 
-Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`, `key`, `drag`, `open_app`.
+Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`, `key`, `drag`, `show`, `open_app`.
 
 ## Flow
 1. `windows` lists the windows, most recent first. `[IN USE]` = where the user is working right now;
@@ -46,6 +46,7 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
    - `read(window)` gives the WHOLE text of a document, page or editor (in pieces); do not scroll and look page by page to read.
    - `scroll(window, "down", target=id, amount=2)` scrolls by pages, or `top`/`bottom`.
    - `type` on a drop-down or list picks the entry with that text.
+   - If the user asks WHERE to click ("where is the button to...?"), answer with `show` (a circle around it), do not click it for them.
    - Excel: the grid is not in `look`; `read(window)` gives the cells and `type(window, "B3", text)` writes one (`=...` = formula).
    - Keep `look` in mode auto: ask for `mode=image` only when the text really is not enough (an image costs several times more).
 

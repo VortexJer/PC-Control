@@ -188,6 +188,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
 | `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`), or only the lines that match (`find="a|b"`, numbered). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
+| `show` | Shows **you** where something is: an orange circle around an element (by id, name or `x,y`) with an optional label, above its window, never clicking. It goes away when you click there, when that spot changes (you did it), or after a few seconds. For "where do I click to...?". |
 | `open_app` | Launches an app minimized with its taskbar button, so you can open it and watch, in its own folder (as a shortcut does). If the window belongs to a process the launcher starts (Windows Media Player, Git GUI) or to a Store app, it is found and minimized too, and if it grabbed the focus it is handed back to you. Browsers (Edge, Chrome, Brave...) open behind your windows instead, not minimized, because a minimized browser hides its page from accessibility; the focus is never taken. `hidden=true` uses an invisible desktop, only when you ask for it. |
 
 ## Adapts to your PC
@@ -232,6 +233,7 @@ python tests/test_server.py       # MCP server end to end, with its safety rules
 python tests/test_policy.py       # permission modes and categories
 python tests/test_hook.py         # the permission hooks
 python tests/test_cursor.py       # the orange cursor (shows it for a few seconds)
+python tests/test_mark.py         # show(): the circle is above its window and goes away when that spot changes
 python tests/test_resize.py       # moving / resizing the window mid-action
 python tests/test_word.py         # Word: Claude's own insertion point (simulated Word)
 python tests/test_input_share.py  # you and Claude working in the same app
