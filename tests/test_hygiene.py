@@ -17,8 +17,9 @@ def scan(text, patterns):
     return [p for p in patterns if re.search(p, text, re.I)]
 
 # positive control: the scanner MUST detect each kind of personal data
-# samples use reserved names that can never belong to anyone (example.com is reserved for this by RFC 2606)
-for sample in ["C:" + chr(92) + "Users" + chr(92) + "Example", "C:/Users/Example", "my email someone@example.com", "https://github.com/octocat/repo", "/c/Users/example"]:
+# samples: the repo owner's public GitHub noreply address (already in every commit) and a path that belongs to nobody
+for sample in ["C:" + chr(92) + "Users" + chr(92) + "Example", "C:/Users/Example", "my email 222700615+VortexJer@users.noreply.github.com",
+               "https://github.com/octocat/repo", "/c/Users/example"]:
     assert scan(sample, GENERIC), f"the scanner does not detect: {sample}"
 assert not scan("neutral text about windows and tokens", GENERIC), "false positive"
 
