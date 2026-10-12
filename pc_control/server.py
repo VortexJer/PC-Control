@@ -217,7 +217,7 @@ _LAST_NOTICE = {}                                        # hwnd -> seconds the u
 
 def verdict(result, delta):
     """One sentence saying whether the action did its job, checked against what actually changed in the window."""
-    if result.startswith(("did not press", "did not open", "did not drag", "at least 2 points are needed", "window minimized", "the element is no longer", "unknown id", "the window changed")):
+    if result.startswith(("did not press", "did not open", "did not drag", "did not type", "did not select", "did not scroll", "did not save", "at least 2 points are needed", "window minimized", "the element is no longer", "unknown id", "the window changed")):
         return "NOT EXECUTED"
     if "drag of" in result:
         return "drag sent: to see whether it drew, check with look (image mode)"
@@ -231,6 +231,10 @@ def verdict(result, delta):
         return "WARNING: the typed text is not in the field; check with look"
     if "the field now contains the text" in result:
         return "typing confirmed by reading the field back"
+    if "Excel through COM" in result and "now shows" in result:
+        return "cell written, confirmed by reading it back"
+    if "saved through COM" in result or "menu command «" in result or "pressed through UI Automation; no keys" in result:
+        return "command run by the app itself"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
     if delta.startswith("the window is gone"):
