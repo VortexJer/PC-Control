@@ -28,16 +28,48 @@ _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
 
 class Item:
-    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value")
+    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value", "aid", "parent")
     def __init__(self, kind, name, rect, ctrl=None, src="uia", clickable=False):
         self.id = 0; self.kind = kind; self.name = name; self.rect = rect
         self.ctrl = ctrl; self.src = src; self.clickable = clickable
         self.value = ""                                      # what a text field currently contains (never for password fields)
+        self.aid = ""                                        # its AutomationId when it was looked at (identity check before acting)
+        self.parent = None                                   # (kind, name) of the container it was in (a namesake elsewhere is not it)
 
 
 def line_key(it):
     """What identifies an element in the 'what changed' comparison: its kind, name and, for text fields, what they contain."""
     return f"{it.kind}|{it.name}" + (f"={it.value[:30]}" if it.value else "")
+
+
+def secret_name(*names):
+    """True if a field's name, AutomationId or help text says it holds a secret (password, PIN, API key, card number...): such a field is
+    neither read nor typed into, whatever the app calls its control type."""
+    from .policy import PASSWORD_NAME
+    return any(n and PASSWORD_NAME.search(n) for n in names)
+
+
+def is_secret_field(it):
+    """Read NOW: is the control behind this item a password / secret field? Fails closed on what it can read (IsPassword true, a native
+    ES_PASSWORD edit, a secret-sounding name / id / help text)."""
+    c = it.ctrl
+    if c is None:
+        return secret_name(it.name)
+    try:
+        if c.IsPassword:
+            return True
+    except Exception:
+        pass
+    nh, cls = _native(c)
+    try:
+        if nh and "edit" in cls and win32gui.GetWindowLong(nh, win32con.GWL_STYLE) & 0x20:        # ES_PASSWORD
+            return True
+    except Exception:
+        pass
+    try:
+        return secret_name(c.Name, c.AutomationId, c.HelpText, it.name)
+    except Exception:
+        return secret_name(it.name)
 
 
 def field_value(ctrl, editable_only=False):
@@ -212,9 +244,9 @@ def row_cells(c, name):
 def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
     root = auto.ControlFromHandle(hwnd)
     l, t = rect[0], rect[1]
-    t0 = time.time(); n = 0; items = []; stack = [(root, 0)]
+    t0 = time.time(); n = 0; items = []; stack = [(root, 0, None)]
     while stack:
-        c, d = stack.pop(); n += 1
+        c, d, ps = stack.pop(); n += 1
         if n > max_nodes or time.time() - t0 > budget_s:
             break
         try:
@@ -227,8 +259,13 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
             name = fallback_name(c, kind)
         if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
             it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE or kind in LISTS)
+            it.parent = ps
+            try:
+                it.aid = c.AutomationId or ""
+            except Exception:
+                pass
             if kind == "EditControl":
-                v = field_value(c, editable_only=True)
+                v = None if secret_name(name, it.aid) else field_value(c, editable_only=True)      # a field called "API key" is not read either
                 it.value = (v or "").replace("\r", " ").replace("\n", " ").strip()[:80]
             elif kind in ("ComboBoxControl", "CheckBoxControl", "RadioButtonControl"):
                 it.value = state_value(c, kind)                 # what is chosen / ticked: visible in look and in "what changed"
@@ -240,7 +277,7 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                     continue
         if d < 28:                                              # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
             try:
-                stack.extend((ch, d + 1) for ch in reversed(c.GetChildren()))
+                stack.extend((ch, d + 1, (kind[:-7].lower(), name)) for ch in reversed(c.GetChildren()))
             except Exception:
                 pass
     return items
@@ -410,7 +447,7 @@ def _look_minimized(hwnd, mode, edge):
             assign_ids(hwnd, items)
             text = list_format(items); tok = txt_cost(text)
             _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items},
-                            "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia"}
+                            "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia", "pid": window_pid(hwnd)}
             return {"window": win32gui.GetWindowText(hwnd)[:50], "hwnd": hwnd, "size": f"{w}x{h}", "image_cost": img_cost(*fit(w, h, edge)),
                     "mode": "uia", "why": f"minimized: tree {tok} tok, no capture", "tokens": tok, "text": text, "minimized": True}
     # Capturing a minimized window would force it to be shown (Windows does not allow restoring it off-screen): flicker.
@@ -467,7 +504,7 @@ def _look(hwnd, mode, edge):
         else:
             res.update(text=text, tokens=tokens)
         _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items if it.src == "uia"},
-                        "rect": rect, "scale": scale, "mode": kind}
+                        "rect": rect, "scale": scale, "mode": kind, "pid": window_pid(hwnd)}
         return res
 
     def numbered(items):
@@ -584,17 +621,97 @@ def live_rel(hwnd, it):
                 return (r.left - wl, r.top - wtop, r.right - wl, r.bottom - wtop)
         except Exception:
             pass
+    # The stored control is no good. Looking for a namesake is only safe when there is exactly ONE, in the same container and with the
+    # same id: a second "OK" / "Delete" in another panel or dialog is NOT the element that was looked at. Otherwise: look again.
     ox, oy = (it.rect[0] + it.rect[2]) // 2, (it.rect[1] + it.rect[3]) // 2
-    best = None
-    for f in walk_uia(hwnd, win32gui.GetWindowRect(hwnd)):                       # the tree as it is NOW
-        if f.name == it.name and f.kind == it.kind:
-            d = abs((f.rect[0] + f.rect[2]) // 2 - ox) + abs((f.rect[1] + f.rect[3]) // 2 - oy)
-            if best is None or d < best[0]:
-                best = (d, f)
-    if best is None:
+    cands = [f for f in walk_uia(hwnd, win32gui.GetWindowRect(hwnd)) if f.name == it.name and f.kind == it.kind]       # the tree as it is NOW
+    if len(cands) != 1:
         return None
-    it.ctrl, it.rect = best[1].ctrl, best[1].rect
-    return best[1].rect
+    f = cands[0]
+    if it.aid and f.aid and it.aid != f.aid:
+        return None
+    if it.parent and f.parent and it.parent != f.parent:
+        return None
+    rc = win32gui.GetWindowRect(hwnd); diag = math.hypot(rc[2] - rc[0], rc[3] - rc[1])
+    dist = math.hypot((f.rect[0] + f.rect[2]) // 2 - ox, (f.rect[1] + f.rect[3]) // 2 - oy)
+    if not (it.aid and f.aid) and dist > 0.35 * diag:                # no id to vouch for it: it cannot have gone far
+        return None
+    it.ctrl, it.rect, it.aid, it.parent = f.ctrl, f.rect, f.aid or it.aid, f.parent or it.parent
+    return f.rect
+
+
+def window_pid(hwnd):
+    try:
+        return win32process.GetWindowThreadProcessId(hwnd)[1]
+    except Exception:
+        return 0
+
+
+def stale_state(hwnd):
+    """True (and the snapshot is dropped) if this window handle now belongs to ANOTHER program than the one that was looked at: handles
+    are reused after a window closes, and its old ids would point into somebody else's window."""
+    st = _state.get(hwnd)
+    if st and st.get("pid") and window_pid(hwnd) != st["pid"]:
+        _state.pop(hwnd, None)
+        return True
+    return False
+
+
+# ---------- is it still the same element? ----------
+NAME_KINDS = {"button", "menuitem", "listitem", "hyperlink", "checkbox", "radiobutton", "tabitem", "treeitem", "splitbutton", "dataitem"}
+
+
+def norm_name(s):
+    """A name for comparing: no LTR/RTL marks (Cf), one space between words, case-insensitive."""
+    s = "".join(ch for ch in (s or "") if unicodedata.category(ch) != "Cf")
+    return " ".join(s.split()).casefold()
+
+
+def live_identity(it):
+    """(kind, name, AutomationId) read NOW from the control behind an item; None if it has no control (OCR) or cannot be read."""
+    c = it.ctrl
+    if c is None:
+        return None
+    try:
+        return c.ControlTypeName[:-7].lower(), c.Name or "", c.AutomationId or ""
+    except Exception:
+        return None
+
+
+def identity_problem(it, live=None):
+    """None if the element behind `it` is still the one that was looked at; otherwise a sentence saying what changed. A UI Automation
+    reference stays valid while the app reuses the control for something else (a Buy/Sell toggle, recycled rows of a virtual list): the
+    live type and name must match. Fields whose name is their value (edits) only compare type and id, so typing does not trip it."""
+    live = live or live_identity(it)
+    if live is None:
+        return None                                                  # cannot read it: live_rel() decides whether it is gone
+    kind, name, aid = live
+    if kind != it.kind:
+        return f"the element changed (was a {it.kind} «{it.name[:30]}», now a {kind} «{name[:30]}»)"
+    if it.kind in NAME_KINDS:
+        was, now = norm_name(it.name), norm_name(name)
+        if was != now:
+            if it.aid and aid == it.aid and (not now or was.startswith("(unnamed") or norm_name(it.aid) == was):
+                return None                                          # its name came from the id (the app dropped the real one): same id
+            return f"the element changed (was «{it.name[:30]}», now «{name[:30]}»)"
+    elif it.aid and aid and it.aid != aid:
+        return f"the field changed (id was «{it.aid[:30]}», now «{aid[:30]}»)"
+    return None
+
+
+def item_at(hwnd, x, y):
+    """The smallest element of the last look that contains the point (x, y) of that look (window pixels), or None."""
+    st = _state.get(hwnd)
+    if not st:
+        return None
+    best = None
+    for it in st["items"].values():
+        r = it.rect
+        if r[0] <= x <= r[2] and r[1] <= y <= r[3]:
+            a = (r[2] - r[0]) * (r[3] - r[1])
+            if best is None or a < best[0]:
+                best = (a, it)
+    return best[1] if best else None
 
 
 # ---------- actions without focusing ----------

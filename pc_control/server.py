@@ -174,6 +174,113 @@ def _gate(window, act, confirm=False):
     return hwnd
 
 
+# ---- re-verified right before acting: between look() / _gate() and the real action the window is alive ----
+def _category(hwnd):
+    """The protection category the window falls under NOW (protected app, sensitive title, ask mode) or None."""
+    return policy.needs_ask(policy.mode(), _proc(hwnd), win32gui.GetWindowText(hwnd))
+
+
+def _recheck_window(hwnd, cat0):
+    """The window (and any dialog it opened) must still be what the user was asked about: a title that turned into a login or a payment, a
+    protected category that was not there, a sign-in dialog that popped up. Raises ToolError (not executed) if not."""
+    cat = _category(hwnd)
+    if cat and cat != cat0:
+        raise ToolError(f"the window changed while acting (now: {cat}): not executed. Repeat the call so the user is asked about it")
+    if policy.mode() == "bypass":
+        return
+    for h in core.popup_windows(hwnd):
+        try:
+            pc = policy.needs_ask(policy.mode(), _proc(h), win32gui.GetWindowText(h))
+        except Exception:
+            continue
+        if pc and pc not in (cat0, policy.ASK_ALL):
+            raise ToolError(f"a dialog appeared ({pc}): not executed. Repeat the call so the user is asked about it")
+
+
+def _live_name(it):
+    """The name of what is behind the item RIGHT NOW (the policy must judge what will really be pressed), else the one looked at."""
+    live = core.live_identity(it)
+    return (live[1] if live else it.name) or it.name
+
+
+def _guard_element(hwnd, it, confirm, verb="press"):
+    """Right before acting on an element id: it must be the same element that was looked at (a reused control, a recycled row, a toggle
+    that changed its label) and the sensitive-action policy runs on its LIVE name. Returns a sentence if it must NOT be executed."""
+    if core.stale_state(hwnd):
+        return "unknown id: this window is not the app that was looked at (its handle was reused): call look() again"
+    bad = core.identity_problem(it)
+    if bad:
+        return f"{bad}: look again"
+    policy.check_click(policy.mode(), _live_name(it), confirm)
+    return None
+
+
+CLOSE_NAMES = {"close", "cerrar", "fermer", "schliessen", "schließen", "chiudi", "fechar"}
+CLIPBOARD_KEYS = {("ctrl", "c"), ("ctrl", "x"), ("ctrl", "v"), ("ctrl", "insert"), ("shift", "insert"), ("shift", "delete")}
+
+
+def _guard_point(hwnd, t, confirm):
+    """x,y carries no identity. With a look() behind it, the element of that look under the point is judged: it must still be that element
+    and the sensitive-action policy runs on its live name. Without a look nothing is known about what is there (see README)."""
+    if core.stale_state(hwnd):
+        raise ToolError("this window is not the app that was looked at (its handle was reused): call look() again")
+    st = core._state.get(hwnd)
+    if not st:
+        return
+    k = st.get("scale", 1.0)
+    it = core.item_at(hwnd, int(t[0] * k), int(t[1] * k))
+    if it is None:
+        return
+    bad = core.identity_problem(it)
+    if bad:
+        raise ToolError(f"{bad}: look again before clicking by coordinates")
+    policy.check_click(policy.mode(), _live_name(it), confirm)
+
+
+def _mine(hwnd):
+    return hwnd in OPENED or win32process.GetWindowThreadProcessId(hwnd)[1] in OPENED_PIDS
+
+
+def _closing_guard(hwnd, confirm):
+    """Closing a window Claude did not open can lose the user's work: it is a delicate action (asked every time)."""
+    if policy.mode() != "bypass" and not confirm and not _mine(hwnd):
+        raise policy.NeedsPermission("Claude wants to close a window it did not open. Do you allow it?", detail=T_("close_other"))
+
+
+def _key_guard(hwnd, name, confirm):
+    """Keys that act without naming what they act on: alt+f4 closes the window, the clipboard keys read or change the user's clipboard
+    (which may hold a copied password), enter / space press the default button of a dialog (maybe «Delete»)."""
+    if policy.mode() == "bypass" or confirm:
+        return
+    from .actions import norm_combo
+    combo = norm_combo(name) or ()
+    if combo == ("alt", "f4"):
+        _closing_guard(hwnd, confirm)
+    elif combo in CLIPBOARD_KEYS:
+        raise policy.NeedsPermission("Claude wants to use the clipboard (copy, cut or paste). Do you allow it?", detail=T_("clipboard"))
+    elif combo in (("enter",), ("space",)):
+        bad = _dialog_default_risk(hwnd)
+        if bad:
+            raise policy.NeedsPermission(f"Claude wants to press {combo[0]} in a dialog that offers '{bad}'. Do you allow it?", detail=T_("press_in_dialog", name=bad))
+
+
+def _dialog_default_risk(hwnd):
+    """The name of a sensitive button (Delete, Send, Pay...) offered by a dialog of this app, or None. Enter or space would press it unseen."""
+    for h in core.popup_windows(hwnd) + ([hwnd] if win32gui.GetClassName(hwnd) == "#32770" else []):
+        try:
+            for it in core.walk_uia(h, win32gui.GetWindowRect(h), offscreen_ok=True, budget_s=1.5):
+                if it.kind in ("button", "splitbutton") and policy.SENSITIVE_ACTION.search(it.name or ""):
+                    return it.name
+        except Exception:
+            continue
+    return None
+
+
+def T_(key, **kw):
+    from .ui_text import T
+    return T(key, **kw)
+
+
 def _is_hidden(window):
     """If the window lives on the hidden desktop, everything runs on its thread."""
     if not DESK.h:
@@ -377,15 +484,27 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
     """Click an element (its id from look(), or its exact name), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved; says whether it had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
+        cat0 = _category(hwnd)                              # what the user was (or was not) asked about: re-checked right before acting
         t = _target(target, True, hwnd)
         it = core._state.get(hwnd, {}).get("items", {}).get(t) if isinstance(t, int) else None
         if isinstance(t, int):
-            policy.check_click(policy.mode(), it.name if it else "", confirm)
+            if it is not None:
+                bad = _guard_element(hwnd, it, confirm)
+                if bad:
+                    return f"did not press: {bad} | NOT EXECUTED"
+                if it.ctrl is not None and core.in_title_bar(it.ctrl) and core.norm_name(_live_name(it)) in CLOSE_NAMES:
+                    _closing_guard(hwnd, confirm)           # the title-bar X of a window that is not Claude's
+            else:
+                policy.check_click(policy.mode(), "", confirm)
+        else:
+            _guard_point(hwnd, t, confirm)                   # coordinates carry no identity: judge what is under the point
         old = tuple(it.rect) if it else None
         warn = _ensure_layout(hwnd, hidden, it if isinstance(t, int) else None)
         if warn:
             raise ToolError(warn)
         rel = core.live_rel(hwnd, it) if (it and not hidden) else None        # a SINGLE resolution: pointer, warning and click all use the same one
+        if it is not None and not hidden and rel is None and it.ctrl is not None:
+            return "did not press: the element is no longer where it was (or there are several like it now): look again | NOT EXECUTED"
         if _cursor_wanted(hwnd, hidden):                   # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
             cursor.CURSOR.pointer(x, y, click=True, ms=320, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.36)
@@ -393,11 +512,20 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
             if abs(x2 - x) + abs(y2 - y) > 6:
                 cursor.CURSOR.pointer(x2, y2, click=True, ms=140, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.18)
                 rel = core.live_rel(hwnd, it) if (it and not hidden) else rel
+        # the 0.4 s of the cursor's trip are the window of opportunity: verify AGAIN right before dispatching
+        _recheck_window(hwnd, cat0)
+        if it is not None:
+            bad = _guard_element(hwnd, it, confirm)
+            if bad:
+                return f"did not press: {bad} | NOT EXECUTED"
+            if not hidden and it.ctrl is not None and rel is None:
+                return "did not press: the element is no longer where it was: look again | NOT EXECUTED"
         note = core.moved_note(old, rel) if rel else ""
         res = _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double, rel=rel), note)
         # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
-        if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right:
+        # Not if the click already changed what the element is (a toggle): pressing it again would do the opposite.
+        if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right and not core.identity_problem(it):
             r2 = core.invoke(str(hwnd), t, double=double)
             if r2:
                 time.sleep(0.25)
@@ -423,11 +551,13 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
             it = None
         if it is None:                                     # no blind typing: the id must come from a look() of this window
             raise ToolError("unknown id: call look() on this window first and use an id from its answer (typing without a valid id is not allowed)")
-        try:
-            is_pw = bool(it and it.ctrl is not None and it.ctrl.IsPassword)
-        except Exception:
-            is_pw = False
-        policy.check_type(policy.mode(), it.name if it else "", is_pw)
+        cat0 = _category(hwnd)
+        if core.stale_state(hwnd):
+            raise ToolError("unknown id: this window is not the app that was looked at (its handle was reused): call look() again")
+        bad = core.identity_problem(it)
+        if bad:
+            return f"did not type: {bad}: look again | NOT EXECUTED"
+        policy.check_type(policy.mode(), _live_name(it) + " " + (it.aid or ""), core.is_secret_field(it))      # judged on what the field is NOW
         if it and win32gui.GetClassName(hwnd) != "OpusApp" and (it.ctrl is None or not core._native(it.ctrl)[0]):
             warn = _ensure_layout(hwnd, hidden, it)
             if warn:
@@ -443,6 +573,11 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
                 _, y, x, eh = _screen_point(hwnd, it)
                 cursor.CURSOR.caret(x + 8, y, h=cursor.caret_height(eh, s), scale=s, owner=hwnd)
             time.sleep(0.25)
+        _recheck_window(hwnd, cat0)                        # after the typing bar's trip: same window, same field, still not a secret
+        bad = core.identity_problem(it)
+        if bad:
+            return f"did not type: {bad}: look again | NOT EXECUTED"
+        policy.check_type(policy.mode(), _live_name(it) + " " + (it.aid or ""), core.is_secret_field(it))
         return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress))
     return _on(window, run)
 
@@ -452,6 +587,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
     """Drag (draw, select, move) through points "x1,y1;x2,y2;..." in pixels of the last image. shape: path, line, rect or ellipse (2 points for the last three). Check the result with look mode=image."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
+        cat0 = _category(hwnd)
         try:
             pts = [tuple(int(float(v)) for v in p.split(",")) for p in points.replace(" ", "").split(";") if p]
         except ValueError:
@@ -467,6 +603,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
             cursor.CURSOR.pointer(x0, y0, click=True, ms=300, scale=s, owner=hwnd); time.sleep(0.34)
             x1, y1, _, _ = _screen_point(hwnd, None, shape_pts[-1])
             cursor.CURSOR.pointer(x1, y1, click=False, ms=int(min(2500, 120 + 6 * len(core._densify(shape_pts)))), scale=s, owner=hwnd)
+        _recheck_window(hwnd, cat0)
         return _act(hwnd, hidden, lambda: core.drag(str(hwnd), pts, shape, right))
     return _on(window, run)
 
@@ -476,6 +613,9 @@ def key(window: str, name: str, confirm: bool = False) -> str:
     """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if missing, the answer lists the app's shortcuts (language-dependent). Word: only enter, space, backspace, at Claude's insertion point."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
+        cat0 = _category(hwnd)
+        _key_guard(hwnd, name, confirm)
+        _recheck_window(hwnd, cat0)
         return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
     return _on(window, run)
 
@@ -531,7 +671,8 @@ def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: 
             x, y = int(t[0] * k), int(t[1] * k); rel = (x - 14, y - 14, x + 14, y + 14); name = f"{t[0]},{t[1]}"
         rect = (l + rel[0], tp + rel[1], l + rel[2], tp + rel[3])
         secs = max(2, min(int(seconds or 10), 60))
-        cursor.CURSOR.mark(rect, label[:40], secs, cursor.scale_for(hwnd), owner=hwnd)
+        shown = (f"{label[:30]} «{name[:24]}»" if label.strip() and core.norm_name(label) != core.norm_name(name) else label[:40])
+        cursor.CURSOR.mark(rect, shown, secs, cursor.scale_for(hwnd), owner=hwnd)          # the label never hides what the element really is
         cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
         front = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint((cx, cy)), 2) == hwnd
         disabled = False
@@ -554,7 +695,7 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
         exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
     except (ValueError, IndexError):
         raise ToolError("bad command: give the program (quoted if it has spaces) and its arguments, e.g. notepad.exe \"my notes.txt\"")
-    policy.check_launch(policy.mode(), exe, _allowed(), confirm)
+    policy.check_launch(policy.mode(), exe, _allowed(), confirm, " ".join(shlex.split(command, posix=False)[1:]))
     if hidden:
         r = DESK.open(command); where = "hidden desktop (no taskbar button)"
     else:

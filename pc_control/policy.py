@@ -31,7 +31,10 @@ BLOCKED_APPS = {
         "kitty_portable", "plink", "psftp", "wsl", "wslhost", "wslg", "bash", "sh", "zsh", "fish", "git-bash", "git-cmd", "alacritty",
         "wezterm", "wezterm-gui", "hyper", "tabby", "terminus", "cmder", "conemu", "conemu64", "fluentterminal", "termius", "securecrt", "mobaxterm",
         "xshell", "ttermpro", "teraterm", "xterm", "rxvt", "urxvt", "nu", "ubuntu", "debian", "kali", "kali-linux", "opensuse", "ubuntu2204",
-        "ubuntu2404", "python_console", "idle", "ipython", "jupyter-qtconsole", "cscript", "wscript", "mshta", "wmic", "ssh", "scp", "telnet"},
+        "ubuntu2404", "python_console", "idle", "ipython", "jupyter-qtconsole", "cscript", "wscript", "mshta", "wmic", "ssh", "scp", "telnet",
+        # programs that run code or change the system without a window of their own (living off the land)
+        "python", "pythonw", "py", "pyw", "node", "deno", "bun", "curl", "wget", "certutil", "bitsadmin", "schtasks", "reg", "sc", "taskkill",
+        "msbuild", "installutil", "forfiles", "pcalua", "regsvcs", "regasm", "cmstp", "odbcconf", "ftp", "tftp"},
     "system administration": {
         "regedit", "regedt32", "mmc", "taskmgr", "consent", "secpol", "gpedit", "eventvwr", "msconfig", "perfmon", "systemsettings",
         "control", "compmgmt", "devmgmt", "diskmgmt", "services", "lusrmgr", "netplwiz", "sysdm", "systempropertiesadvanced",
@@ -104,7 +107,10 @@ SENSITIVE_ACTION = re.compile(
     r"bezahlen|kaufen|l.schen|entfernen|senden|installieren|deinstallieren|abmelden|"                      # German
     r"pagare|acquista|elimina|cancella|invia|installa|disinstalla|esci|"                                   # Italian
     r"excluir|apagar|desinstalar|terminar sess)", re.I)
-PASSWORD_NAME = re.compile(r"(contrase|password|passwort|kennwort|mot de passe|senha|\bpin\b|cvv|cvc|clave|secret|token|api key)", re.I)
+PASSWORD_NAME = re.compile(r"(contrase|password|passwd|pwd|passwort|kennwort|mot de passe|senha|passphrase|\bpin\b|cvv|cvc|clave|secret|token|api.?key|"
+                           r"card.?number|n.mero de tarjeta|kartennummer|\biban\b|seed phrase|recovery phrase|private.?key)", re.I)
+LAUNCHERS = {"explorer", "start", "ie4uinit", "cmd", "forfiles", "pcalua", "runas", "rundll32"}       # programs that execute the file they are handed
+SCRIPT_ARG = re.compile(r"\.(bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msix|reg|scr|com|cpl|jar|lnk|appref-ms)\b", re.I)
 
 
 def follow_mode():
@@ -180,8 +186,10 @@ def check_window(m, proc, title, act, allowed, confirm=False, hwnd=0):
         raise PermissionError(f"acting on '{proc}' is not allowed (strict mode). Add it to PC_CONTROL_ALLOW or ~/.pc-control/allow.txt.")
 
 
-def check_launch(m, exe, allowed, confirm=False):
+def check_launch(m, exe, allowed, confirm=False, args=""):
     why = needs_ask(m, exe)
+    if not why and m != "bypass" and exe in LAUNCHERS and (SCRIPT_ARG.search(args or "") or re.search(r"\.exe\b", args or "", re.I)):
+        why = "terminal or console"                      # a launcher that RUNS what it is given (explorer x.bat): it is not an editor opening a file
     if why and not confirm:
         raise _ask(why, exe, 0)
     if m == "strict" and exe not in allowed:

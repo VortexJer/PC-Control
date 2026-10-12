@@ -9,10 +9,10 @@ public class QuietForm2 : Form {
     protected override CreateParams CreateParams { get { CreateParams p = base.CreateParams; p.ExStyle |= 0x08000000 | 0x00000080; return p; } }
 }
 "@
-$script:st = @{ saved = 0; newdoc = 0; color = ""; deep = 0; pick = "" }
+$script:st = @{ saved = 0; newdoc = 0; color = ""; deep = 0; pick = ""; buy = 0; sell = 0 }
 function Save { ($script:st | ConvertTo-Json -Compress) | Set-Content -Path $StatePath -Encoding UTF8 }
 $f = New-Object QuietForm2
-$f.Text = "pc-control-test2"; $f.Width = 520; $f.Height = 420; $f.StartPosition = "Manual"; $f.Location = New-Object System.Drawing.Point(60, 60)
+$f.Text = "pc-control-test2"; $f.Width = 520; $f.Height = 480; $f.StartPosition = "Manual"; $f.Location = New-Object System.Drawing.Point(60, 60)
 # a classic Windows menu (HMENU): "Save\tCtrl+S" and "New\tCtrl+Shift+N"
 $mm = New-Object System.Windows.Forms.MainMenu
 $file = $mm.MenuItems.Add("&File")
@@ -40,6 +40,11 @@ for ($i = 0; $i -lt 12; $i++) { $lab = New-Object System.Windows.Forms.Label; $l
 $deep = New-Object System.Windows.Forms.Button; $deep.Text = "Deep button"; $deep.Top = 5 + 40 * 12; $deep.Left = 5; $deep.Width = 120
 $deep.Add_Click({ $script:st.deep++; Save }); $pn.Controls.Add($deep)
 $f.Controls.Add($pn)
+# a button that CHANGES ITS LABEL under the same control (like a Buy / Sell toggle): the identity check must notice
+$by = New-Object System.Windows.Forms.Button; $by.Text = "Buy now"; $by.Left = 10; $by.Top = 345; $by.Width = 120
+$by.Add_Click({ if ($by.Text -eq "Buy now") { $script:st.buy++ } else { $script:st.sell++ }; Save }); $f.Controls.Add($by)
+$mk = New-Object System.Windows.Forms.Button; $mk.Text = "Make it Sell"; $mk.Left = 145; $mk.Top = 345; $mk.Width = 130
+$mk.Add_Click({ $by.Text = "Sell now"; Save }); $f.Controls.Add($mk)
 # closing with an unsaved "new document" asks first (like a real editor)
 $f.Add_FormClosing({ param($s, $e) if ($script:st.newdoc -gt 0) { $r = [System.Windows.Forms.MessageBox]::Show($f, "Save changes to the new document?", "pc-control-test2", "YesNoCancel"); if ($r -eq "Cancel") { $e.Cancel = $true } } })
 Save

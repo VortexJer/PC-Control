@@ -154,6 +154,32 @@ The cursor is **isolated to the app it acts on**: it is an owned window of the t
 order. **Closing the app removes them for good; minimizing it only hides them** and they come back when you restore the window.
 When Claude Code closes, the PC-Control server exits with it and takes the cursor away.
 
+## What is re-verified when Claude acts
+
+An element id comes from a `look()`, but the window is alive: between `look()` and the action an id can start pointing at something else
+(a Buy / Sell toggle that changed its label, a recycled row of a virtual list, a dialog that reused a control). So nothing is trusted from
+the snapshot; every action re-checks, in this order, and refuses with a clear message (`NOT EXECUTED`: look again) when a step fails:
+
+| Step | What is checked, live |
+|---|---|
+| Handle | The window handle still belongs to the same program that was looked at (handles are reused after a window closes). |
+| Exists / where | The control is still there; its position is re-read. After a resize, the only replacement accepted is **one** namesake in the **same container** with the **same id** and not far away: two "OK" buttons are never guessed between. |
+| Identity | Its live type and name equal the ones that were looked at (case, spaces and invisible direction marks ignored). Nameless controls compare their id; text fields compare type and id, so typing does not trip it. |
+| Window policy | The window's protection category is evaluated again right before dispatching (and after the cursor's trip), and so are the dialogs it opened: a title that became a login or a payment, or a sign-in dialog that popped up, aborts the action so you are asked again. |
+| Action policy | "Delicate action" (pay, delete, send...) and "secret field" are judged on the **live** name, id, help text and password flag, not on the snapshot. |
+
+Also guarded, because they act without naming what they act on: clicking by `x,y` (the element of the last look under that point is judged
+and must still be itself), `key alt+f4` and the title-bar X on a window Claude did not open (you could lose your work), the clipboard keys
+`ctrl+c/x/v` (the clipboard may hold a copied password), and `enter` / `space` in a dialog that offers a delicate button (they press the
+default button unseen). Fields that look like secrets (password, PIN, API key, card number, by name, id or help text) are neither typed
+into nor read, and `open_app` asks before running interpreters and system tools (python, curl, certutil, reg...) or a script / installer
+handed to a launcher. The text `read` returns is marked as data: instructions found in a window or web page are not yours.
+
+Limits that remain: a click by `x,y` with **no** earlier `look()` of that window knows nothing about what is under the point (use ids);
+OCR text has no control behind it, so it can only be checked by position; the checks protect against the model misusing PC-Control's tools,
+not against a model that can run arbitrary commands as you (it could forge the small approval marks under `~/.pc-control/perm`: keep
+Claude Code's own permission for shell and file writes switched on).
+
 ## Keeps working when you move or resize the window
 
 Positions are resolved when Claude acts, not when it looked. Moving the window changes nothing (positions are relative to it); resizing
@@ -246,6 +272,7 @@ python tests/test_powerpoint.py   # PowerPoint: slides and notes (skipped withou
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
 python tests/test_launcher.py     # a launcher whose window belongs to a child process: found, minimized, focus kept
+python tests/test_identity.py     # what is re-verified before acting (mocks + a real Buy/Sell toggle)
 python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
