@@ -1070,12 +1070,25 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
                 honored = False
                 ctypes.windll.user32.ShowWindow(h, 6 if h == win32gui.GetForegroundWindow() else 7)
         time.sleep(0.05)
-    return {"pid": p.pid, "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
+    own = {pid for pid in family if pid != p.pid or not via_shell}       # the app's OWN processes (never the shared shell ones)
+    own = {pid for pid in own if _proc_name(pid) not in SHARED_PROCS}
+    return {"pid": p.pid, "pids": sorted(own), "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
             "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
 
 
 SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "PC-Control-Overlay"}     # the desktop and taskbar
+
+
+SHARED_PROCS = {"explorer", "applicationframehost", "svchost", "dllhost", "runtimebroker", "conhost", "openconsole",
+                "windowsterminal", "sihost", "shellexperiencehost", "startmenuexperiencehost", "searchhost", "textinputhost"}
+
+
+def _proc_name(pid):
+    try:
+        return psutil_name(pid)
+    except Exception:
+        return ""
 
 
 def _all_windows():

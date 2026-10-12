@@ -105,7 +105,11 @@ def _wheel(nh, x, y, direction, amount):
     if msg == 0x020E:
         delta = -delta
     wp = win32api.MAKELONG(0, delta & 0xFFFF); lp = win32api.MAKELONG(x & 0xFFFF, y & 0xFFFF)
-    win32gui.PostMessage(nh, msg, wp, lp)
+    try:
+        win32gui.PostMessage(nh, msg, wp, lp)
+        return True
+    except Exception:                                    # e.g. error 1447 "the window has no scroll bars" (Store apps)
+        return False
 
 
 def scroll(query, target=None, direction="down", amount=1):
@@ -167,7 +171,8 @@ def scroll(query, target=None, direction="down", amount=1):
             l, t, r, bt = win32gui.GetWindowRect(hwnd); cx, cy = (l + r) // 2, (t + bt) // 2
         if not core.wait_user_mouse_idle():
             return "did not scroll: you are pressing or dragging with the mouse; retry when you let go"
-        _wheel(nh, cx, cy, direction, amount)                             # 3) wheel messages (web pages, custom-drawn apps)
+        if not _wheel(nh, cx, cy, direction, amount):                     # 3) wheel messages (web pages, custom-drawn apps)
+            return "did not scroll: this window accepts no scrolling from outside (no scroll pattern, no scroll bars, no wheel messages)"
         return "ok (mouse-wheel messages to the window, the mouse does not move; unconfirmed: the changes below say whether it scrolled)"
     return "did not scroll: no scrollable area found in this window (if it is minimized, ask the user to open it from the taskbar)"
 
@@ -474,6 +479,11 @@ def shortcut(query, combo_text):
         if combo == ("ctrl", "s"):
             return (f"did not press ctrl+s: in this Office (its language) save is {'+'.join(save_key)} and ctrl+s means something else "
                     f"(underline in Spanish). To save, use {'+'.join(save_key)}.")
+    if combo == ("alt", "f4") and win32gui.GetClassName(hwnd) == "Windows.UI.Core.CoreWindow":
+        frame = next((h for h in core.top_windows() if win32gui.GetClassName(h) == "ApplicationFrameWindow"
+                      and win32gui.GetWindowText(h) == win32gui.GetWindowText(hwnd)), None)
+        if frame:
+            hwnd = frame                                   # a Store app closes through its frame, not its inner window
     if combo == ("alt", "f4"):
         before = set(core.popup_windows(hwnd))
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
