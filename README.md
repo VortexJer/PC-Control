@@ -9,17 +9,22 @@ An MCP server for Claude Code (and any MCP client). Early version: it works, but
 
 Windows 10/11, Python 3.10+ and [Claude Code](https://claude.com/claude-code). In PowerShell:
 
+**Install**
+
 ```powershell
-# install
-pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip
-pc-control install
+pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip; pc-control install
+```
 
-# update (from any earlier version)
+**Update** (from any earlier version)
+
+```powershell
 pc-control update
+```
 
-# uninstall (everything it added, then the package)
-pc-control uninstall
-pip uninstall pc-control
+**Uninstall** (everything it added, then the package)
+
+```powershell
+pc-control uninstall; pip uninstall -y pc-control
 ```
 
 Then open a **new** Claude Code session and ask, for example, *"what do I have open in Word?"*. Details in [Install](#install),
