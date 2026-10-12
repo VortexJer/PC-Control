@@ -29,7 +29,7 @@ RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22
 LINGER = 1.6            # an indicator (pointer or bar) is shown for AT LEAST this long before yielding to the other: typing is very fast
 # RING_S, FADE_IN, FADE_OUT: duration of the click ring and of the fades (s)
 ORANGE, WHITE, DARK = (255, 122, 26), (255, 255, 255), (24, 24, 28)
-TITLES = {"pointer": "pc-control-cursor", "caret": "pc-control-caret", "note": "pc-control-note"}
+TITLES = {"pointer": "pc-control-cursor", "caret": "pc-control-caret", "note": "pc-control-note", "mark": "pc-control-mark"}
 
 _u = ctypes.WinDLL("user32", use_last_error=True)
 _u.GetAncestor.argtypes = [wt.HWND, wt.UINT]; _u.GetAncestor.restype = wt.HWND
@@ -175,6 +175,88 @@ def render_note(text, s=1.0, max_w=470):
     return np.concatenate([(a[..., :3] * alpha // 255)[..., ::-1], alpha], axis=2).astype(np.uint8).tobytes(), im.width, im.height
 
 
+def render_mark(w, h, label="", s=1.0):
+    """An orange oval drawn AROUND a w x h element (it does not cover it), with an optional label underneath, to show the user where
+    something is. Returns (premultiplied BGRA bytes, width, height, x offset, y offset of the element inside the drawing)."""
+    from PIL import ImageFont
+    K = 2
+    pad, th = 14 * s, 4 * s                                   # margin around the element and line thickness
+    font = None
+    if label:
+        try:
+            font = ImageFont.truetype("segoeuib.ttf", max(11, round(12 * s)) * K)
+        except Exception:
+            font = ImageFont.load_default(size=max(11, round(12 * s)) * K)
+    meas = ImageDraw.Draw(Image.new("L", (1, 1)))
+    lw = (meas.textlength(label, font=font) / K + 20 * s) if label else 0
+    lh = (font.getbbox("Ag")[3] / K + 12 * s) if label else 0
+    W = int(max(w + 2 * pad + 2 * th, lw) + 4); H = int(h + 2 * pad + 2 * th + (lh + 8 * s if label else 0) + 4)
+    im = Image.new("RGBA", (W * K, H * K), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
+    ox, oy = (W - (w + 2 * pad + 2 * th)) / 2, 2
+    box = [(ox + th / 2) * K, (oy + th / 2) * K, (ox + w + 2 * pad + 1.5 * th) * K, (oy + h + 2 * pad + 1.5 * th) * K]
+    d.ellipse([box[0] - 1.5 * K * s, box[1] - 1.5 * K * s, box[2] + 1.5 * K * s, box[3] + 1.5 * K * s], outline=WHITE + (230,), width=int((th + 3 * s) * K))
+    d.ellipse(box, outline=ORANGE + (255,), width=int(th * K))
+    # a small "x" badge on the oval: it tells the user a click there makes it go away (any click inside the circle does)
+    bx, by, br = box[2] - 0.15 * (box[2] - box[0]), box[1] + 0.15 * (box[3] - box[1]), 9 * s * K
+    d.ellipse([bx - br, by - br, bx + br, by + br], fill=ORANGE + (255,), outline=WHITE + (255,), width=int(1.6 * s * K))
+    q = br * 0.42
+    d.line([bx - q, by - q, bx + q, by + q], fill=WHITE + (255,), width=int(2.2 * s * K))
+    d.line([bx - q, by + q, bx + q, by - q], fill=WHITE + (255,), width=int(2.2 * s * K))
+    if label:
+        lx, ly = (W - lw) / 2, oy + h + 2 * pad + 2 * th + 6 * s
+        d.rounded_rectangle([lx * K, ly * K, (lx + lw) * K, (ly + lh) * K], radius=int(lh * K / 2), fill=ORANGE + (255,))
+        d.text(((lx + 10 * s) * K, (ly + 5 * s) * K), label, fill=(20, 20, 24, 255), font=font)
+    im = im.resize((W, H), Image.LANCZOS)
+    a = np.asarray(im).astype(np.uint16); alpha = a[..., 3:4]
+    data = np.concatenate([(a[..., :3] * alpha // 255)[..., ::-1], alpha], axis=2).astype(np.uint8).tobytes()
+    return data, W, H, int(ox + pad + th), int(oy + pad + th)
+
+
+def _region(owner, rel):
+    """Grayscale picture of the INSIDE of the marked element, taken from the WINDOW's own pixels (PrintWindow): it is right even if
+    other windows cover it, and the oval (drawn around the element, in another window) is never in it."""
+    import win32gui
+    from .core import grab
+    l, t, r, b = rel
+    if r - l < 6 or b - t < 6 or not owner:
+        return None
+    try:
+        img = grab(owner, win32gui.GetWindowRect(owner))
+        if img is None:
+            return None
+        crop = img[max(0, t + 2):max(0, b - 2), max(0, l + 2):max(0, r - 2)]
+        return crop.mean(axis=2).astype(np.int16) if crop.size else None
+    except Exception:
+        return None
+
+
+def mark_clicked(M, d):
+    """True if the user is pressing a mouse button inside the circle (the oval and its margin). Called on EVERY frame, so even a quick
+    click is caught. It only READS the mouse position and button state: nothing is moved or pressed."""
+    l, t, r, b = M["rect"]; l, t, r, b = l + d[0], t + d[1], r + d[0], b + d[1]
+    pad = 26 * M.get("s", 1.0)                                       # the whole oval, not only the element inside it
+    u = ctypes.windll.user32
+    if not (u.GetAsyncKeyState(0x01) & 0x8000 or u.GetAsyncKeyState(0x02) & 0x8000):
+        return False
+    pt = wt.POINT(); u.GetCursorPos(ctypes.byref(pt))
+    return l - pad <= pt.x <= r + pad and t - pad <= pt.y <= b + pad
+
+
+def mark_done(M, d):
+    """True when what is inside the marked element changed clearly for a moment (a menu opened, the page changed): the user did it."""
+    now = time.time()
+    cur = _region(M["owner"], M["rel"])
+    if cur is None:
+        return False
+    if M["base"] is None or M["base"].shape != cur.shape or now - M["t_shown"] < 1.5:
+        M["base"] = cur; return False                                    # the window may still be painting: the reference settles first
+    changed = float((np.abs(cur - M["base"]) > 40).mean()) > 0.04      # its content changed (text, a menu, a new page), not just a tint
+    if not changed:
+        M["changed_since"] = None; return False
+    M["changed_since"] = M["changed_since"] or now
+    return now - M["changed_since"] >= 0.35                              # a passing hover flash does not count
+
+
 # ---------- Win32 ----------
 class _BMI(ctypes.Structure):
     _fields_ = [("biSize", wt.DWORD), ("biWidth", wt.LONG), ("biHeight", wt.LONG), ("biPlanes", wt.WORD), ("biBitCount", wt.WORD),
@@ -209,6 +291,11 @@ class ClaudeCursor:
     def note(self, text, x, y, hold=10.0, scale=1.0, owner=0):
         """Notice banner for the user, centred on x with its top edge at y. Lasts `hold` seconds."""
         self._ensure(); self.q.put(("note", str(text), int(x), int(y), float(hold), float(scale), int(owner)))
+
+    def mark(self, rect, label="", hold=10.0, scale=1.0, owner=0):
+        """Draw an orange oval around rect = (left, top, right, bottom) on screen, with an optional label, for `hold` seconds: to SHOW the
+        user where something is (nothing is clicked). It follows its window if the user moves it."""
+        self._ensure(); self.q.put(("mark", tuple(int(v) for v in rect), str(label), float(hold), float(scale), int(owner)))
 
     def hide_note(self):
         if self.thread and self.thread.is_alive():
@@ -271,6 +358,16 @@ class ClaudeCursor:
                                       ctypes.byref(_BLEND(0, 0, max(0, min(255, int(alpha))), 1)), 2)             # ULW_ALPHA
                 if not self.shown:
                     win32gui.ShowWindow(self.h, 4); self.shown = True                                               # SW_SHOWNOACTIVATE: does not activate
+                    self.above_owner()
+
+            def above_owner(self):
+                """Right above its window in the stacking order (not above the user's other windows), never activated."""
+                if not self.owner:
+                    return
+                prev = u.GetWindow(self.owner, 3)                                                                  # GW_HWNDPREV: the window just above it
+                while prev and prev == self.h:
+                    prev = u.GetWindow(prev, 3)
+                u.SetWindowPos(self.h, prev or 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)                          # NOSIZE | NOMOVE | NOACTIVATE
 
             def hide(self):
                 if self.shown:
@@ -280,7 +377,8 @@ class ClaudeCursor:
         for k, w in wins.items(): self.hwnds[k] = w.h
 
         def new_layer(): return {"on": False, "owner": 0, "a": 0.0, "closing": False, "dirty": True, "bg": None, "bg_t": 0.0, "bg_at": None, "pal": None}
-        P, C, N = new_layer(), new_layer(), new_layer()
+        P, C, N, M = new_layer(), new_layer(), new_layer(), new_layer()
+        M.update(until=0.0, data=None)
         P.update(pos=None, frm=(0, 0), to=(0, 0), t0=0.0, dur=0.3, travel=False, click=False, ring_t0=0.0, s=1.0)
         C.update(pos=None, to=(0, 0), h=22, s=1.0)
         N.update(until=0.0, data=None, s=1.0)
@@ -310,7 +408,7 @@ class ClaudeCursor:
                 return None
 
         def reset_all():
-            for L in (P, C, N):
+            for L in (P, C, N, M):
                 L["on"] = False; L["a"] = 0.0
             for w in wins.values(): w.hide()
 
@@ -347,6 +445,14 @@ class ClaudeCursor:
                         data, nw, nh = render_note(text, s)
                         N.update(on=True, owner=own, until=now + hold, data=(data, nw, nh, x - nw // 2, y), closing=False, dirty=True, a=0.0)
                         wins["note"].set_owner(own); N["org"] = origin(own) if own else None
+                    elif cmd[0] == "mark":
+                        _, (l, t, r, b), label, hold, s, own = cmd
+                        data, mw, mh, ex, ey = render_mark(max(1, r - l), max(1, b - t), label, s)
+                        wo = origin(own) if own else (0, 0)
+                        M.update(on=True, owner=own, until=now + hold, data=(data, mw, mh, l - ex, t - ey), closing=False, dirty=True, a=0.0,
+                                 rect=(l, t, r, b), rel=(l - wo[0], t - wo[1], r - wo[0], b - wo[1]) if wo else (0, 0, 0, 0),
+                                 base=None, t_shown=now, changed_since=None, next_check=now + 0.5, s=s)
+                        wins["mark"].set_owner(own); M["org"] = origin(own) if own else None
                     elif cmd[0] == "hide_note":
                         N["closing"] = True
                     elif cmd[0] == "hide":
@@ -355,12 +461,18 @@ class ClaudeCursor:
                 pass
 
             # ---- each layer: continuous visibility, fade and drawing ----
-            for name, L in (("pointer", P), ("caret", C), ("note", N)):
+            for name, L in (("pointer", P), ("caret", C), ("note", N), ("mark", M)):
                 if not L["on"]:
                     continue
                 w, o = wins[name], L["owner"]
-                if name == "note" and now > N["until"]:
-                    N["closing"] = True
+                if name in ("note", "mark") and now > L["until"]:
+                    L["closing"] = True
+                if name == "mark" and not L["closing"] and L["a"] > 0 and mark_clicked(L, L.get("d", (0, 0))):
+                    L["closing"] = True                                    # the user clicked inside the circle: job done
+                if name == "mark" and not L["closing"] and now >= L["next_check"]:
+                    L["next_check"] = now + 0.25
+                    if mark_done(L, L.get("d", (0, 0))):                   # what is inside it changed: the user did it
+                        L["closing"] = True
                 if L.get("close_at") and now >= L["close_at"]:
                     L["closing"] = True; L["close_at"] = None
                 alive = bool(win32gui.IsWindow(o)) if o else True
@@ -418,11 +530,11 @@ class ClaudeCursor:
                     k = ("c", round(s * 20), hh, C["pal"])
                     if k not in cache: cache[k] = render_caret(hh, s, C["pal"])
                     w.present(x - HOT + dx, y - HOT + dy, cache[k], SIZE, SIZE, L["a"]); C["dirty"] = False
-                else:
-                    if not N["dirty"]: continue
-                    data, nw, nh, nx, ny = N["data"]
-                    w.present(nx + dx, ny + dy, data, nw, nh, L["a"]); N["dirty"] = False
-            time.sleep(0.012 if (P["on"] or C["on"] or N["on"]) else 0.05)
+                else:                                                                              # note and mark: a fixed drawing
+                    if not L["dirty"]: continue
+                    data, nw, nh, nx, ny = L["data"]
+                    w.present(nx + dx, ny + dy, data, nw, nh, L["a"]); L["dirty"] = False
+            time.sleep(0.012 if (P["on"] or C["on"] or N["on"] or M["on"]) else 0.05)
 
 
 CURSOR = ClaudeCursor()

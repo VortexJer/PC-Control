@@ -508,6 +508,45 @@ def read(window: str, target: str = "", start: int = 0, length: int = 6000, find
 
 
 @tool
+def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
+    """Show the USER where something is (for "where do I click to...?"): an orange circle around an element (id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
+    def run(hidden):
+        hwnd = _gate(window, False, confirm)
+        if hidden:
+            raise ToolError("that window is on the hidden desktop: the user cannot see it")
+        if win32gui.IsIconic(hwnd):
+            raise ToolError("the window is minimized: ask the user to open it from the taskbar, then call show again")
+        t = _target(target, True, hwnd)
+        l, tp = win32gui.GetWindowRect(hwnd)[:2]
+        if isinstance(t, int):
+            it = core._state.get(hwnd, {}).get("items", {}).get(t)
+            if it is None:
+                raise ToolError("unknown id: call look() on this window first")
+            if it.ctrl is not None:
+                actions.scroll_into_view(it.ctrl)
+            rel = core.live_rel(hwnd, it) or it.rect
+            name = it.name[:40]
+        else:
+            k = core._state.get(hwnd, {}).get("scale", 1.0)
+            x, y = int(t[0] * k), int(t[1] * k); rel = (x - 14, y - 14, x + 14, y + 14); name = f"{t[0]},{t[1]}"
+        rect = (l + rel[0], tp + rel[1], l + rel[2], tp + rel[3])
+        secs = max(2, min(int(seconds or 10), 60))
+        cursor.CURSOR.mark(rect, label[:40], secs, cursor.scale_for(hwnd), owner=hwnd)
+        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+        front = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint((cx, cy)), 2) == hwnd
+        disabled = False
+        if isinstance(t, int) and it.ctrl is not None:
+            try:
+                disabled = not it.ctrl.IsEnabled
+            except Exception:
+                pass
+        return (f"shown to the user: an orange circle around «{name}» for {secs} s (nothing was clicked)"
+                + (". It is DISABLED (greyed out) right now: tell the user what enables it first" if disabled else "")
+                + ("" if front else ". The window is behind other windows there: tell the user to bring it to the front to see it"))
+    return _on(window, run)
+
+
+@tool
 def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
     """Launch an app minimized and unfocused, with its taskbar button: the user watches what you do by opening it. hidden=true (invisible, hidden desktop) ONLY if the user asks for it."""
     _paused()
