@@ -1036,7 +1036,7 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
     """Launch an app MINIMIZED and without activating it: no window on screen, no focus stolen, and its button stays in the
     taskbar so you can open it with a click. If the app ignores the request and appears open, it is minimized immediately."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
-    before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
+    before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
     p = subprocess.Popen(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
     found, honored, t0, last = {}, True, time.time(), 0.0
     family = {p.pid}
@@ -1048,7 +1048,7 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
         mine = []
         win32gui.EnumWindows(lambda h, _: mine.append(h) if win32gui.IsWindowVisible(h) and (
             win32process.GetWindowThreadProcessId(h)[1] in family
-            or (via_shell and h not in before and win32gui.GetWindowText(h) and win32gui.GetClassName(h) != "PC-Control-Overlay")) else None, None)
+            or (via_shell and h not in before and win32gui.GetWindowText(h) and win32gui.GetClassName(h) not in SHELL_CLASSES)) else None, None)
         for h in mine:
             if h in before or h in found:
                 continue
@@ -1061,9 +1061,28 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
         if any(found.values()) and time.time() - last > 0.6:
             break
         time.sleep(0.001)
+    # Store apps (and some others) activate and restore themselves a moment AFTER appearing: keep them minimized for a while, and if
+    # one took the focus, SW_MINIMIZE gives it back to the user's window
+    end = time.time() + (3.0 if found else 0)
+    while time.time() < end:
+        for h in list(found):
+            if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow":
+                honored = False
+                ctypes.windll.user32.ShowWindow(h, 6 if h == win32gui.GetForegroundWindow() else 7)
+        time.sleep(0.05)
     return {"pid": p.pid, "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
             "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
+
+
+SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "PC-Control-Overlay"}     # the desktop and taskbar
+
+
+def _all_windows():
+    """Every top-level window that exists right now (visible or not, with or without title): anything not in here appeared later."""
+    out = set()
+    win32gui.EnumWindows(lambda h, _: out.add(h), None)
+    return out
 
 
 def _exe_of(command):
@@ -1103,7 +1122,7 @@ def open_behind(command, exe, wait_s=15.0):
     """Browsers hide the page from accessibility while minimized, so a browser is opened NOT minimized but behind your windows and
     without activating it: its button is in the taskbar and the page can be read and used. The focus is never taken."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
-    before = set(top_windows()); fg0 = win32gui.GetForegroundWindow()
+    before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
     p = subprocess.Popen(command, startupinfo=si, cwd=app_dir(command))
     found, t0, last = {}, time.time(), 0.0
     while time.time() - t0 < wait_s:
