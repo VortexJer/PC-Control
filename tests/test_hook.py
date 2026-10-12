@@ -2,6 +2,7 @@
 import io, json, os, sys, tempfile, time, types
 sys.stdout.reconfigure(encoding="utf-8")
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.environ["PC_CONTROL_LANG"] = "en"                      # the questions are checked in English (Spanish: see the end)
 tmp = tempfile.mkdtemp(prefix="pc-control_hook_"); os.environ["PC_CONTROL_HOME"] = tmp; os.environ.pop("PC_CONTROL_MODE", None)
 from pc_control import hook, perm
 
@@ -186,6 +187,13 @@ code = hook.main(); sys.stdout = old
 c["a hook failure never breaks the tool (exits 0 and silently)"] = code == 0 and buf.getvalue() == ""
 os.environ["PC_CONTROL_MODE"] = "bypass"
 c["bypass mode: does not ask"] = hook.decide(look) is None
+from pc_control import ui_text                                    # what the user reads follows their Windows language
+os.environ["PC_CONTROL_LANG"] = "es"
+c["Spanish: the question and the category are in Spanish"] = (ui_text.T("allow") == "¿Lo permites?"
+                                                               and ui_text.category("terminal or console") == "terminal o consola"
+                                                               and "Déjala como estaba (800x600)" in ui_text.T("notice", w=800, h=600))
+os.environ["PC_CONTROL_LANG"] = "en"
+c["English otherwise"] = ui_text.T("allow") == "Allow it?" and ui_text.category("terminal or console") == "terminal or console"
 
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 ok = all(c.values())

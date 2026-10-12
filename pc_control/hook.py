@@ -7,6 +7,7 @@ shows its normal permission dialog and the model cannot answer it. It is lightwe
 import ctypes, ctypes.wintypes as wt, json, os, sys
 import win32gui, win32process
 from . import perm, policy
+from .ui_text import T, category
 
 
 def _proc(hwnd):
@@ -32,19 +33,19 @@ def _find(query):
     return found[0] if found else 0
 
 
-_VERBS = {"drag": "DRAG the mouse (draw, select or move) in", "look": "VIEW the contents of", "click": "CLICK on", "type": "TYPE into", "key": "PRESS a key in"}
+_VERBS = T("verbs")                   # in the user's language (see ui_text.py)
 
 
 def _action(tool, args, what):
     """What Claude wants to do, in a sentence a human understands."""
     if tool == "type":
         txt = str(args.get("text", ""))
-        return f"TYPE «{txt[:60]}{'…' if len(txt) > 60 else ''}» into {what}"
+        return T("type", text=txt[:60] + ("…" if len(txt) > 60 else ""), what=what)
     if tool == "key":
-        return f"PRESS the key «{args.get('name', '?')}» in {what}"
+        return T("key", name=args.get("name", "?"), what=what)
     if tool == "click":
-        return f"CLICK (element {args.get('target', '?')}) on {what}"
-    return f"{_VERBS.get(tool, 'USE')} {what}"
+        return T("click", target=args.get("target", "?"), what=what)
+    return f"{T('verbs').get(tool, T('use'))} {what}"
 
 
 PENDING = []          # (signature, tool, window key): "asked" marks that are written ONLY after the question has been delivered (see main)
@@ -63,13 +64,13 @@ def _decide(data):
             proc = os.path.splitext(os.path.basename(shlex.split(args.get("command", ""), posix=False)[0].strip('"')))[0].lower()
         except (ValueError, IndexError):
             return None
-        title = ""; what = f"the program «{proc}»"
+        title = ""; what = T("program", proc=proc)
     else:
         hwnd = _find(args.get("window", ""))
         if not hwnd:
             return None
         proc, title = _proc(hwnd), win32gui.GetWindowText(hwnd)
-        what = f"the window «{title[:60] or proc}» (program: {proc})"
+        what = T("window", title=title[:60] or proc, proc=proc)
     cat = policy.needs_ask(policy.mode(), proc, title)
     if cat:
         key = policy.window_key(cat, proc, 0 if tool == "open_app" else hwnd)
@@ -77,20 +78,18 @@ def _decide(data):
             return None
         PENDING.append((s, tool, key))
         if tool == "open_app":
-            action = f"OPEN {what}"
+            action = T("open", what=what)
         else:
             action = _action(tool, args, what)
-        note = (' A plain "yes" only counts for THIS time. If you choose "don\'t ask again", PC-Control applies it only to THIS window '
-                "(not to the others) for as long as this session lasts.")
+        note = " " + T("once")
         if cat == policy.ASK_ALL:
-            return f"Claude wants to {action}.\n\nPC-Control asks you about every window Claude accesses.{note}\n\nAllow it?"
-        return (f"Claude wants to {action}.\n\nThis is a PROTECTED window ({cat}): it could show or change sensitive things "
-                f"(commands, passwords, private data).{note}\n\nAllow it?")
+            return T("wants", action=action) + "\n\n" + T("ask_all") + note + "\n\n" + T("allow")
+        return T("wants", action=action) + "\n\n" + T("protected", cat=category(cat)) + note + "\n\n" + T("allow")
     detail = perm.take("pending", s)                # the server asked to confirm this action (e.g. a sensitive action)
     if detail:
         PENDING.append((s, tool, None))
         det = detail if isinstance(detail, str) else tool
-        return f"Claude wants to {det} in {what}.\n\nPC-Control considers it sensitive and needs your permission every time.\n\nAllow it?"
+        return T("sensitive", what_action=det, what=what) + "\n\n" + T("sensitive2") + "\n\n" + T("allow")
     return None
 
 

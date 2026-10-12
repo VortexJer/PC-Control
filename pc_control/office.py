@@ -150,7 +150,7 @@ def save(hwnd):
         if not word.call(lambda: wb.Path):
             return "did not save: this workbook was never saved, so it has no name yet; the user must choose where (File > Save as)"
         word.call(wb.Save)
-        return f"ok (Excel workbook «{word.call(lambda: wb.Name)}» saved through COM)"
+        return f"ok (Excel workbook saved through COM: {_disk(word.call(lambda: wb.FullName))})"
     if cls == "OpusApp":
         w = word.window(hwnd)
         if w is None:
@@ -159,7 +159,7 @@ def save(hwnd):
         if not word.call(lambda: doc.Path):
             return "did not save: this document was never saved, so it has no name yet; the user must choose where (File > Save as)"
         word.call(doc.Save)
-        return f"ok (Word document «{word.call(lambda: doc.Name)}» saved through COM)"
+        return f"ok (Word document saved through COM: {_disk(word.call(lambda: doc.FullName))})"
     return None
 
 
@@ -212,3 +212,12 @@ def powerpoint_text(hwnd):
         except Exception:
             pass
     return "\n".join(out)
+
+
+def _disk(path):
+    """Proof that a save reached the disk: the file and the time it was last written."""
+    import os, time
+    try:
+        return f"{path}, written at {time.strftime('%H:%M:%S', time.localtime(os.path.getmtime(path)))}"
+    except OSError:
+        return f"{path} (could not read its time on disk)"

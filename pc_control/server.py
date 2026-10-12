@@ -135,6 +135,9 @@ def _by_name(hwnd, name):
     raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(f"[{i}:{it.name[:30]}] ({it.kind})" for i, it in hits[:8]) + " - use the id")
 
 
+OPENED = set()                                            # pids of the apps Claude opened in this session (windows() marks them)
+
+
 def _proc(hwnd):
     pid = win32process.GetWindowThreadProcessId(hwnd)[1]
     k = ctypes.windll.kernel32
@@ -213,6 +216,8 @@ def _layout_ok(hwnd, it, st):
     """True if what is about to be touched is still there: the element (through its live control) or, with no element, the same window size."""
     if win32gui.IsIconic(hwnd):
         return True
+    if st and core._size(win32gui.GetWindowRect(hwnd)) == core._size(st["rect"]):
+        return True                     # same size: the user did not resize it (an element out of view is click's job, not the user's)
     if it is not None:
         return core.live_rel(hwnd, it) is not None
     return not st or core._size(win32gui.GetWindowRect(hwnd)) == core._size(st["rect"])
@@ -220,8 +225,8 @@ def _layout_ok(hwnd, it, st):
 
 def notice_text(ow, oh):
     """What the user sees on the notice banner."""
-    return (f"If you touch this application, Claude will not be able to act on it. Put it back as it was ({ow}x{oh}) and do not touch it any more: "
-            f"when you do, Claude carries on by itself.")
+    from .ui_text import T
+    return T("notice", w=ow, h=oh)                       # in the language of the user's Windows
 
 
 def _ensure_layout(hwnd, hidden, it=None, timeout=None):
@@ -328,10 +333,10 @@ def windows() -> str:
         using = h == fg or h == fg_root
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
-        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(h) else "") + tag
+        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(h) else "") + (" (opened by Claude)" if win32process.GetWindowThreadProcessId(h)[1] in OPENED else "") + tag
                    + (" [ASKS PERMISSION from the user the first time]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}; asks the user for permission before use]" if cat else ""))
     if DESK.h:
-        for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):
+        for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
             cat = policy.needs_ask(m, p, t)
             out.append(f"{h} | {p} | {t[:50]} (hidden)" + (" [ASKS PERMISSION]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     return "\n".join(out)
@@ -356,7 +361,7 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
 
 @tool
 def click(window: str, target: str, right: bool = False, double: bool = False, confirm: bool = False) -> str:
-    """Click an element (its id from look(), or its exact name), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved, and says whether the click had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
+    """Click an element (its id from look(), or its exact name), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved; says whether it had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         t = _target(target, True, hwnd)
@@ -472,17 +477,26 @@ def scroll(window: str, direction: str = "down", target: str = "", amount: int =
 
 
 @tool
-def read(window: str, target: str = "", start: int = 0, length: int = 6000, confirm: bool = False) -> str:
-    """The WHOLE text of the window's document, web page or editor (also out of view), or of an element id, in pieces (start/length; 6000 characters by default, the answer says where to continue). Excel: the cells; PowerPoint: slides and notes. Much cheaper than scrolling and looking. Never reads password fields."""
+def read(window: str, target: str = "", start: int = 0, length: int = 6000, find: str = "", confirm: bool = False) -> str:
+    """The WHOLE text of the window's document, page or editor (also out of view), or of an element, in pieces (start/length, 6000 characters by default). find=\"a|b\": only the matching lines, numbered. Excel: the cells; PowerPoint: slides and notes. Cheaper than scrolling and looking. Never reads password fields."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
-        return actions.read_text(str(hwnd), _target(target, False, hwnd) if str(target).strip() else None, start, length)
+        tgt = _target(target, False, hwnd) if str(target).strip() else None
+        if not find.strip():
+            return actions.read_text(str(hwnd), tgt, start, length)
+        out = actions.read_text(str(hwnd), tgt, 0, 10 ** 7)          # the whole text, then only the lines that matter
+        head, _, body = out.partition("\n")
+        terms = [t.strip().lower() for t in find.split("|") if t.strip()]
+        lines = body.split("\n")
+        hits = [f"{n}: {ln[:300]}" for n, ln in enumerate(lines, 1) if any(t in ln.lower() for t in terms)]
+        src = head.split(": characters")[0]
+        return (f"{src}: {len(hits)} of {len(lines)} lines match" + (" (first 40 shown)" if len(hits) > 40 else "") + "\n" + "\n".join(hits[:40]))
     return _on(window, run)
 
 
 @tool
 def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
-    """Launch an app minimized and unfocused, with its taskbar button: the user watches what you do by opening it. hidden=true (invisible, hidden desktop) ONLY if the user asks for it. Then windows/look."""
+    """Launch an app minimized and unfocused, with its taskbar button: the user watches what you do by opening it. hidden=true (invisible, hidden desktop) ONLY if the user asks for it."""
     _paused()
     try:
         exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
@@ -494,6 +508,7 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
     else:
         r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
+    OPENED.add(r["pid"]); OPENED.update(win32process.GetWindowThreadProcessId(w["hwnd"])[1] for w in r["windows"])
     return f"pid {r['pid']} | {ws} | {where}"
 
 
