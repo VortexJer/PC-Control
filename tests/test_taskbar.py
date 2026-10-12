@@ -106,7 +106,7 @@ try:
 
     # a minimized window is NOT captured (it would have to be shown): it warns instead of flickering
     PHASE[0] = 'image'; im = core.look(str(hw), "image")
-    checks["a minimized window is not captured: it warns"] = im["mode"] == "none" and "hidden=true" in im["why"] and bool(win32gui.IsIconic(hw))
+    checks["a minimized window is not captured: it warns"] = im["mode"] == "none" and "taskbar" in im["why"] and bool(win32gui.IsIconic(hw))
     checks["still minimized at its original place"] = bool(win32gui.IsIconic(hw)) and tuple(win32gui.GetWindowPlacement(hw)[4]) == tuple(rc0)
 finally:
     PHASE[0] = 'end'; stop.set(); th.join()

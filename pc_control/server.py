@@ -97,10 +97,10 @@ def tool(fn):
     return mcp.tool()(wrapper)
 
 
-def _target(target, allow_point=True):
-    """An element id (int) or an 'x,y' point (tuple) from what the model wrote; a clear ToolError otherwise."""
+def _target(target, allow_point=True, hwnd=None):
+    """An element id (int), an 'x,y' point (tuple) or an element NAME (resolved to its id) from what the model wrote."""
     t = str(target).strip()
-    if allow_point and "," in t:
+    if allow_point and re.fullmatch(r"[-\d.\s]*,[-\d.\s]*", t):
         try:
             x, y = (int(float(v)) for v in t.split(","))
         except ValueError:
@@ -108,9 +108,31 @@ def _target(target, allow_point=True):
         if x < 0 or y < 0:
             raise ToolError(f"bad point '{target}': coordinates start at 0,0 (top-left of the last image)")
         return x, y
-    if not t.isdigit():
-        raise ToolError(f"bad target '{target}': use an element id from look() (a number)" + (" or x,y" if allow_point else ""))
-    return int(t)
+    if t.isdigit():
+        return int(t)
+    if not t or hwnd is None or re.fullmatch(r"[-\d.\s]+", t):
+        raise ToolError(f"bad target '{target}': use an element id from look(), or the element's name" + (", or x,y" if allow_point else ""))
+    return _by_name(hwnd, t)
+
+
+def _by_name(hwnd, name):
+    """The id of the element called `name`: from the last look, else searched in the window (also out of view). Several with that
+    name -> their ids are listed instead of guessing."""
+    def matches():
+        items = core._state.get(hwnd, {}).get("items", {})
+        exact = [(i, it) for i, it in items.items() if it.name.strip().lower() == name.lower()]
+        if len(exact) > 1:
+            exact = [(i, it) for i, it in exact if it.clickable] or exact
+        return exact or [(i, it) for i, it in items.items() if it.clickable and name.lower() in it.name.lower()]
+    hits = matches()
+    if not hits:
+        actions.find(str(hwnd), name)
+        hits = matches()
+    if len(hits) == 1:
+        return hits[0][0]
+    if not hits:
+        raise ToolError(f"no element named '{name}' in this window: use look() (or look with find=\"...\") and an id")
+    raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(f"[{i}:{it.name[:30]}] ({it.kind})" for i, it in hits[:8]) + " - use the id")
 
 
 def _proc(hwnd):
@@ -239,6 +261,8 @@ def verdict(result, delta):
         return "drag sent: to see whether it drew, check with look (image mode)"
     if "is disabled" in result:
         return "NOT EXECUTED"
+    if "saved through COM" in result or "menu command «" in result or ("through UI Automation)" in result and ("menu entry «" in result or "pressed «" in result)):
+        return "command run by the app itself"
     if "menu entry" in result:
         return "menu entry pressed through accessibility (the menu closes or opens the submenu: check with look)"
     if "Claude format" in result:
@@ -247,17 +271,23 @@ def verdict(result, delta):
         return "WARNING: the typed text is not in the field; check with look"
     if "the field now contains the text" in result:
         return "typing confirmed by reading the field back"
+    if "WARNING: it shows something else" in result:
+        return "WARNING: the control shows another entry; check with look"
+    if "the control now shows it" in result:
+        return "selection confirmed by reading it back"
+    if "the app is asking" in result:
+        return "NOT CLOSED YET: the app is asking something (above)"
     m = re.search(r"(\d+)%? -> (\d+)%?", result)
     if result.startswith("ok") and "scroll" in result and m:                # a scroll reports its own position: that IS the measure
         return "scrolled" if m.group(1) != m.group(2) else "did not move: already at the edge"
     if "Excel through COM" in result and "now shows" in result:
         return "cell written, confirmed by reading it back"
-    if "saved through COM" in result or "menu command «" in result or ("through UI Automation)" in result and ("menu entry «" in result or "pressed «" in result)):
-        return "command run by the app itself"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
     if delta.startswith("the window is gone"):
         return "the window closed"
+    if delta == "no changes" and "BM_CLICK" in result:
+        return "the button received the click; nothing changed on screen"
     if delta == "no changes":
         return "WARNING: NO VISIBLE EFFECT (it may not have worked); check with look"
     if delta.startswith(("change not measurable", "no previous reading", "no change in the UI tree")):
@@ -273,7 +303,10 @@ def _act(hwnd, hidden, fn, note=""):
     time.sleep(0.25)
     if not hidden:
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
-    delta = core.changes(str(hwnd))
+    if "through COM" in result and ("now shows" in result or "saved" in result):
+        delta = "read back by the app itself"             # the grid/file is not in the UI tree: comparing it would say nothing
+    else:
+        delta = core.changes(str(hwnd))
     extra = []
     if note: extra.append(note)
     if hwnd in _LAST_NOTICE:
@@ -283,7 +316,7 @@ def _act(hwnd, hidden, fn, note=""):
 
 @tool
 def windows() -> str:
-    """Open windows as 'hwnd | process | title', most recent first. [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat ("this app"). [PROTECTED: ...] = PC-Control asks the user itself before you act there (you cannot answer for them). (hidden) = hidden desktop; (minimized)."""
+    """Open windows ('hwnd | process | title'), most recent first. [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat ("this app"). [PROTECTED: ...] = PC-Control asks the user itself before you act there (you cannot answer for them). (hidden) = hidden desktop; (minimized)."""
     _paused()
     m = policy.mode()
     fg = win32gui.GetForegroundWindow()
@@ -306,7 +339,7 @@ def windows() -> str:
 
 @tool
 def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confirm: bool = False):
-    """See a window without focusing it: UI-tree text, OCR or an image with numbered marks, whichever is cheapest (keep mode=auto). Elements are [id:name]; ids work with click/type/scroll/read until the next look. window = title substring or hwnd. find="Save|Cancel": only the matching elements, also out of view (cheapest way to locate something); "!Loading" = until that text is gone; wait=N seconds polls."""
+    """See a window without focusing it: UI-tree text, OCR or an image with numbered marks, whichever is cheapest (keep mode=auto). Elements are [id:name]; ids stay valid (find never renumbers). 'blind n/m' = zones with content but no text (mode=image shows them). window = title substring or hwnd. find="Save|Cancel": only the matching elements, also out of view (cheapest way to locate something); "!Loading" = until that text is gone; wait=N seconds polls."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
         if find:
@@ -323,10 +356,10 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
 
 @tool
 def click(window: str, target: str, right: bool = False, double: bool = False, confirm: bool = False) -> str:
-    """Click an element id from look(), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved, and says whether the click had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
+    """Click an element (its id from look(), or its exact name), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved, and says whether the click had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
-        t = _target(target)
+        t = _target(target, True, hwnd)
         it = core._state.get(hwnd, {}).get("items", {}).get(t) if isinstance(t, int) else None
         if isinstance(t, int):
             policy.check_click(policy.mode(), it.name if it else "", confirm)
@@ -358,15 +391,17 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
 
 @tool
 def type(window: str, target: str, text: str, replace: bool = False, confirm: bool = False) -> str:
-    """Type into an element id from look() (appends; replace=true replaces). No blind typing. On a drop-down or list it selects the entry with that text. Excel: target can be a cell (B3, Sheet2!A1; '=...' = formula). Word: writes at Claude's OWN insertion point, not the user's caret, and says where. Answers with what changed."""
+    """Type into an element (id from look(), or its name; appends, replace=true replaces). No blind typing. On a drop-down or list it selects the entry with that text. Excel: target can be a cell (B3, Sheet2!A1; '=...' = formula). Word: writes at Claude's OWN insertion point, not the user's caret, and says where. Answers with what changed."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
             policy.check_type(policy.mode(), str(target), False)
             return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
         try:
-            it = core._state.get(hwnd, {}).get("items", {}).get(int(target))
-        except ValueError:
+            it = core._state.get(hwnd, {}).get("items", {}).get(_target(target, False, hwnd))
+        except ToolError as e:
+            if "elements match" in str(e):
+                raise
             it = None
         if it is None:                                     # no blind typing: the id must come from a look() of this window
             raise ToolError("unknown id: call look() on this window first and use an id from its answer (typing without a valid id is not allowed)")
@@ -390,13 +425,13 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
                 _, y, x, eh = _screen_point(hwnd, it)
                 cursor.CURSOR.caret(x + 8, y, h=cursor.caret_height(eh, s), scale=s, owner=hwnd)
             time.sleep(0.25)
-        return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, int(target), replace, progress))
+        return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress))
     return _on(window, run)
 
 
 @tool
 def drag(window: str, points: str, shape: str = "path", right: bool = False, confirm: bool = False) -> str:
-    """Drag with the button held (draw, select, move) through points "x1,y1;x2,y2;..." in pixels of the last image. shape: path, line, rect or ellipse (2 points for the last three). Check the result with look mode=image."""
+    """Drag (draw, select, move) through points "x1,y1;x2,y2;..." in pixels of the last image. shape: path, line, rect or ellipse (2 points for the last three). Check the result with look mode=image."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         try:
@@ -420,7 +455,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 @tool
 def key(window: str, name: str, confirm: bool = False) -> str:
-    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if the app has none, the answer lists the ones it has (they depend on its language). Word: only enter, space, backspace, at Claude's insertion point."""
+    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if missing, the answer lists the app's shortcuts (language-dependent). Word: only enter, space, backspace, at Claude's insertion point."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
@@ -432,22 +467,22 @@ def scroll(window: str, direction: str = "down", target: str = "", amount: int =
     """Scroll the window or an element id by `amount` pages: up|down|left|right|top|bottom. Then look again (old ids still work)."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
-        return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), _target(target, False) if str(target).strip() else None, direction, amount))
+        return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), _target(target, False, hwnd) if str(target).strip() else None, direction, amount))
     return _on(window, run)
 
 
 @tool
 def read(window: str, target: str = "", start: int = 0, length: int = 6000, confirm: bool = False) -> str:
-    """The WHOLE text of the window's document, web page or editor (also out of view), or of an element id, in pieces (start/length). Excel: the cells; PowerPoint: slides and notes. Much cheaper than scrolling and looking. Never reads password fields."""
+    """The WHOLE text of the window's document, web page or editor (also out of view), or of an element id, in pieces (start/length; 6000 characters by default, the answer says where to continue). Excel: the cells; PowerPoint: slides and notes. Much cheaper than scrolling and looking. Never reads password fields."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
-        return actions.read_text(str(hwnd), _target(target, False) if str(target).strip() else None, start, length)
+        return actions.read_text(str(hwnd), _target(target, False, hwnd) if str(target).strip() else None, start, length)
     return _on(window, run)
 
 
 @tool
 def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
-    """Launch an app minimized and unfocused, with its taskbar button so the user can open it; hidden=true: on a hidden desktop instead. Then windows/look."""
+    """Launch an app minimized and unfocused, with its taskbar button: the user watches what you do by opening it. hidden=true (invisible, hidden desktop) ONLY if the user asks for it. Then windows/look."""
     _paused()
     try:
         exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()

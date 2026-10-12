@@ -40,5 +40,7 @@ for ($i = 0; $i -lt 12; $i++) { $lab = New-Object System.Windows.Forms.Label; $l
 $deep = New-Object System.Windows.Forms.Button; $deep.Text = "Deep button"; $deep.Top = 5 + 40 * 12; $deep.Left = 5; $deep.Width = 120
 $deep.Add_Click({ $script:st.deep++; Save }); $pn.Controls.Add($deep)
 $f.Controls.Add($pn)
+# closing with an unsaved "new document" asks first (like a real editor)
+$f.Add_FormClosing({ param($s, $e) if ($script:st.newdoc -gt 0) { $r = [System.Windows.Forms.MessageBox]::Show($f, "Save changes to the new document?", "pc-control-test2", "YesNoCancel"); if ($r -eq "Cancel") { $e.Cancel = $true } } })
 Save
 [System.Windows.Forms.Application]::Run($f)

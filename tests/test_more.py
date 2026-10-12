@@ -75,15 +75,23 @@ try:
     run(lambda: actions.scroll(q, str(cities), "top"))
     out = run(lambda: actions.find(q, "City 70"))
     check("find lists an element that is out of view", "City 70" in out and "out of view" in out, out.replace("\n", " / ")[:140])
-    out = run(lambda: core.click(q, 1)); time.sleep(0.5)
+    fid = lambda o: int(re.search(r"\[(\d+):", o).group(1))
+    i70 = fid(out)
+    out = run(lambda: core.click(q, i70)); time.sleep(0.5)
     check("clicking it scrolls it into view and presses it", S()["pick"] == "City 70", out)
+    before = dict(core._state[hw]["items"])
     out = run(lambda: actions.find(q, "Deep button"))
-    out = run(lambda: core.click(q, 1)); time.sleep(0.5)
+    check("find keeps the ids of the last look (no renumbering)", all(core._state[hw]["items"].get(k) is v for k, v in before.items()), out)
+    out = run(lambda: core.click(q, fid(out))); time.sleep(0.5)
     check("find, then click by its id", S()["deep"] == 1, out)
+    out = run(lambda: core.click(q, color))
+    check("an id from the earlier look still works after find", out.startswith("ok"), out)
     t0 = time.time(); out = run(lambda: actions.find(q, "Zzz-nothing", wait=1.2)); dt = time.time() - t0
     check("find with wait gives up after the time and says NOT found", out.startswith("NOT found") and 1.0 <= dt < 6, f"{dt:.1f}s {out[:60]}")
     out = run(lambda: actions.find(q, "!Zzz-nothing", wait=5));
     check("'!text' is satisfied at once when the text is absent", out.startswith("found"), out[:60])
+    out = run(lambda: core.key(q, "alt+f4"))             # a new document is unsaved: the app asks before closing
+    check("closing reports the app's question and its buttons", "asking" in out and "Save changes to the new document?" in out and "buttons:" in out, out)
 finally:
     DESK.close()
 good = len(res) >= 21 and all(res.values())

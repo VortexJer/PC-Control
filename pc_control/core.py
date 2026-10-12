@@ -361,7 +361,7 @@ def _look_minimized(hwnd, mode, edge):
     return {"window": win32gui.GetWindowText(hwnd)[:50], "hwnd": hwnd, "size": f"{w}x{h}", "image_cost": img_cost(*fit(w, h, edge)),
             "mode": "none", "tokens": 0, "minimized": True,
             "why": "minimized and no usable tree (or an image was requested): capturing it would force it to be shown. "
-                   "Open it yourself from the taskbar, or relaunch it with open_app(hidden=true)"}
+                   "ask the user to open it from the taskbar"}
 
 
 # ---------- the decider ----------
@@ -487,6 +487,8 @@ def changes(query):
         if st.get("mode") == "uia+ocr":              # the window's real text came from OCR: the tree not changing proves nothing
             return "no change in the UI tree (this window's text comes from OCR, so the effect cannot be measured): check with look"
         return "no changes"
+    if len(add) > 8 and len(rem) > 8:                 # the view scrolled or was replaced: a list of lines would be noise
+        return f"the view changed a lot (+{len(add)} / -{len(rem)} lines): look to see it"
     f = lambda L: "; ".join(x.split("|", 1)[1][:30] for x in L[:6]) + (f" (+{len(L) - 6})" if len(L) > 6 else "")
     return (f"+ {f(add)}" if add else "") + (" | " if add and rem else "") + (f"- {f(rem)}" if rem else "")
 
@@ -654,7 +656,7 @@ def drag(query, points, shape="path", right=False, step=6, delay=0.006):
     mouse or change focus. Works for drawing (Paint), selecting, moving. If the user is dragging or pressing, it waits/yields."""
     hwnd = find_window(query); st = _state.get(hwnd)
     if win32gui.IsIconic(hwnd):
-        return "window minimized: there are no coordinates; open it or use hidden=true"
+        return "window minimized: there are no coordinates; use an element id, or ask the user to open it from the taskbar"
     if st and _size(win32gui.GetWindowRect(hwnd)) != _size(st["rect"]):
         return "the window changed size since the last image: those coordinates are no longer valid; look again with look"
     k = st.get("scale", 1.0) if st else 1.0
@@ -752,6 +754,10 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
                 rel = None
             elif not right and actions._off(it):
                 done = actions.press_out_of_view(it)
+                if done:
+                    return done
+            if not right and not double and it.kind == "listitem":         # a list entry: selected through its list (confirmed, the app is told)
+                done = actions.select_in_parent(it)
                 if done:
                     return done
         if it.ctrl is not None and it.kind == "button" and not right and not double and in_title_bar(it.ctrl):

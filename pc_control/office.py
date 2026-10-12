@@ -63,7 +63,7 @@ def summary(hwnd):
         names = [word.call(lambda i=i: wb.Worksheets(i).Name) for i in range(1, min(word.call(lambda: wb.Worksheets.Count), 12) + 1)]
         used = word.call(lambda: sh.UsedRange.Address).replace("$", "")
         return (f"[Excel: sheet «{word.call(lambda: sh.Name)}» used {used}; sheets: {', '.join(names)}. read(window) gives the cells; "
-                f"type(window, \"B3\", text) writes a cell (\"=SUM(B2:B9)\" a formula) without touching the user's selection]")
+                f"type(window, \"B3\", text) writes a cell (\"=SUM(B2:B9)\" a formula); save: {'+'.join(save_combo(hwnd))}]")
     except Exception:
         return ""
 
