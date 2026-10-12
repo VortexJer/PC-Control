@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>PC-Control 0.4</title>
+<style>
+:root{--bg:#0d1015;--panel:#141922;--line:#2a313d;--text:#e6e9ee;--dim:#8a93a2;--orange:#ff7a1a;--orange2:#ffb066;--green:#3ecf8e;--cell:#1d232d}
+*{box-sizing:border-box;margin:0;padding:0}
+body{width:1600px;height:900px;background:var(--bg);color:var(--text);font-family:"Segoe UI",system-ui,sans-serif;position:relative;overflow:hidden}
+body:before{content:"";position:absolute;inset:0;background:radial-gradient(900px 520px at 18% 30%,rgba(255,122,26,.11),transparent 60%),radial-gradient(760px 460px at 92% 72%,rgba(80,110,160,.12),transparent 60%)}
+.abs{position:absolute}
+.mono{font-family:"Cascadia Mono",Consolas,monospace}
+.kicker{font:600 13px/1 "Cascadia Mono",Consolas,monospace;letter-spacing:.22em;text-transform:uppercase;color:var(--orange)}
+h1{font-weight:600;font-size:50px;letter-spacing:-.02em;line-height:1.06}
+.sub{font-size:20px;color:var(--dim);line-height:1.4}
+.sub b{color:var(--text);font-weight:600}
+
+/* Excel-like window */
+.win{left:60px;top:250px;width:820px;height:520px;background:#1a1f28;border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.55);overflow:hidden}
+.tb{height:40px;background:#232a35;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 14px;font-size:14px;color:#c8ced8;gap:10px}
+.tb .ico{width:18px;height:18px;border-radius:4px;background:#1f7a4a;display:flex;align-items:center;justify-content:center;font:700 11px "Segoe UI";color:#fff}
+.tb .dots{margin-left:auto;display:flex;gap:18px;color:#7e8794;font-size:15px}
+.fx{height:38px;background:#20262f;border-bottom:1px solid var(--line);display:flex;align-items:center;padding:0 14px;gap:12px;font-size:14px;color:#aab2bf}
+.fx .ref{width:64px;border-right:1px solid var(--line);color:#cfd5df}
+.fx .f{color:var(--orange2)}
+table{border-collapse:collapse;position:absolute;left:0;top:78px}
+td,th{height:46px;border:1px solid #262d38;font-size:17px;padding:0 14px;color:#d7dce4}
+th{background:#20262f;color:#7f8897;font-weight:500;font-size:13px}
+th.row{width:44px;text-align:center}
+td.a{width:300px}td.b{width:200px;text-align:right}td.c{width:200px}
+td.head{color:#9aa3b1;font-weight:600}
+td.user{outline:2px solid var(--green);outline-offset:-2px;background:rgba(62,207,142,.08)}
+td.claude{outline:2px solid var(--orange);outline-offset:-2px;background:rgba(255,122,26,.10);color:#fff;font-weight:600}
+.tag{position:absolute;font:600 12px/1 "Cascadia Mono",Consolas,monospace;padding:5px 8px;border-radius:5px;white-space:nowrap}
+.tag.o{background:var(--orange);color:#111}
+.tag.g{background:var(--green);color:#0b1a12}
+.beam{position:absolute;width:3px;height:30px;background:var(--orange);border-radius:2px;box-shadow:0 0 12px rgba(255,122,26,.8)}
+.mouse{position:absolute;width:0;height:0}
+.mouse svg{filter:drop-shadow(0 2px 4px rgba(0,0,0,.6))}
+
+/* Claude Code permission dialog */
+.term{left:930px;top:250px;width:610px;height:520px;background:#0c0c0c;border:1px solid var(--line);border-radius:10px;box-shadow:0 30px 80px rgba(0,0,0,.55);overflow:hidden}
+.term .tb{background:#1b1b1b}
+.tbody{padding:22px 24px;font:15px/1.55 "Cascadia Mono",Consolas,monospace;color:#d4d4d4}
+.rule{border-top:2px solid #8b8fd6;margin:0 0 12px}
+.dash{border-top:1px dashed #555;margin:10px 0}
+.lav{color:#a8adf0;font-weight:700}
+.gray{color:#8a8a8a}
+.q{border-left:2px solid #6b6b6b;padding-left:12px;margin:4px 0 4px 14px;color:#e8e8e8}
+.sel{color:#a8adf0}
+.opt{margin-left:4px}
+
+.foot{left:60px;top:806px;right:60px;display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.chip{font:600 14px/1 "Cascadia Mono",Consolas,monospace;color:#cfd5df;border:1px solid var(--line);background:#141922;border-radius:999px;padding:9px 14px}
+.chip.hot{border-color:var(--orange);color:var(--orange2)}
+.repo{margin-left:auto;font:14px "Cascadia Mono",Consolas,monospace;color:var(--dim)}
+</style></head>
+<body>
+<div class="abs" style="left:60px;top:58px">
+  <div class="kicker">PC-Control 0.4 &middot; MCP server for Claude Code</div>
+  <h1 style="margin-top:14px">Claude works in your Windows apps.<br>You keep working.</h1>
+</div>
+<div class="abs sub" style="left:930px;top:92px;width:610px">
+  No focus stolen, no mouse moved, no fake keystrokes.<br>
+  <b>Excel cells by address</b>, while your own selection stays put, and a <b>one-line permission question</b> in Claude Code's own dialog.
+</div>
+
+<!-- Excel -->
+<div class="abs win">
+  <div class="tb"><span class="ico">X</span>expenses.xlsx - Excel<span class="dots"><span>&#8212;</span><span>&#9633;</span><span>&#10005;</span></span></div>
+  <div class="fx"><span class="ref">B7</span><span class="f">=SUM(B2:B6)</span></div>
+  <table>
+    <tr><th class="row"></th><th>A</th><th>B</th><th>C</th></tr>
+    <tr><th class="row">1</th><td class="a head">Item</td><td class="b head">Amount</td><td class="c"></td></tr>
+    <tr><th class="row">2</th><td class="a user">Rent</td><td class="b">650,00</td><td class="c"></td></tr>
+    <tr><th class="row">3</th><td class="a">Electricity</td><td class="b">48,50</td><td class="c"></td></tr>
+    <tr><th class="row">4</th><td class="a">Internet</td><td class="b">30,00</td><td class="c"></td></tr>
+    <tr><th class="row">5</th><td class="a">Food</td><td class="b">220,00</td><td class="c"></td></tr>
+    <tr><th class="row">6</th><td class="a">Transport</td><td class="b">61,25</td><td class="c"></td></tr>
+    <tr><th class="row">7</th><td class="a claude">Total</td><td class="b claude">1009,75</td><td class="c"></td></tr>
+    <tr><th class="row">8</th><td class="a"></td><td class="b"></td><td class="c"></td></tr>
+  </table>
+  <!-- the user's selection and mouse, untouched -->
+  <span class="tag g" style="left:236px;top:142px">your selection</span>
+  <div class="mouse" style="left:300px;top:184px"><svg width="22" height="30" viewBox="0 0 22 30"><path d="M1 1 L1 24 L7 18 L11 28 L15 26 L11 17 L19 17 Z" fill="#fff" stroke="#111" stroke-width="1.5"/></svg></div>
+  <!-- Claude's caret and label -->
+  <div class="beam" style="left:552px;top:400px"></div>
+  <span class="tag o" style="left:566px;top:368px">Claude &middot; B7 = SUM</span>
+</div>
+
+<!-- Claude Code -->
+<div class="abs term">
+  <div class="tb"><span class="gray">&gt;_</span>Claude Code<span class="dots"><span>&#8212;</span><span>&#9633;</span><span>&#10005;</span></span></div>
+  <div class="tbody">
+    <div class="rule"></div>
+    <div class="lav">Tool use</div>
+    <div>PC-Control - Read Tool: <span class="gray">(MCP)</span></div>
+    <div class="dash"></div>
+    <div class="gray">question:</div>
+    <div class="q">Claude wants to read the whole text of &laquo;Terminal&raquo; (protected window: terminal or console).</div>
+    <div class="gray">window: <span style="color:#d4d4d4">"1575138"</span></div>
+    <div class="dash"></div>
+    <div style="margin-top:14px">Do you want to proceed?</div>
+    <div class="opt sel">&#10095; 1. Yes</div>
+    <div class="opt">&nbsp;&nbsp;2. Yes, and don't ask again ...</div>
+    <div class="opt">&nbsp;&nbsp;3. No</div>
+  </div>
+</div>
+
+<div class="abs foot">
+  <span class="chip hot">scroll</span><span class="chip hot">read</span><span class="chip hot">shortcuts</span><span class="chip hot">drop-downs</span>
+  <span class="chip hot">find &amp; wait</span><span class="chip hot">Excel &middot; PowerPoint</span><span class="chip">pc-control update</span>
+  <span class="repo">MIT &middot; github.com/VortexJer/PC-Control</span>
+</div>
+</body></html>
