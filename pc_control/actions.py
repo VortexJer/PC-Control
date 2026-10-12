@@ -622,8 +622,9 @@ def find(query, terms, wait=0.0):
     for n, it in enumerate(hits, 1):
         it.id = n
     old = core._state.get(hwnd, {})
-    visible = {core.line_key(i) for i in items if not _off(i)}
-    core._state[hwnd] = {"items": {it.id: it for it in hits}, "lines": old.get("lines") or visible,
+    visible = {core.line_key(i) for i in items                              # the same rule changes() uses: on screen and with a size
+               if not _off(i) and i.rect[2] > i.rect[0] and i.rect[3] > i.rect[1]}
+    core._state[hwnd] = {"items": {it.id: it for it in hits}, "lines": visible,
                          "rect": rect, "scale": 1.0, "mode": "uia"}
     if old.get("rect") and old.get("scale"):
         core._state[hwnd]["scale"] = old["scale"]
