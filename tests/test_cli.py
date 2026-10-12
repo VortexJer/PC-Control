@@ -198,6 +198,10 @@ for ps1 in ("install.ps1", "update.ps1"):                    # the old package g
     s = rd_ps(ps1); iu = s.find("pip uninstall -y pc-control"); ii = s.find("pip install", iu if iu >= 0 else 0)
     c[f"{ps1}: removes the old 'pc-control' package before installing claude-pc-control"] = 0 <= iu < ii
 c["update.ps1: both the checkout and the zip install go through Remove-LegacyPackage"] = rd_ps("update.ps1").count("Remove-LegacyPackage") == 3
+for ps1 in ("install.ps1", "update.ps1"):                    # PowerShell 5.1: a failing native probe is fatal under 'Stop' unless it runs under 'Continue'
+    s = rd_ps(ps1)
+    c[f"{ps1}: the 'is the old package there?' probe cannot abort the script when it is not there"] = (
+        "$ErrorActionPreference = 'Continue'" in s and "sys.exit(0 if 'pc-control' in" in s and "m.distribution('pc-control')" not in s)
 c["uninstall.ps1: removes the package under either name"] = "pip uninstall -y claude-pc-control pc-control" in rd_ps("uninstall.ps1")
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]

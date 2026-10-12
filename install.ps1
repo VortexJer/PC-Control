@@ -29,8 +29,10 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
 
 # Before 0.6 the package was called "pc-control"; it is now "claude-pc-control" and both install the same files (pc_control/), so an old
 # install has to be removed BEFORE the new one goes in (removing it afterwards would delete the new code).
-& python -c "import importlib.metadata as m, sys; m.distribution('pc-control')" 2>$null
-if ($LASTEXITCODE -eq 0) {
+$prev = $ErrorActionPreference; $ErrorActionPreference = 'Continue'      # Windows PowerShell 5.1: stderr of a native command is fatal under 'Stop'
+& python -c "import importlib.metadata as m, sys; sys.exit(0 if 'pc-control' in {(d.metadata['Name'] or '').lower().replace('_', '-') for d in m.distributions()} else 1)" 2>$null
+$hasLegacy = ($LASTEXITCODE -eq 0); $ErrorActionPreference = $prev
+if ($hasLegacy) {
     Write-Host "Removing the old 'pc-control' package (now 'claude-pc-control')..."
     & python -m pip uninstall -y pc-control
     if ($LASTEXITCODE -ne 0) { throw "Could not uninstall the old 'pc-control' package." }
