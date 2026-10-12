@@ -101,7 +101,7 @@ sg2 = perm.sig("click", {"window": "Notepad", "target": "9"})
 try: os.remove(os.path.join(tmp, "perm", "approved.json"))
 except OSError: pass
 o1 = run_main(pm("default")); perm.take("asked", sg2)
-c["Claude Code in normal mode: a window that is not in the filter does NOT ask"] = o1 == "" and perm.cc_mode() == "default"
+c["Claude Code in normal mode: a window that is not in the filter does NOT ask"] = ("ask" not in o1 and (o1 == "" or "\"allow\"" in o1)) and perm.cc_mode() == "default"
 o2 = run_main(pm("bypassPermissions"))
 c["Claude Code in bypass: the hook asks nothing"] = o2 == "" and perm.cc_mode() == "bypassPermissions"
 o3 = run_main(pm("auto"))
@@ -182,6 +182,27 @@ sys.stdin = io.StringIO(json.dumps(look)); buf = io.StringIO(); old = sys.stdout
 code = hook.main(); sys.stdout = old
 out = json.loads(buf.getvalue())["hookSpecificOutput"]
 c["output: permissionDecision=ask with a reason (Claude Code shows its dialog)"] = code == 0 and out["permissionDecision"] == "ask" and out["hookEventName"] == "PreToolUse" and "protected" in out["permissionDecisionReason"]
+# Claude Code in its NORMAL mode: no "ask" (no hook line in the dialog); our sentence travels as a parameter and Claude Code's own
+# dialog (1. Yes / 2. Yes, don't ask again / 3. No) appears because the tool is not pre-allowed
+nat = dict(look, permission_mode="default"); nsig = perm.sig("look", nat["tool_input"])
+perm.mark("asked", nsig)                                                   # a stale yes from before must not count
+sys.stdin = io.StringIO(json.dumps(nat)); buf = io.StringIO(); sys.stdout = buf; hook.PENDING.clear(); hook.main(); sys.stdout = old
+o2 = json.loads(buf.getvalue())["hookSpecificOutput"]
+c["normal mode: no 'ask' decision, the sentence goes among the parameters"] = ("permissionDecision" not in o2 and "protected" in o2["updatedInput"].get("question", "")
+                                                                            and o2["updatedInput"]["window"] == nat["tool_input"]["window"])
+c["normal mode: a stale yes is cleared before the dialog"] = not perm.fresh("asked", nsig)
+pr(nat["tool_input"], "default", proc="windowsterminal", cat="terminal or console")
+c["normal mode: when Claude Code shows its dialog, the yes is recorded for the server"] = perm.fresh("asked", nsig) and perm.fresh("shown", nsig)
+perm.take("asked", nsig); perm.take("shown", nsig)
+hook._find = lambda q: 1234; hook._proc = lambda h: "windowsterminal"; hook.policy.blocked_category = lambda p, t="": "terminal or console"
+perm.mark("pending", nsig)                                                 # the server says that dialog was skipped (an allow rule): ask instead
+sys.stdin = io.StringIO(json.dumps(nat)); buf = io.StringIO(); sys.stdout = buf; hook.PENDING.clear(); hook.main(); sys.stdout = old
+c["normal mode, dialog skipped by a rule: the repeated call is asked through the hook"] = json.loads(buf.getvalue())["hookSpecificOutput"].get("permissionDecision") == "ask"
+perm.take("pending", nsig)
+hook.policy.blocked_category = lambda p, t="": None; hook._proc = lambda h: "notepad"
+sys.stdin = io.StringIO(json.dumps(dict(nat, tool_input={"window": "Notepad"}))); buf = io.StringIO(); sys.stdout = buf; hook.PENDING.clear(); hook.main(); sys.stdout = old
+c["normal mode, nothing to ask: allowed at once, so Claude Code's dialog never flashes"] = json.loads(buf.getvalue())["hookSpecificOutput"].get("permissionDecision") == "allow"
+hook.policy.blocked_category = lambda p, t="": "terminal or console"; hook._proc = lambda h: "windowsterminal"
 sys.stdin = io.StringIO("this is not json"); buf = io.StringIO(); sys.stdout = buf
 code = hook.main(); sys.stdout = old
 c["a hook failure never breaks the tool (exits 0 and silently)"] = code == 0 and buf.getvalue() == ""

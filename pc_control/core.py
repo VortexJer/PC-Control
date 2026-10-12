@@ -109,8 +109,21 @@ def find_window(query):
     win32gui.EnumWindows(cb, None)
     if not hits:
         raise LookupError(f"no window with '{query}' in its title: call windows()")
-    hits.sort(key=lambda x: len(x[1]))          # shortest title = most specific
-    return hits[0][0]
+
+    hits = [(h, t) for h, t in hits if not (win32gui.GetClassName(h) == "ApplicationFrameWindow"       # a Store app's frame and its
+                                            and sum(1 for _, t2 in hits if t2 == t) > 1)] or hits       # content: one app, same title
+    if len(hits) == 1:
+        return hits[0][0]
+    exact = [h for h, t in hits if t.lower().strip() == q]
+    if len(exact) == 1:
+        return exact[0]
+    # several windows match (two File Explorer windows, two terminals of the same app...): guessing would act on the wrong one
+    raise AmbiguousWindow(f"{len(hits)} windows match '{query}': " + "; ".join(f"{h} «{t[:40]}»" for h, t in hits[:6])
+                          + " - use the hwnd (the number) of the one you mean")
+
+
+class AmbiguousWindow(Exception):
+    """A title that matches several windows. Not a LookupError: callers that treat 'not found' as 'try elsewhere' must not do so."""
 
 def list_windows():
     out = []

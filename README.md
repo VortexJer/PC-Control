@@ -86,9 +86,12 @@ In every mode: creating `~/.pc-control/PAUSE` (or `PC_CONTROL_PAUSE=1`) makes ev
 
 Protected windows are **not blocked**; you decide, not the model. The model has no `confirm` flag it could set.
 
-- **Claude Code:** the `PreToolUse` hook (`python -m pc_control.hook`) answers `ask`, so **Claude Code itself shows you its permission
-  dialog** with one short sentence, in the language of your Windows (for example *"Claude wants to read the whole text of «Terminal»
-  (protected window: terminal or console)."*), and Claude cannot answer it. A plain "yes" counts once.
+- **Claude Code:** **Claude Code itself shows you its permission dialog** (1. Yes / 2. Yes, and don't ask again / 3. No), and Claude
+  cannot answer it. The `PreToolUse` hook (`python -m pc_control.hook`) adds one short sentence, in the language of your Windows, as
+  the first parameter of the call (for example *question: "Claude wants to read the whole text of «Terminal» (protected window:
+  terminal or console)."*). In Claude Code's normal mode that is all; in its other modes (auto...), where Claude Code might decide
+  by itself, the hook answers `ask` so the question is always shown (the dialog then also carries a "Hook ... requires confirmation"
+  line). A plain "yes" counts once.
   If you pick Claude Code's "Yes, and don't ask again", PC-Control narrows it to **that one window** for the rest of the session
   (Claude Code saves a per-tool rule; the hook turns it into a per-window approval and removes the rule).
 - The `PermissionRequest` hook answers by itself when you do not need to be bothered (a normal window outside the filter, bypass).
