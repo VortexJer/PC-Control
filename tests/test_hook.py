@@ -16,9 +16,9 @@ r = hook.decide(look)
 c["protected window: the hook asks for permission"] = bool(r) and "protected" in r
 s = perm.sig("look", {"window": "PowerShell"})
 c["the dialog says in ONE short sentence which window and what it will do (not a window number)"] = "PowerShell" in r and "terminal or console" in r and "view the contents" in r and "9701696" not in r and len(r) < 160
-rt = hook.decide({"tool_name": "mcp__PC-Control__type", "tool_input": {"window": "9701696", "target": "3", "text": "rm -rf /tmp/x"}})
-c["typing: shows the text it will type"] = bool(rt) and "type «rm -rf /tmp/x»" in rt
-perm.take("asked", perm.sig("type", {"window": "9701696", "target": "3", "text": "rm -rf /tmp/x"}))
+rt = hook.decide({"tool_name": "mcp__PC-Control__type", "tool_input": {"window": "9701696", "target": "3", "text": "del notes.txt"}})
+c["typing: shows the text it will type"] = bool(rt) and "type «del notes.txt»" in rt
+perm.take("asked", perm.sig("type", {"window": "9701696", "target": "3", "text": "del notes.txt"}))
 c["... and leaves the 'asked' mark so the server knows the user saw it"] = perm.fresh("asked", s)
 c["the mark is spent only once"] = perm.take("asked", s) and not perm.take("asked", s)
 c["windows (list only) never asks"] = hook.decide({"tool_name": "mcp__PC-Control__windows", "tool_input": {}}) is None

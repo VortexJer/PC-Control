@@ -27,10 +27,15 @@ if (-not (Get-Command claude -ErrorAction SilentlyContinue)) {
     Write-Warning "The 'claude' command was not found in PATH: install Claude Code first (https://claude.com/claude-code), then run this script again."
 }
 
+$hasSource = Test-Path (Join-Path $PSScriptRoot 'pyproject.toml')
 if ($Editable) {
+    if (-not $hasSource) { throw '-Editable needs the full source folder (pyproject.toml next to this script).' }
     & python -m pip install -e $PSScriptRoot
-} else {
+} elseif ($hasSource) {
     & python -m pip install --upgrade $PSScriptRoot
+} else {
+    # only this script was downloaded: install the latest version straight from GitHub (no git needed)
+    & python -m pip install --upgrade 'https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip'
 }
 if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
 

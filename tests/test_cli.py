@@ -26,8 +26,10 @@ read = lambda p: open(p, encoding="utf-8").read()
 try:
     # 1) basic install
     cli.install("auto", "user", False, runner=fake, python="PY")
-    c["install: removes any previous registration and registers as PC-Control"] = calls[0] == ["mcp", "remove", "PC-Control", "-s", "user"] and calls[1][:5] == ["mcp", "add", "PC-Control", "-s", "user"]
-    c["install: mode and python in the command"] = "PC_CONTROL_MODE=auto" in calls[1] and calls[1][-3:] == ["PY", "-m", "pc_control.server"]
+    rm_i = calls.index(["mcp", "remove", "PC-Control", "-s", "user"]); add = calls[rm_i + 1]
+    c["install: removes any previous registration and registers as PC-Control"] = add[:5] == ["mcp", "add", "PC-Control", "-s", "user"]
+    c["install: also removes the old 'pcsight' server, in every scope"] = all(["mcp", "remove", "pcsight", "-s", sc] in calls for sc in ("user", "project", "local"))
+    c["install: mode and python in the command"] = "PC_CONTROL_MODE=auto" in add and add[-3:] == ["PY", "-m", "pc_control.server"]
     s = read(skill_md)
     c["install: writes the skill with its marker, in English"] = (s.startswith("---") and "name: pc-control" in s and cli.MARKER in s and "[LAST USED]" in s
                                                                  and "[IN USE]" in s and "mcp__PC-Control__" in s)
@@ -102,6 +104,27 @@ try:
     c["hook path: no backslashes (Git Bash swallows them) and no spaces"] = chr(92) not in sp and " " not in sp and os.path.exists(sp)
     # 12) the entry point works
     rc = cli.main(["status"]) if False else 0
+    # 13) update from ANY earlier version: what the old "pcsight" and early PC-Control versions left is cleaned, the user's own is kept
+    old_skill = os.path.join(ch, "skills", "pcsight"); os.makedirs(old_skill, exist_ok=True)
+    open(os.path.join(old_skill, "SKILL.md"), "w", encoding="utf-8").write("---\nname: pcsight\n---\n<!-- installed-by: pcsight -->\nold")
+    other_skill = os.path.join(ch, "skills", "mine"); os.makedirs(other_skill, exist_ok=True)
+    open(os.path.join(other_skill, "SKILL.md"), "w", encoding="utf-8").write("my own skill")
+    open(os.path.join(ch, "CLAUDE.md"), "w", encoding="utf-8").write("# my notes\n\n<!-- pcsight:begin (managed) -->\nold block\n<!-- pcsight:end -->\n\nmore of mine\n")
+    json.dump({"hooks": {"PreToolUse": [{"matcher": "mcp__pcsight__.*", "hooks": [{"type": "command", "command": "python -m pcsight.hook"}]},
+                                         {"matcher": "Bash", "hooks": [{"type": "command", "command": "my-own-hook"}]}]},
+               "permissions": {"allow": ["mcp__pcsight__look", "Bash(ls)"], "ask": ["mcp__PC-Control__click", "Bash(git push)"]}},
+              open(settings, "w"))
+    open(os.path.join(ch, "pcsight-install.json"), "w").write("{}")
+    calls.clear(); cli.install("follow", runner=fake, python="PY")
+    st = rd(settings); md = read(os.path.join(ch, "CLAUDE.md"))
+    c["migrate: the old pcsight skill is removed, the user's own skill is kept"] = not os.path.exists(old_skill) and os.path.exists(other_skill)
+    c["migrate: the old CLAUDE.md block is removed, the user's notes are kept"] = "pcsight" not in md and "# my notes" in md and "more of mine" in md
+    c["migrate: the old hook is removed, the user's own hook is kept"] = ("pcsight" not in json.dumps(st.get("hooks", {}))
+                                                                          and "my-own-hook" in json.dumps(st.get("hooks", {})))
+    c["migrate: old permission rules removed (pcsight, PC-Control 'ask'), the user's own kept"] = (
+        st["permissions"].get("allow") == ["Bash(ls)"] and st["permissions"].get("ask") == ["Bash(git push)"])
+    c["migrate: the old install record is removed"] = not os.path.exists(os.path.join(ch, "pcsight-install.json"))
+    c["update: detects a git checkout as the source to pull"] = cli._installed()[1] == os.path.dirname(os.path.dirname(os.path.abspath(cli.__file__)))
 finally:
     shutil.rmtree(tmp, ignore_errors=True)
 

@@ -5,6 +5,7 @@
     pc-control status
     pc-control pause | resume
     pc-control serve                     (the MCP server, what Claude Code launches)
+    pc-control update                    (update from ANY earlier version and reinstall with the same settings)
 
 `install` sets everything up: it registers the MCP server in Claude Code, writes the skill with the usage instructions, adds a short
 managed block to ~/.claude/CLAUDE.md and registers the permission hooks.
@@ -200,6 +201,126 @@ def _md_remove(path, created):
     return True
 
 
+# ---- earlier versions (the project was first called "pcsight"; early PC-Control versions added "ask" rules) ----
+LEGACY_SERVERS = ("pcsight",)
+LEGACY_SKILLS = ("pcsight",)
+LEGACY_MARKERS = ("<!-- installed-by: pcsight -->",)
+LEGACY_RECORDS = ("pcsight-install.json",)
+LEGACY_TOOL_PREFIXES = ("mcp__pcsight__",)
+LEGACY_MD = (("<!-- pcsight:begin", "<!-- pcsight:end -->"),)
+REPO_ZIP = "https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip"
+
+
+def migrate(runner=None):
+    """Remove what EARLIER versions left behind, so any version can be updated: the old "pcsight" server, skill, CLAUDE.md block,
+    hooks, record, permission rules and package, and PC-Control "ask" rules (they forced a dialog on every call). Returns log lines."""
+    runner = runner or run_claude
+    pth = _paths(); log = []
+    for name in LEGACY_SERVERS:
+        for scope in ("user", "project", "local"):
+            code, _ = runner(["mcp", "remove", name, "-s", scope])
+            if code == 0:
+                log.append(f"old server '{name}' ({scope}) removed")
+    for d in LEGACY_SKILLS:
+        md = os.path.join(pth["skills_dir"], d, "SKILL.md")
+        if os.path.exists(md) and any(m in open(md, encoding="utf-8", errors="ignore").read() for m in LEGACY_MARKERS):
+            shutil.rmtree(os.path.dirname(md), ignore_errors=True); log.append(f"old skill '{d}' removed")
+    if os.path.exists(pth["claude_md"]):
+        text = open(pth["claude_md"], encoding="utf-8").read(); new = text
+        for a, b in LEGACY_MD:
+            while a in new and b in new[new.index(a):]:
+                i = new.index(a); j = new.index(b, i) + len(b)
+                new = (new[:i].rstrip("\n") + "\n\n" + new[j:].lstrip("\n")).strip("\n") + "\n"
+        if new != text:
+            open(pth["claude_md"], "w", encoding="utf-8").write(new); log.append("old CLAUDE.md block removed")
+    s = _load(pth["settings"], {}); changed = False
+    for ev, lst in list(s.get("hooks", {}).items()):
+        keep = [e for e in lst if not any("pcsight" in h.get("command", "") for h in e.get("hooks", []))]
+        if len(keep) != len(lst):
+            changed = True; log.append(f"old '{ev}' hook removed")
+            if keep:
+                s["hooks"][ev] = keep
+            else:
+                s["hooks"].pop(ev)
+    perms = s.get("permissions", {})
+    for kind in ("allow", "ask", "deny"):
+        rules = perms.get(kind)
+        if not isinstance(rules, list):
+            continue
+        keep = [r for r in rules if not (isinstance(r, str) and (r.startswith(LEGACY_TOOL_PREFIXES)
+                                                                 or (kind == "ask" and r.startswith(f"mcp__{SERVER_NAME}__"))))]
+        if len(keep) != len(rules):
+            changed = True; log.append(f"old '{kind}' permission rules removed")
+            if keep:
+                perms[kind] = keep
+            else:
+                perms.pop(kind)
+    if changed:
+        if "hooks" in s and not s["hooks"]:
+            s.pop("hooks")
+        if "permissions" in s and not s["permissions"]:
+            s.pop("permissions")
+        _save(pth["settings"], s)
+    for rec in LEGACY_RECORDS:
+        f = os.path.join(claude_home(), rec)
+        if os.path.exists(f):
+            os.remove(f); log.append(f"old record {rec} removed")
+    try:
+        import importlib.metadata as md
+        md.distribution("pcsight")
+        subprocess.run([sys.executable, "-m", "pip", "uninstall", "-y", "pcsight"], capture_output=True)
+        log.append("old 'pcsight' package uninstalled")
+    except Exception:
+        pass
+    return log
+
+
+def _installed():
+    """(version, editable source folder or None) of the installed package."""
+    import importlib.metadata as md
+    try:
+        d = md.distribution("pc-control")
+    except md.PackageNotFoundError:
+        return None, None
+    # running from a git checkout (pip install -e, or straight from the folder): the code's own folder has .git and pyproject.toml
+    here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    src = here if os.path.isdir(os.path.join(here, ".git")) and os.path.exists(os.path.join(here, "pyproject.toml")) else None
+    return d.version, src
+
+
+def _code_version():
+    """The version of the code Python would load NOW (a fresh process: after an update it is the new one)."""
+    p = subprocess.run([sys.executable, "-c", "import pc_control; print(pc_control.__version__)"], capture_output=True, text=True)
+    return p.stdout.strip() or "?"
+
+
+def update():
+    """Bring the installed PC-Control up to date from ANY earlier version, then reinstall it with the same settings."""
+    log = []
+    before = _code_version()
+    _, src = _installed()
+    if src and os.path.isdir(os.path.join(src, ".git")):              # installed from a checkout (pip install -e): pull it
+        p = subprocess.run(["git", "-C", src, "pull", "--ff-only"], capture_output=True, text=True)
+        if p.returncode != 0:
+            raise RuntimeError(f"git pull failed in {src}: {(p.stdout + p.stderr).strip()[:300]}")
+        log.append(f"source updated ({src}): {(p.stdout.strip().splitlines() or ['ok'])[-1]}")
+        q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", src], capture_output=True, text=True)
+    else:                                                             # a normal install: the latest version from GitHub (no git needed)
+        q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
+    if q.returncode != 0:
+        raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
+    rec = _load(_paths()["record"], {})
+    args = [sys.executable, "-m", "pc_control.cli", "install", "--mode", rec.get("mode", "follow"), "--scope", rec.get("scope", "user")]
+    if rec.get("allow_added"):
+        args.append("--allow-reads")
+    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8", errors="replace")   # the NEW code installs itself
+    if r.returncode != 0:
+        raise RuntimeError(f"reinstall failed: {(r.stdout + r.stderr).strip()[-300:]}")
+    log += r.stdout.strip().splitlines()
+    log.append(f"PC-Control {before} -> {_code_version()}. Open a NEW Claude Code session to load it.")
+    return log
+
+
 def run_claude(args):
     """Run `claude <args>`; returns (code, output)."""
     exe = shutil.which("claude")
@@ -214,7 +335,7 @@ def install(mode="follow", scope="user", allow_reads=False, runner=run_claude, p
     if mode not in ("follow", "auto", "ask", "strict", "bypass"):
         raise ValueError(f"unknown mode: {mode}")
     py = python or sys.executable
-    pth = _paths(); log = []
+    pth = _paths(); log = migrate(runner)                                 # whatever an earlier version left behind goes first
     record = _load(pth["record"], {})
     runner(["mcp", "remove", SERVER_NAME, "-s", scope])                    # idempotent: if it was there, it is redone
     code, out = runner(["mcp", "add", SERVER_NAME, "-s", scope, "-e", f"PC_CONTROL_MODE={mode}", "-e", "PYTHONUTF8=1", "--", py, "-m", "pc_control.server"])
@@ -329,6 +450,7 @@ def main(argv=None):
     sub.add_parser("pause", help="kill switch: every tool refuses")
     sub.add_parser("resume", help="remove the pause")
     sub.add_parser("serve", help="launch the MCP server (what Claude Code runs)")
+    sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "install":
@@ -339,6 +461,8 @@ def main(argv=None):
             for k, v in status().items(): print(f"{k}: {v}")
         elif a.cmd in ("pause", "resume"):
             set_pause(a.cmd == "pause"); print("paused" if a.cmd == "pause" else "resumed")
+        elif a.cmd == "update":
+            print("\n".join(update()))
         elif a.cmd == "serve":
             from .server import main as serve
             serve()
