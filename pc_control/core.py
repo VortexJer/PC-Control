@@ -6,7 +6,7 @@ type_text(query, text, target=None, replace=False)
 key(query, name, focus=False)
 FIXED RULE: never SetForegroundWindow, keybd_event/SendInput or SetCursorPos. The user keeps working without noticing anything.
 """
-import asyncio, contextlib, ctypes, ctypes.wintypes, io, math, os, subprocess, tempfile, time, unicodedata
+import asyncio, contextlib, ctypes, ctypes.wintypes, io, math, os, re, subprocess, tempfile, time, unicodedata
 ctypes.windll.shcore.SetProcessDpiAwareness(2)
 import cv2, numpy as np, uiautomation as auto
 import win32api, win32con, win32gui, win32process
@@ -84,13 +84,21 @@ def fit(w, h, edge):
     return max(1, round(w * s)), max(1, round(h * s))
 
 def txt_cost(s):
-    return round(len(s) / 3.6)
+    """Tokens of a text. Fitted on real look() outputs against a BPE tokenizer: visible characters cost ~0.45 each and every
+    run of spaces or line break ~0.56 (runs of spaces merge into few tokens). len/3.6 was off by -39 % to +49 %; this, by about 10 %."""
+    visible = sum(1 for ch in s if not ch.isspace())
+    runs = s.count("\n") + len(re.findall(r" {2,}", s))
+    return round(0.45 * visible + 0.56 * runs)
 
 
 # ---------- windows ----------
 def find_window(query):
-    q = str(query).lower()
+    q = str(query).lower().strip()
+    if not q:
+        raise LookupError("no window given: use a title substring or an hwnd from windows()")
     if q.isdigit():
+        if not win32gui.IsWindow(int(q)):
+            raise LookupError(f"no window with hwnd {q} (closed?): call windows()")
         return int(q)
     hits = []
     def cb(h, _):
@@ -100,7 +108,7 @@ def find_window(query):
                 hits.append((h, t))
     win32gui.EnumWindows(cb, None)
     if not hits:
-        raise LookupError(f"no window with '{query}'")
+        raise LookupError(f"no window with '{query}' in its title: call windows()")
     hits.sort(key=lambda x: len(x[1]))          # shortest title = most specific
     return hits[0][0]
 
@@ -314,6 +322,18 @@ def draw_marks(im, items, k, area):
             break
 
 
+def dedupe(items):
+    """Drop a plain text whose words are already shown by the clickable element that contains it (the label inside a button, a cell
+    inside its row, a placeholder inside its field): the model sees the same words once, with the id. Nothing else is dropped."""
+    clickable = [c for c in items if c.clickable]
+    def shown_by(t):
+        cx, cy = (t.rect[0] + t.rect[2]) // 2, (t.rect[1] + t.rect[3]) // 2
+        n = t.name.strip().lower()
+        return any(c.rect[0] <= cx <= c.rect[2] and c.rect[1] <= cy <= c.rect[3]
+                   and (n == c.name.strip().lower() or n == (c.value or "").strip().lower() or n in c.name.lower()) for c in clickable)
+    return [it for it in items if it.clickable or it.src != "uia" or not shown_by(it)]
+
+
 def list_format(items):
     """Text without positions (minimized windows: their rectangles mean nothing)."""
     return "\n".join((f"[{it.id}:{it.name[:60]}" + (f'="{it.value[:60]}"' if it.value else "") + "]" if it.clickable else it.name[:80]) for it in items)
@@ -431,6 +451,7 @@ def _look(hwnd, mode, edge):
         why = ("minimized and no usable tree: nothing to send" if mini else
                 "empty tree and no capture (if this window runs as administrator, Windows does not let a normal process read it)")
         res.update(mode="none", why=why, tokens=0); return res
+    items = dedupe(items)
     numbered(items)
     text = grid(items, w, h); tok = txt_cost(text)
     if content: res["blind"] = f"{blind}/{content}"
@@ -440,7 +461,7 @@ def _look(hwnd, mode, edge):
         if pick == "image":
             return finish("image", why)
         res["blind_zones"] = zones[:6]
-    return finish(kind, f"{kind} {tok} tok <= image {img_tok} tok", items, text, tok)
+    return finish(kind, f"an image would cost {img_tok}", items, text, tok)
 
 
 def changes(query):
@@ -752,7 +773,7 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if it.ctrl is not None and not right and not double:
             nh, cls = _native(it.ctrl)
             if nh and "button" in cls:
-                win32gui.SendMessage(nh, 0x00F5, 0, 0); return "ok (BM_CLICK, no focus)"
+                win32gui.SendMessage(nh, 0x00F5, 0, 0); return "ok (BM_CLICK)"
             for getter, call in (() if not allow_focus else (("GetInvokePattern", "Invoke"), ("GetTogglePattern", "Toggle"),
                                  ("GetSelectionItemPattern", "Select"), ("GetExpandCollapsePattern", "Expand"),
                                  ("GetLegacyIAccessiblePattern", "DoDefaultAction"))):
@@ -776,6 +797,9 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
             return "the window changed size since the last image: those coordinates are no longer valid; look again with look"
         k = st.get("scale", 1.0) if st else 1.0
         x, y = int(target[0] * k), int(target[1] * k)
+        cw, ch = _size(win32gui.GetWindowRect(hwnd))
+        if not win32gui.IsIconic(hwnd) and (x >= cw or y >= ch):
+            return f"did not press: {target[0]},{target[1]} is outside the window (the last image is {int(cw / k)}x{int(ch / k)})"
     if win32gui.IsIconic(hwnd):
         return "window minimized: there are no coordinates; use an id from look()"
     if right:
@@ -785,7 +809,7 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
     how = _post_click(hwnd, x, y, right, double)
     if how == "busy":
         return "did not press: you are pressing or dragging with the mouse and a click of mine would break your gesture; retry when you let go"
-    return f"ok (BM_CLICK at {x},{y}, no focus)" if how == "button" else f"ok (mouse message at {x},{y} of the window)"
+    return f"ok (BM_CLICK at {x},{y})" if how == "button" else f"ok (mouse message at {x},{y} of the window)"
 
 def _focus_hwnd(hwnd):
     tid = win32process.GetWindowThreadProcessId(hwnd)[0]
@@ -830,10 +854,10 @@ def type_text(query, text, target=None, replace=False, progress=None):
         if nh and "edit" in cls:
             if replace:
                 win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, text)
-                return "ok (WM_SETTEXT, no focus)" + _read_back(st["items"][target].ctrl, text, True)
+                return "ok (WM_SETTEXT)" + _read_back(st["items"][target].ctrl, text, True)
             win32gui.SendMessage(nh, 0x00B1, -1, -1)                     # EM_SETSEL to the end
             win32gui.SendMessage(nh, 0x00C2, 1, text)
-            return "ok (EM_REPLACESEL, no focus)" + _read_back(st["items"][target].ctrl, text, False)
+            return "ok (EM_REPLACESEL)" + _read_back(st["items"][target].ctrl, text, False)
         ctrl = st["items"][target].ctrl
         from . import actions
         picked = actions.select_option(ctrl, text)                       # drop-down or list: pick the entry with that text
@@ -843,13 +867,13 @@ def type_text(query, text, target=None, replace=False, progress=None):
             inner = win32gui.FindWindowEx(nh, 0, "Edit", None)
             if inner:
                 win32gui.SendMessage(inner, win32con.WM_SETTEXT, 0, text)
-                return "ok (WM_SETTEXT into the drop-down's text box, no focus)" + _read_back(ctrl, text, True)
+                return "ok (WM_SETTEXT into the drop-down's text box)" + _read_back(ctrl, text, True)
         if not nh:                                                       # no native edit window (web page, WPF, XAML): UI Automation value
             try:
                 pat = ctrl.GetValuePattern()
                 if pat and not pat.IsReadOnly:
                     pat.SetValue(text if replace else (pat.Value or "") + text)
-                    return "ok (UI Automation SetValue, no focus)" + _read_back(ctrl, text, replace)
+                    return "ok (UI Automation SetValue)" + _read_back(ctrl, text, replace)
             except Exception:
                 pass
         dest = nh or None
@@ -878,6 +902,8 @@ def key(query, name):
                     f"Available in Word: enter, space, backspace (only at Claude's point)")
         if out:
             return out
+    if len(parts) == 1 and parts[0] not in _VK and len(parts[0]) > 1:
+        return f"did not press '{name}': unknown key. Keys: {', '.join(_VK)}; shortcuts like ctrl+s"
     if len(parts) == 1 and parts[0] in _VK:
         if not wait_user_quiet():
             return "did not press the key: you are typing and it would mix with your text; retry when you stop"

@@ -38,6 +38,12 @@ def run():
                                                       and "Date modified" not in names,
         "a row with a button is walked as usual": "On" in names,
     }
+    btn = core.Item("button", "Save", (0, 0, 100, 30), None, "uia", True)
+    inside = core.Item("text", "Save", (10, 5, 60, 25), None, "uia", False)
+    outside = core.Item("text", "Save", (200, 5, 260, 25), None, "uia", False)
+    other = core.Item("text", "Saved 2 minutes ago", (10, 5, 60, 25), None, "uia", False)
+    kept = core.dedupe([btn, inside, outside, other])
+    checks["dedupe drops only a text repeated inside its clickable element"] = kept == [btn, outside, other]
     for k, v in checks.items():
         print(("OK   " if v else "FAIL ") + k)
     if not all(checks.values()):
