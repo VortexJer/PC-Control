@@ -21,13 +21,13 @@ Windows 10/11 only. Python 3.10+.
 ```powershell
 git clone https://github.com/VortexJer/PC-Control.git
 cd PC-Control
-\install.ps1                  # installs the package and runs `pc-control install` (options: -Mode ask|auto|strict|bypass, -AllowReads, -Editable)
+.\install.ps1                 # installs the package and runs `pc-control install` (options: -Mode ask|auto|strict|bypass, -AllowReads, -Editable)
 ```
 
 Or by hand, without cloning:
 
 ```powershell
-pip install git+https://github.com/VortexJer/PC-Control.git
+pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip     # no git needed
 pc-control install
 ```
 
@@ -47,6 +47,20 @@ Options: `--mode follow|auto|ask|strict|bypass` (default `follow`, see [Permissi
 Then open a **new** Claude Code session; the tools appear as `PC-Control`.
 
 `pc-control status` shows whether it is installed, connected and paused. `pc-control pause` / `pc-control resume` is the kill switch.
+
+## Update
+
+From **any** earlier version (including the first one, then called `pcsight`):
+
+```powershell
+pc-control update            # or .\update.ps1
+```
+
+It pulls the source if you installed from a git checkout, otherwise installs the latest version from GitHub, then runs
+`pc-control install` again with the same mode, scope and options. On the way it removes whatever an earlier version left behind
+(the old `pcsight` server, skill, CLAUDE.md block, hooks, install record and package, and old `ask` rules for PC-Control's tools,
+which would force a dialog on every call), and only that: your own skills, hooks, rules and notes are kept. Then open a new
+Claude Code session.
 
 ## Uninstall
 
