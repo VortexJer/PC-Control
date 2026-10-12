@@ -90,9 +90,9 @@ Pick one with `pc-control install --mode ...` or the `PC_CONTROL_MODE` environme
 
 | Mode | What it does |
 |---|---|
-| `follow` (default) | Follows Claude Code's own permission mode: in `bypass` PC-Control asks nothing, in any other mode it behaves like `auto`. |
+| `follow` (default) | Follows Claude Code's own permission mode, as cautious as you chose to be: `bypassPermissions` -> `bypass`, `auto` -> `auto`, `default` / `acceptEdits` / `plan` -> `ask`. |
 | `auto` | Filters apps **by category**, no list to maintain: password managers and authenticators, terminals, system administration tools, remote access, crypto wallets, the AI client itself, mail and messaging apps, VPN/security tools, signing/identity apps, developer tools with credentials, and any window whose title is about banking, payments or passwords are *protected*: PC-Control asks you before Claude can use them. Delicate actions (pay, delete, send, install, sign out...) are asked every time. It never types into a password field. |
-| `ask` | The lowest-risk mode: **every window** asks the first time Claude uses it in the session. Protected windows ask too. |
+| `ask` | The lowest-risk mode: **every window** asks. A plain *Yes* is for that call only; *Yes, and don't ask again* remembers that one window for the session. Protected windows ask too. |
 | `strict` | `auto` plus: acting only on apps listed in `PC_CONTROL_ALLOW=app1,app2` or `~/.pc-control/allow.txt`. |
 | `bypass` | Like `--dangerously-skip-permissions`: no filters, no confirmations. Use it when you trust the session. |
 

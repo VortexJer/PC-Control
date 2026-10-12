@@ -108,9 +108,9 @@ PASSWORD_NAME = re.compile(r"(contrase|password|passwort|kennwort|mot de passe|s
 
 
 def follow_mode():
-    """PC_CONTROL_MODE=follow (default): PC-Control follows CLAUDE CODE's permission mode.
-    bypass -> asks nothing; anything else -> only the windows in the filter.
-    If Claude Code's mode is unknown (no hook), it behaves like auto."""
+    """PC_CONTROL_MODE=follow (default): PC-Control follows CLAUDE CODE's permission mode, as cautious as the user chose to be:
+    bypassPermissions -> bypass (asks nothing); auto -> auto (protected windows and delicate actions); default, acceptEdits and plan
+    -> ask (every window the first time, "don't ask again" per window). If Claude Code's mode is unknown (no hook), it behaves like auto."""
     try:
         from . import perm
         pm = perm.cc_mode().strip().lower()
@@ -118,7 +118,11 @@ def follow_mode():
         pm = ""
     if not pm:
         return "auto"
-    return "bypass" if "bypass" in pm else "auto"          # no questions about apps outside the filter, whatever Claude Code's mode is
+    if "bypass" in pm:
+        return "bypass"
+    if pm in ("default", "acceptedits", "plan"):
+        return "ask"
+    return "auto"
 
 
 def mode():

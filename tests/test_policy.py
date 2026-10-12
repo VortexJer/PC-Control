@@ -123,13 +123,15 @@ for title in ("Quarterly report - Word", "Downloads", "Roblox Studio - Place1", 
 # ---- by default it FOLLOWS Claude Code's permission mode ----
 os.environ.pop("PC_CONTROL_MODE", None)
 c["without knowing Claude Code's mode: behaves like auto"] = policy.mode() == "auto"
-for cc, want in (("bypassPermissions", "bypass"), ("auto", "auto"), ("default", "auto"), ("plan", "auto"), ("acceptEdits", "auto"), ("dontAsk", "auto")):
+for cc, want in (("bypassPermissions", "bypass"), ("auto", "auto"), ("default", "ask"), ("plan", "ask"), ("acceptEdits", "ask"), ("dontAsk", "auto")):
     perm.set_cc_mode(cc)
     c[f"Claude Code in '{cc}' -> PC-Control '{want}'"] = policy.mode() == want
 perm.set_cc_mode("bypassPermissions")
 c["Claude Code in bypass: does not ask even for a terminal"] = not raises(policy.check_window, policy.mode(), "windowsterminal", "x", True, set())
 perm.set_cc_mode("default")
-c["Claude Code in normal mode: a window that is not in the filter does NOT ask"] = not raises(policy.check_window, policy.mode(), "winword", "Doc", True, set())
+c["Claude Code in normal mode: EVERY window asks the first time (ask)"] = raises(policy.check_window, policy.mode(), "winword", "Doc", True, set())
+perm.set_cc_mode("auto")
+c["Claude Code in auto: a window that is not in the filter does NOT ask"] = not raises(policy.check_window, policy.mode(), "winword", "Doc", True, set())
 c["... but one in the filter (terminal) DOES ask, in any mode other than bypass"] = raises(policy.check_window, policy.mode(), "windowsterminal", "x", True, set())
 perm.set_cc_mode("auto")
 c["Claude Code in auto: normal window passes, terminal asks"] = (not raises(policy.check_window, policy.mode(), "winword", "Doc", True, set())

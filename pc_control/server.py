@@ -58,7 +58,7 @@ async def _ask_user(ctx, e, tool_name, args):
                 # again") skipped it and the user never saw the question. It is not executed.
                 raise ToolError(f"{e.question} The question was NOT shown to the user (a Claude Code permission rule skips it), so it is not "
                                 f"executed. Tell the user to remove that rule with /permissions (the PC-Control one) and repeat the call.")
-            return True
+            return True                                 # a plain yes is for THIS call only, in every mode ("don't ask again" remembers the window)
         perm.mark("pending", s, e.detail or e.question)
         raise ToolError(f"{e.question} It needs the USER's permission and they cannot be asked from here. Repeat EXACTLY the same "
                         f"call: Claude Code will show the user a permission question; if they say no, it is not executed and you must not insist. "
