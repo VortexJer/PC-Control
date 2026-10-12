@@ -135,6 +135,7 @@ def _by_name(hwnd, name):
     raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(f"[{i}:{it.name[:30]}] ({it.kind})" for i, it in hits[:8]) + " - use the id")
 
 
+OPENED_PIDS = set()                                       # the app's OWN processes (never shared ones): their later windows count too
 OPENED = set()                                            # WINDOWS (hwnds) Claude opened in this session: never whole processes, which
                                                           # can be shared (explorer.exe = desktop + folders; ApplicationFrameHost = every Store app)
 
@@ -328,13 +329,24 @@ def windows() -> str:
     fg = win32gui.GetForegroundWindow()
     fg_root = ctypes.windll.user32.GetAncestor(fg, 2) if fg else 0
     out, first = [], True
-    for h in core.top_windows():                       # z-order is usage order: the first one is the most recent
+    tops = core.top_windows()
+    # a Store app shows twice (its frame, owned by the shared ApplicationFrameHost, and its own content window): list it ONCE, as
+    # its content window (the app's real process), with the frame's state (minimized, opened by Claude, in use)
+    cls = {h: win32gui.GetClassName(h) for h in tops}
+    content = {win32gui.GetWindowText(h): h for h in tops if cls[h] == "Windows.UI.Core.CoreWindow"}
+    frame_of = {content[win32gui.GetWindowText(h)]: h for h in tops if cls[h] == "ApplicationFrameWindow" and win32gui.GetWindowText(h) in content}
+    framed = set(frame_of.values())
+    for h in tops:                                     # z-order is usage order: the first one is the most recent
+        if h in framed:
+            continue
+        fr = frame_of.get(h, h)
         p, t = _proc(h), win32gui.GetWindowText(h)
         cat = policy.needs_ask(m, p, t)
-        using = h == fg or h == fg_root
+        using = fg in (h, fr) or fg_root in (h, fr)
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
-        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(h) else "") + (" (opened by Claude)" if h in OPENED else "") + tag
+        mine = h in OPENED or fr in OPENED or win32process.GetWindowThreadProcessId(h)[1] in OPENED_PIDS
+        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(fr) else "") + (" (opened by Claude)" if mine else "") + tag
                    + (" [ASKS PERMISSION from the user the first time]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}; asks the user for permission before use]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
@@ -515,7 +527,7 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
         else:
             r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
-    OPENED.update(w["hwnd"] for w in r["windows"])
+    OPENED.update(w["hwnd"] for w in r["windows"]); OPENED_PIDS.update(r.get("pids", []))
     return f"pid {r['pid']} | {ws} | {where}"
 
 
