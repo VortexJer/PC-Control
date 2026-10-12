@@ -1,6 +1,6 @@
 """A real web page in Microsoft Edge (guest profile, hidden desktop): read the whole page, find, pick in a <select> (its onchange
 must fire), press a button that is out of view, scroll. Skipped if Edge is not installed."""
-import os, sys, tempfile, time, shutil
+import os, re, sys, tempfile, time, shutil
 sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.dirname(HERE))
 from pc_control import actions, core
@@ -43,7 +43,7 @@ try:
     sel = next(i for i, x in items.items() if x.kind == "combobox"); btn = next(i for i, x in items.items() if "Bottom" in x.name)
     out = R(lambda: core.type_text(q, "portugal", target=sel)); time.sleep(0.5)
     check("type on a <select> picks the option and its onchange fires", R(lambda: actions.find(q, "chosen:Portugal")).startswith("found"), out)
-    R(lambda: actions.find(q, "Bottom button")); btn = 1
+    btn = int(re.search(r"\[(\d+):Bottom", R(lambda: actions.find(q, "Bottom button"))).group(1))
     out = R(lambda: core.click(q, btn)); time.sleep(0.6)
     check("a button out of view is pressed", R(lambda: actions.find(q, "PRESSED")).startswith("found"), out)
     out = R(lambda: actions.scroll(q, None, "top"))

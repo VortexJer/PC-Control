@@ -58,7 +58,7 @@ def main():
             out = actions.find(q, "City 70")
             say("4/6 look(find='City 70'): found although it is out of view; clicking it scrolls the list to it")
             print("  ", out.replace("\n", " / ")); time.sleep(PAUSE * 0.6)
-            print("  ", core.click(q, 1)); time.sleep(PAUSE)
+            print("  ", core.click(q, int(out.split("[", 1)[1].split(":", 1)[0]))); time.sleep(PAUSE)
 
             say("5/6 key ctrl+s: runs the app's own File > Save command (look at the title), no keys pressed")
             print("  ", core.key(q, "ctrl+s")); time.sleep(PAUSE)

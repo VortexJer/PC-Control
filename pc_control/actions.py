@@ -169,7 +169,7 @@ def scroll(query, target=None, direction="down", amount=1):
             return "did not scroll: you are pressing or dragging with the mouse; retry when you let go"
         _wheel(nh, cx, cy, direction, amount)                             # 3) wheel messages (web pages, custom-drawn apps)
         return "ok (mouse-wheel messages to the window, the mouse does not move; unconfirmed: the changes below say whether it scrolled)"
-    return "did not scroll: no scrollable area found in this window (it may be minimized: open it or use open_app(hidden=true))"
+    return "did not scroll: no scrollable area found in this window (if it is minimized, ask the user to open it from the taskbar)"
 
 
 # ---------- full text ----------
@@ -446,6 +446,21 @@ def _menu_bar_accelerator(hwnd, combo, budget_s=8.0):
     return None
 
 
+def _dialog_text(h):
+    """What a dialog asks and which buttons it offers, in one line (for the model to decide, or to ask the user)."""
+    try:
+        items = core.walk_uia(h, win32gui.GetWindowRect(h), offscreen_ok=True)
+    except Exception:
+        return ""
+    title = win32gui.GetWindowText(h)
+    texts = [i.name for i in items if not i.clickable and i.kind in ("text", "document") and i.name != title][:4]
+    buttons = [i.name for i in items if i.kind in ("button", "splitbutton") and i.name not in ("Cerrar", "Close", "Minimizar", "Minimize")][:6]
+    if not texts and not buttons:
+        return ""
+    return (f"«{title}{': ' if title and texts else ''}{' '.join(t[:160] for t in texts)}» buttons: {', '.join(buttons)}. "
+            f"Answer it with look(window=\"{h}\") and click (ask the user if it means saving or discarding their work)")
+
+
 def shortcut(query, combo_text):
     """Run a keyboard shortcut WITHOUT pressing keys. Routes, in order: the classic text box command (copy, paste, select all, undo),
     the app's menu entry showing that shortcut (WM_COMMAND), the element declaring it (UI Automation), alt+f4 = close request."""
@@ -460,8 +475,19 @@ def shortcut(query, combo_text):
             return (f"did not press ctrl+s: in this Office (its language) save is {'+'.join(save_key)} and ctrl+s means something else "
                     f"(underline in Spanish). To save, use {'+'.join(save_key)}.")
     if combo == ("alt", "f4"):
+        before = set(core.popup_windows(hwnd))
         win32gui.PostMessage(hwnd, win32con.WM_CLOSE, 0, 0)
-        return "ok (close request sent to the window, like alt+f4; if there are unsaved changes the app asks)"
+        for _ in range(12):                                                # up to ~1.8 s: closed, or a question appeared
+            time.sleep(0.15)
+            if not win32gui.IsWindow(hwnd):
+                return "ok (closed, like alt+f4)"
+            new = [h for h in core.popup_windows(hwnd) if h not in before]
+            if new:
+                break
+        ask = _dialog_text(new[0]) if new else ""
+        if ask:
+            return f"close requested, but the app is asking: {ask}"
+        return "ok (close request sent, like alt+f4; the window is still open: look at it to see why)"
     done = _edit_command(hwnd, combo)
     if done:
         return done
@@ -494,7 +520,7 @@ def shortcut(query, combo_text):
     if not hidden and not known:
         return (f"did not press '{combo_text}': this app keeps its shortcuts inside menus that only exist while open, and opening them on the "
                 f"user's desktop could take the focus. Use the menu instead: look, click the menu (e.g. File), look, click the entry. "
-                f"(In apps opened with open_app(hidden=true) shortcuts like this work.)")
+                f"(Only apps on the hidden desktop allow it: use open_app(hidden=true) only if the user asks not to see the app.)")
     return (f"did not press '{combo_text}': this app has no command with that shortcut." + (f" Its shortcuts: {known}" if known
             else " Use its menu instead: look, then click the entry."))
 
@@ -623,15 +649,21 @@ def find(query, terms, wait=0.0):
         time.sleep(0.4)
     waited = round(time.time() - t0, 1)
     rect = win32gui.GetWindowRect(hwnd)
-    for n, it in enumerate(hits, 1):
-        it.id = n
     old = core._state.get(hwnd, {})
+    known = dict(old.get("items", {}))                                       # ids from the last look stay valid: find never renumbers them
+    nxt = max(known, default=0) + 1
+    for it in hits:
+        same = next((i for i, o in known.items() if o.kind == it.kind and o.name == it.name
+                     and abs(o.rect[0] - it.rect[0]) <= 4 and abs(o.rect[1] - it.rect[1]) <= 4), None)
+        if same is not None:
+            it.id = same
+        else:
+            it.id = nxt; nxt += 1
+        known[it.id] = it
     visible = {core.line_key(i) for i in items                              # the same rule changes() uses: on screen and with a size
                if not _off(i) and i.rect[2] > i.rect[0] and i.rect[3] > i.rect[1]}
-    core._state[hwnd] = {"items": {it.id: it for it in hits}, "lines": visible,
-                         "rect": rect, "scale": 1.0, "mode": "uia"}
-    if old.get("rect") and old.get("scale"):
-        core._state[hwnd]["scale"] = old["scale"]
+    core._state[hwnd] = {"items": known, "lines": visible, "rect": old.get("rect") or rect,
+                         "scale": old.get("scale", 1.0), "mode": old.get("mode", "uia")}
     lines = []
     for it in hits[:40]:
         off = _off(it)
@@ -663,6 +695,18 @@ def scroll_into_view(ctrl):
     except Exception:
         pass
     return False
+
+
+def select_in_parent(it):
+    """Select a list entry through its list (classic message or UI Automation), with read-back. None if it is not in a plain list."""
+    try:
+        parent = it.ctrl.GetParentControl()
+        if parent is None or parent.ControlTypeName not in ("ListControl", "ComboBoxControl"):
+            return None
+        out = select_option(parent, it.name)
+        return out if out and out.startswith("ok") else None
+    except Exception:
+        return None
 
 
 def press_out_of_view(it):

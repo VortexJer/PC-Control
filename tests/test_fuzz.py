@@ -13,6 +13,7 @@ state = os.path.join(tmp, "s.json")
 CRASH = re.compile(r"\b(AttributeError|TypeError|KeyError|IndexError|ValueError|NameError|UnboundLocalError|ZeroDivisionError|"
                    r"RecursionError|AssertionError|Traceback|NoneType|object has no attribute|com_error)\b")
 results = []
+NAMED = []
 
 
 def text_of(res):
@@ -87,6 +88,14 @@ async def run(s):
     ]
     for tool, args in cases:
         await call(s, tool, **args)
+    # targets by NAME (what a cheaper model reaches for first)
+    await call(s, "look", window=w)
+    NAMED.append(("click by exact name", (await call(s, "click", window=w, target="Deep button")).startswith("ok")))
+    NAMED.append(("type on a drop-down by its name", "Green" in await call(s, "type", window=w, target="Color", text="green")))
+    NAMED.append(("an ambiguous name lists the ids instead of guessing", "elements match" in await call(s, "click", window=w, target="Cit")
+                  or "elements match" in results[-1][2]))
+    NAMED.append(("a name found only out of view still works", (await call(s, "click", window=w, target="City 77")).startswith("ok")))
+    NAMED.append(("an unknown name says so", "no element named" in await call(s, "click", window=w, target="Nope Button")))
     # the window closes in the middle: every tool must say so, not crash
     await call(s, "key", window=w, name="alt+f4")
     await asyncio.sleep(1.5)
@@ -107,6 +116,9 @@ async def main():
 
 asyncio.run(main())
 bad = [(t, a, o, d) for t, a, o, d in results if CRASH.search(o) or o.startswith(("HUNG", "CLIENT")) or d > 60]
+for name, ok in NAMED:
+    print(("OK   " if ok else "FAIL ") + name)
+bad += [("named", {}, n, 0) for n, ok in NAMED if not ok]
 for t, a, o, d in results:
     flag = "BAD " if (t, a, o, d) in bad else "ok  "
     print(f"{flag}{d:5}s {t}({', '.join(f'{k}={v!r}' for k, v in a.items() if k != 'command')[:60]}) -> {o[:150]!r}")

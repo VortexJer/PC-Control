@@ -153,7 +153,7 @@ try:
     k2 = asyncio.run(session({"PC_CONTROL_MODE": "auto"}, ak2))
     checks["auto mode: a normal app does NOT ask (no real app is opened in the test)"] = not ASKED
     ANS["v"] = None
-    checks["minimized is not captured (it warns)"] = bool(out["img_min"]) and "hidden=true" in out["img_min"][1]
+    checks["minimized is not captured (it warns)"] = bool(out["img_min"]) and "taskbar" in out["img_min"][1]
 
     async def c(s):
         return await call(s, "windows"), await call(s, "open_app", command="calc.exe")
