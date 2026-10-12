@@ -401,37 +401,59 @@ def verdict(result, delta):
     if delta.startswith("the window is gone"):
         return "the window closed"
     if delta == "no changes" and "BM_CLICK" in result:
-        return "the button received the click; nothing changed on screen"
+        return "clicked; nothing changed on screen"
     if delta == "no changes":
-        return "WARNING: NO VISIBLE EFFECT (it may not have worked); check with look"
+        return "WARNING: NO VISIBLE EFFECT; check with look"
     if delta.startswith(("change not measurable", "no previous reading", "no change in the UI tree")):
-        return "effect not measurable in this mode; check with look"
+        return "effect not measurable; check with look"
     return "effect observed"
+
+
+_TR = []
+
+
+def _tr(label):
+    """PC_CONTROL_TRACE=1: where the time of an action goes (appended to its answer). Off by default; costs nothing then."""
+    if envvars.get("TRACE"):
+        _TR.append((label, time.perf_counter()))
+
+
+def _tr_report():
+    if not _TR:
+        return ""
+    t0, out = _TR[0][1], []
+    for (a, ta), (b, tb) in zip(_TR, _TR[1:]):
+        out.append(f"{b} {int((tb - ta) * 1000)}ms")
+    _TR.clear()
+    return " | trace: " + ", ".join(out)
 
 
 def _act(hwnd, hidden, fn, note=""):
     """Run the action; reply with the result, only what changed and whether it did its job. On your desktop, any NEW
     windows that appear are sent behind the others (never if you are using them); on the hidden desktop this is not needed."""
+    _tr("start")
     before = set(core.top_windows())
-    result = fn()
-    time.sleep(0.25)
+    result = fn(); _tr("action")
+    time.sleep(0.25); _tr("settle")
     if not hidden:
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
     if "through COM" in result and ("now shows" in result or "saved" in result):
         delta = "read back by the app itself"             # the grid/file is not in the UI tree: comparing it would say nothing
     else:
         delta = core.changes(str(hwnd))
+    _tr("changes")
     extra = []
     if note: extra.append(note)
     if hwnd in _LAST_NOTICE:
         extra.append(f"the user took {_LAST_NOTICE.pop(hwnd)} s to put the window back as it was after the notice, and I carried on by myself")
-    return f"{result} | changes: {delta} | {verdict(result, delta)}" + "".join(f" | {e}" for e in extra)
+    return f"{result} | changes: {delta} | {verdict(result, delta)}" + "".join(f" | {e}" for e in extra) + _tr_report()
 
 
 @tool
-def windows() -> str:
-    """Open windows ('hwnd | process | title'), most recent first. [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat ("this app"). [PROTECTED: ...] = PC-Control asks the user itself before you act there (you cannot answer for them). (hidden) = hidden desktop; (minimized)."""
+def windows(filter: str = "") -> str:
+    """Open windows ('hwnd | process | title'), most recent first; filter = text in the title or process (cheaper). [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat. [mine] = opened by you. [PROTECTED] / [ASKS] = PC-Control asks the user itself before you act there. (hidden), (minimized)."""
     _paused()
+    flt = filter.strip().lower()
     m = policy.mode()
     fg = win32gui.GetForegroundWindow()
     fg_root = ctypes.windll.user32.GetAncestor(fg, 2) if fg else 0
@@ -448,18 +470,24 @@ def windows() -> str:
             continue
         fr = frame_of.get(h, h)
         p, t = _proc(h), win32gui.GetWindowText(h)
+        if flt and flt not in t.lower() and flt not in p:
+            first = first and not (fg in (h, fr) or fg_root in (h, fr))           # the [LAST USED] mark must not move because of the filter
+            continue
+        t = t.lstrip("✳◑◐◒◓●• ")                # status icons that terminals put in their titles
         cat = policy.needs_ask(m, p, t)
         using = fg in (h, fr) or fg_root in (h, fr)
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
         mine = h in OPENED or fr in OPENED or win32process.GetWindowThreadProcessId(h)[1] in OPENED_PIDS
-        out.append(f"{h} | {p} | {t[:50]}" + (" (minimized)" if win32gui.IsIconic(fr) else "") + (" (opened by Claude)" if mine else "") + tag
-                   + (" [ASKS PERMISSION from the user the first time]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}; asks the user for permission before use]" if cat else ""))
+        out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else "") + (" [mine]" if mine else "") + tag
+                   + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
+            if flt and flt not in t.lower() and flt not in p:
+                continue
             cat = policy.needs_ask(m, p, t)
-            out.append(f"{h} | {p} | {t[:50]} (hidden)" + (" [ASKS PERMISSION]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
-    return "\n".join(out)
+            out.append(f"{h} | {p} | {t[:44]} (hidden) [mine]" + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
+    return "\n".join(out) or f"no window matches '{filter}'"
 
 
 @tool
@@ -483,6 +511,7 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
 def click(window: str, target: str, right: bool = False, double: bool = False, confirm: bool = False) -> str:
     """Click an element (its id from look(), or its exact name), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved; says whether it had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
     def run(hidden):
+        _TR.clear(); _tr("t0")
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)                              # what the user was (or was not) asked about: re-checked right before acting
         t = _target(target, True, hwnd)
@@ -499,19 +528,22 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         else:
             _guard_point(hwnd, t, confirm)                   # coordinates carry no identity: judge what is under the point
         old = tuple(it.rect) if it else None
+        _tr("guards")
         warn = _ensure_layout(hwnd, hidden, it if isinstance(t, int) else None)
         if warn:
             raise ToolError(warn)
         rel = core.live_rel(hwnd, it) if (it and not hidden) else None        # a SINGLE resolution: pointer, warning and click all use the same one
+        _tr("layout+rel")
         if it is not None and not hidden and rel is None and it.ctrl is not None:
             return "did not press: the element is no longer where it was (or there are several like it now): look again | NOT EXECUTED"
         if _cursor_wanted(hwnd, hidden):                   # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
-            cursor.CURSOR.pointer(x, y, click=True, ms=320, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.36)
+            cursor.CURSOR.pointer(x, y, click=True, ms=240, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.27)
             x2, y2, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)     # the user may have moved/resized while it was travelling
             if abs(x2 - x) + abs(y2 - y) > 6:
                 cursor.CURSOR.pointer(x2, y2, click=True, ms=140, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.18)
                 rel = core.live_rel(hwnd, it) if (it and not hidden) else rel
+        _tr("cursor")
         # the 0.4 s of the cursor's trip are the window of opportunity: verify AGAIN right before dispatching
         _recheck_window(hwnd, cat0)
         if it is not None:
@@ -572,7 +604,7 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
             else:
                 _, y, x, eh = _screen_point(hwnd, it)
                 cursor.CURSOR.caret(x + 8, y, h=cursor.caret_height(eh, s), scale=s, owner=hwnd)
-            time.sleep(0.25)
+            time.sleep(0.15)
         _recheck_window(hwnd, cat0)                        # after the typing bar's trip: same window, same field, still not a secret
         bad = core.identity_problem(it)
         if bad:
@@ -744,6 +776,27 @@ def _watch_parent():
         k.WaitForSingleObject(ctypes.c_void_p(h), 0xFFFFFFFF)
         _shutdown()
     threading.Thread(target=wait, name="pc-control-parent", daemon=True).start()
+
+
+def _slim_schemas():
+    """Tool definitions are sent on EVERY request: drop the "title" that pydantic adds to each parameter (it just repeats the name)."""
+    def strip(node):
+        if isinstance(node, dict):
+            node.pop("title", None)
+            for k, v in node.items():
+                if k == "properties" and isinstance(v, dict):
+                    for sub in v.values():
+                        strip(sub)
+                else:
+                    strip(v)
+        elif isinstance(node, list):
+            for v in node:
+                strip(v)
+    for t in mcp._tool_manager._tools.values():
+        strip(t.parameters)
+
+
+_slim_schemas()
 
 
 def main():

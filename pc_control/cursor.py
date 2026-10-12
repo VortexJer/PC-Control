@@ -315,7 +315,7 @@ class ClaudeCursor:
 
     # -- own thread: creates the windows, animates them and pumps their messages --
     def _run(self):
-        import win32api, win32gui
+        import win32api, win32con, win32event, win32gui
         u, g = ctypes.WinDLL("user32", use_last_error=True), ctypes.WinDLL("gdi32", use_last_error=True)
         u.GetDC.restype = wt.HDC; g.CreateCompatibleDC.restype = wt.HDC; g.CreateCompatibleDC.argtypes = [wt.HDC]
         g.CreateDIBSection.restype = wt.HBITMAP
@@ -534,7 +534,11 @@ class ClaudeCursor:
                     if not L["dirty"]: continue
                     data, nw, nh, nx, ny = L["data"]
                     w.present(nx + dx, ny + dy, data, nw, nh, L["a"]); L["dirty"] = False
-            time.sleep(0.012 if (P["on"] or C["on"] or N["on"] or M["on"]) else 0.05)
+            # NOT time.sleep: this thread owns the overlay windows, which live in the same process as the UI Automation client that
+            # walks the app's tree (they are owned by it, so the walk asks them too). A sent message waits until this thread looks at
+            # its queue, so each wait here was added to EVERY query: the walk took 2.2x longer (783 ms vs 357 ms). A message wait
+            # answers them at once.
+            win32event.MsgWaitForMultipleObjects([], False, 12 if (P["on"] or C["on"] or N["on"] or M["on"]) else 50, win32con.QS_ALLINPUT)
 
 
 CURSOR = ClaudeCursor()

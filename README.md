@@ -105,6 +105,11 @@ read permissions it added, the settings backup and the data folder. Skills, hook
 
 ## Cost
 
+The tool definitions Claude gets on every request are about 1280 tokens for the 10 tools (the `title` that the schema generator adds to every
+parameter, 16 % of it, is stripped). With `PC_CONTROL_TRACE=1` each action's answer ends with where its time went (`guards 4ms, cursor 270ms,
+settle 250ms, changes 380ms`). Most of an action is the UI Automation walk that tells it what changed; it depends on how fast the app answers
+accessibility queries.
+
 `look` chooses by cost: it estimates what the text would cost and what an image of the window would cost (about `ceil(width/28) * ceil(height/28)`
 tokens at the size it would send, which adapts to your monitor) and sends the cheaper one, never empty text and never text that does not
 cover the window. The text estimate was fitted on real windows against a BPE tokenizer (within about 10 %). After an action it sends
@@ -206,7 +211,7 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 | Tool | What it does |
 |---|---|
-| `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)` and `(opened by Claude)`. A Store app is listed once. A title that matches several windows is never guessed: the answer lists them with their number. |
+| `windows` | Lists windows, most recent first (`filter="word"` lists only the matching ones: 12 tokens instead of ~150); marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]` / `[ASKS]`, `(minimized)`, `(hidden)` and `[mine]` (opened by Claude). A Store app is listed once. A title that matches several windows is never guessed: the answer lists them with their number. |
 | `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). `find="Save|Cancel"` returns only the matching elements, also those scrolled out of view; `find="!Loading"` with `wait=10` waits until that text is gone. |
 | `click` | Clicks an element by id or by its exact name (several with that name: the ids are listed instead of guessing), or `x,y` of the last image; `right` and `double` supported. Ids stay valid between looks. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
 | `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. On a drop-down or list (classic, WinForms, web `<select>`) it picks the entry with that text, and the app's change event fires. In Excel the target can be a cell address (`B3`, `Sheet2!A1`): numbers stay numbers, `=...` is a formula, and the answer says what the cell now shows. |

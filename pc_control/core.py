@@ -23,6 +23,8 @@ CLICKABLE = {"ButtonControl", "EditControl", "MenuItemControl", "TabItemControl"
 NAMELESS_OK = {"EditControl", "ComboBoxControl", "CheckBoxControl", "RadioButtonControl", "ButtonControl", "SplitButtonControl"}
 LISTS = {"ListControl", "TreeControl", "DataGridControl", "TableControl"}       # named lists get an id too: scroll() and type() (select) aim at them
 TEXTY = CLICKABLE | LISTS | {"TextControl", "DocumentControl"}
+SKIP_KINDS = {"ScrollBarControl", "ThumbControl"}
+LEAF_KINDS = {"TextControl", "ImageControl", "SeparatorControl", "ProgressBarControl"}
 
 _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
@@ -250,14 +252,20 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
         if n > max_nodes or time.time() - t0 > budget_s:
             break
         try:
-            kind = c.ControlTypeName; name = (c.Name or "").strip(); r = c.BoundingRectangle; off = c.IsOffscreen
+            kind = c.ControlTypeName
+            if kind in SKIP_KINDS:                               # "line up", "page down"...: noise in every app; scroll() does that job
+                continue
+            name = (c.Name or "").strip()
+            if kind in TEXTY:                                    # each property is a call to the other process: only for what is kept
+                r = c.BoundingRectangle; off = c.IsOffscreen
+            else:
+                r = off = None
         except Exception:
             continue
-        if kind in ("ScrollBarControl", "ThumbControl"):         # "line up", "page down"...: noise in every app; scroll() does that job
-            continue
+        leaf = kind in LEAF_KINDS                                # a label or an image has nothing worth listing below it
         if not name and kind in NAMELESS_OK:                     # Chromium drops a field's name once used; icon buttons often have none: keep them
             name = fallback_name(c, kind)
-        if (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)) and kind in TEXTY and name:
+        if kind in TEXTY and name and (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)):
             it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE or kind in LISTS)
             it.parent = ps
             try:
@@ -275,7 +283,7 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                 if cells is not None:                                  # one line per row: its cells' values, not its headers again
                     it.value = cells[:80]
                     continue
-        if d < 28:                                              # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
+        if d < 28 and not leaf:                                 # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
             try:
                 stack.extend((ch, d + 1, (kind[:-7].lower(), name)) for ch in reversed(c.GetChildren()))
             except Exception:
@@ -580,7 +588,7 @@ def changes(query):
         return "no changes"
     if len(add) + len(rem) > 12:                 # the view scrolled or was replaced: a list of lines would be noise
         return f"the view changed a lot (+{len(add)} / -{len(rem)} lines): look to see it"
-    f = lambda L: "; ".join(x.split("|", 1)[1][:30] for x in L[:6]) + (f" (+{len(L) - 6})" if len(L) > 6 else "")
+    f = lambda L: "; ".join(x.split("|", 1)[1][:26] for x in L[:4]) + (f" (+{len(L) - 4})" if len(L) > 4 else "")
     return (f"+ {f(add)}" if add else "") + (" | " if add and rem else "") + (f"- {f(rem)}" if rem else "")
 
 
