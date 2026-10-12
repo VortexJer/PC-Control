@@ -11,7 +11,8 @@ An MCP server for Claude Code (and any MCP client). Early version: it works, but
   Nothing in the package calls `SetForegroundWindow`, `SendInput`, `keybd_event` or `SetCursorPos` (a test scans the code for them).
 - **Answers with only what changed** after each action, not the whole screen again, and says whether the action had a visible effect.
 - **Does what people ask for, still without focus.** Scroll, read a whole document or page, keyboard shortcuts, drop-downs, find an element (even scrolled out of view) and wait for something to appear.
-- **Opens apps out of your way.** `open_app` starts the app minimized (nothing on screen, no focus, its button in the taskbar), or on a hidden desktop with `hidden=true`.
+- **Opens apps out of your way, but where you can watch.** `open_app` starts the app minimized with its button in the taskbar (no focus taken):
+  open it whenever you want to see Claude work. Its windows are marked *opened by Claude*, so the model never mistakes yours for its own.
 - **Lets you keep working.** You and Claude can use the same app at the same time (see [You and Claude in the same app](#you-and-claude-in-the-same-app)).
 
 Windows 10/11 only. Python 3.10+.
@@ -79,8 +80,9 @@ read permissions it added, the settings backup and the data folder. Skills, hook
 
 `look` chooses by cost: it estimates what the text would cost and what an image of the window would cost (about `ceil(width/28) * ceil(height/28)`
 tokens at the size it would send, which adapts to your monitor) and sends the cheaper one, never empty text and never text that does not
-cover the window. After an action it sends only what changed. In one measured Word window, the UI-tree text cost 713 tokens against 851 for the screenshot;
-a minimized window is read as text only.
+cover the window. The text estimate was fitted on real windows against a BPE tokenizer (within about 10 %). After an action it sends
+only what changed. In one measured Word window, the UI-tree text cost 713 tokens against 851 for the screenshot; a minimized window is
+read as text only. `read` gives a whole document in one call, and `read(find=...)` or `look(find=...)` only the lines or elements you need.
 
 ## Permission modes
 
@@ -111,8 +113,7 @@ Protected windows are **not blocked**; you decide, not the model. The model has 
 - The `PermissionRequest` hook answers by itself when you do not need to be bothered (a normal window outside the filter, bypass).
   It also tells the server that a dialog really is about to be shown: once Claude Code has done that at least once, the server refuses
   to run a protected action whose dialog was skipped (for example by a "don't ask again" rule), instead of trusting the question.
-- **Other MCP clients** that support elicitation get the question straight from the server.
-- Without either, the action simply does not run.
+- **Other MCP clients** (without these hooks): a protected action simply does not run.
 
 ## What you see: Claude's cursor
 
@@ -152,15 +153,15 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 | Tool | What it does |
 |---|---|
-| `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)`. |
+| `windows` | Lists windows, most recent first; marks `[IN USE]` (where you work now), `[LAST USED]`, `[PROTECTED: ...]`, `(minimized)`, `(hidden)` and `(opened by Claude)`. A Store app is listed once. A title that matches several windows is never guessed: the answer lists them with their number. |
 | `look` | Sees a window: UI-tree text, OCR text or an image with numbered marks, whichever is cheapest that works. Text fields show what they contain (never password fields). `find="Save|Cancel"` returns only the matching elements, also those scrolled out of view; `find="!Loading"` with `wait=10` waits until that text is gone. |
-| `click` | Clicks an element id (or `x,y` of the last image); `right` and `double` supported. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
+| `click` | Clicks an element by id or by its exact name (several with that name: the ids are listed instead of guessing), or `x,y` of the last image; `right` and `double` supported. Ids stay valid between looks. Title-bar buttons (minimize, maximize, close) and elements of apps that ignore mouse messages are pressed through UI Automation. |
 | `type` | Types into an element id (append, or `replace`) and reads the field back to confirm the text is really there. On a drop-down or list (classic, WinForms, web `<select>`) it picks the entry with that text, and the app's change event fires. In Excel the target can be a cell address (`B3`, `Sheet2!A1`): numbers stay numbers, `=...` is a formula, and the answer says what the cell now shows. |
 | `drag` | Holds the button and drags through points (freehand, line, rectangle, ellipse) using mouse messages: no real mouse, no focus. Apps with modern canvases may ignore it. |
 | `key` | A key (`enter`, `tab`, `esc`, arrows, `f1`-`f12`...) or a shortcut (`ctrl+s`, `ctrl+shift+n`, `alt+f4`). Shortcuts never press real keys: PC-Control runs the app's own menu command that shows that shortcut, the element declaring it, or the text-box command (`ctrl+a/c/x/v/z`). If the app has no such command, the answer lists the shortcuts it does have (they depend on its language: in Spanish Notepad, Save is `Ctrl+G`). |
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
-| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
-| `open_app` | Launches an app minimized with its taskbar button, so you can open it and watch. Browsers (Edge, Chrome, Brave...) open behind your windows instead, not minimized, because a minimized browser hides its page from accessibility; the focus is never taken. `hidden=true` uses an invisible desktop, only when you ask for it. |
+| `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`), or only the lines that match (`find="a|b"`, numbered). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
+| `open_app` | Launches an app minimized with its taskbar button, so you can open it and watch, in its own folder (as a shortcut does). If the window belongs to a process the launcher starts (Windows Media Player, Git GUI) or to a Store app, it is found and minimized too, and if it grabbed the focus it is handed back to you. Browsers (Edge, Chrome, Brave...) open behind your windows instead, not minimized, because a minimized browser hides its page from accessibility; the focus is never taken. `hidden=true` uses an invisible desktop, only when you ask for it. |
 
 ## Adapts to your PC
 
@@ -174,19 +175,19 @@ You can keep working in the app while Claude works in it, as long as you do not 
 ## Known limits
 
 - A browser or Electron app that is minimized hides its page: PC-Control says so instead of answering "not found". Browsers opened with `open_app` are placed behind your windows for that reason.
-
 - Excel and Word are reached through COM from their own window: Claude writes cells by address and text at its own insertion point, never through your selection. While you are editing a cell Excel refuses COM calls; PC-Control retries for a few seconds and then says so. Save (`ctrl+s`, or `ctrl+g` in a Spanish Office, where `ctrl+s` is underline) only works for files that already have a name.
 
 - Shortcuts work only where the app exposes them as a command (a classic menu, a menu entry or element with that shortcut, or a text box). Modern menus (WinUI, WPF) only exist while open, so they are searched only for apps on the hidden desktop: opening them on your desktop could take the focus.
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
 - Modern Store/XAML apps (Calculator, Paint, Settings) ignore mouse messages sent to a background window. For buttons, PC-Control notices that a click had no visible effect and presses the element through UI Automation `Invoke` (what a screen reader does: no mouse, no focus), and the answer says so. A drawing canvas has no such pattern, so `drag` does nothing there (modern Paint).
-- Store apps also ignore "start minimized": opening Calculator brings it to the front.
+- Store apps ignore "start minimized" and activate themselves a moment later: PC-Control minimizes them again for a few seconds and hands the focus back, but they can flash on screen for a fraction of a second.
 - Chromium browsers (Chrome, Edge) and Electron apps expose the page contents only while their accessibility support is on; if a page shows only the browser's own controls, start it with `--force-renderer-accessibility`. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
-- A minimized window is read through its UI tree only (no capture: it would have to be shown). If that is not enough, relaunch with `hidden=true`.
+- A minimized window is read through its UI tree only: no screenshot, no scrolling, no clicks by coordinates (it would have to be shown).
+  Open it from the taskbar when that is needed.
 - Store (UWP) apps cannot run on a hidden desktop.
 - Background typing through `WM_CHAR` is not accepted by every app (the modern Notepad ignores it); use element ids.
-- Opening an app while you are typing can let Windows briefly activate its window; PC-Control cannot prevent that without stealing focus itself.
+- An app that activates itself while starting can take the focus for a moment (measured: under a second) before PC-Control hands it back.
 
 ## Tests
 
@@ -216,10 +217,16 @@ python tests/test_powerpoint.py   # PowerPoint: slides and notes (skipped withou
 python tests/test_web.py          # the same on a real web page in Edge (skipped without Edge)
 python tests/test_unnamed_field.py # fields and buttons without an accessible name still get an id
 python tests/test_launcher.py     # a launcher whose window belongs to a child process: found, minimized, focus kept
-python tests/test_fuzz.py         # 52 bad or odd inputs through the real protocol: clear answers, no crashes
+python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause
 python tests/test_hygiene.py      # license, README, no personal data
 ```
+
+## Tested with
+
+Besides the throw-away test windows: Word, Excel, PowerPoint, Notepad, File Explorer, Edge (web pages), Calculator, Paint, Settings,
+KiCad, OBS Studio, RStudio, VS Code, Git GUI, Character Map, Windows Media Player and Clock, driven by Claude and by a cheaper model
+(Haiku) as a test user, whose reports fixed most of the 0.4 issues.
 
 ## Demo
 
