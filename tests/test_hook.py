@@ -101,7 +101,9 @@ sg2 = perm.sig("click", {"window": "Notepad", "target": "9"})
 try: os.remove(os.path.join(tmp, "perm", "approved.json"))
 except OSError: pass
 o1 = run_main(pm("default")); perm.take("asked", sg2)
-c["Claude Code in normal mode: a window that is not in the filter does NOT ask"] = ("ask" not in o1 and (o1 == "" or "\"allow\"" in o1)) and perm.cc_mode() == "default"
+c["Claude Code in normal mode: ANY window is asked the first time, in Claude Code's own dialog"] = ("updatedInput" in o1 and "permissionDecision" not in o1
+                                                                                                 and perm.cc_mode() == "default")
+perm.take("shown", sg2); perm.take("asked", sg2)
 o2 = run_main(pm("bypassPermissions"))
 c["Claude Code in bypass: the hook asks nothing"] = o2 == "" and perm.cc_mode() == "bypassPermissions"
 o3 = run_main(pm("auto"))
@@ -164,7 +166,8 @@ ALLOW = '"behavior": "allow"'
 c["PermissionRequest, Claude Code in auto, normal window: answers 'allow' (no need to bother)"] = ALLOW in pr({"window": "Notepad"}, "auto")
 c["PermissionRequest, Claude Code in bypass: answers 'allow'"] = ALLOW in pr({"window": "Notepad"}, "bypassPermissions", cat="terminal or console")
 c["PermissionRequest, PROTECTED window: does NOT answer (the dialog appears for the user)"] = pr({"window": "PowerShell"}, "auto", proc="windowsterminal", cat="terminal or console") == ""
-c["PermissionRequest, Claude Code normal mode and window outside the filter: answers allow (no flicker)"] = ALLOW in pr({"window": "Notepad"}, "default")
+c["PermissionRequest, Claude Code normal mode, window not yet approved: does NOT answer (the user is asked once)"] = pr({"window": "Notepad"}, "default") == ""
+_s = perm.sig("look", {"window": "Notepad"}); perm.take("asked", _s); perm.take("shown", _s)
 perm.approve(hook.policy.window_key(hook.policy.ASK_ALL, "notepad", 555))
 c["PermissionRequest, window already remembered: answers 'allow'"] = ALLOW in pr({"window": "Notepad"}, "default")
 c["PermissionRequest, windows (list only): answers 'allow'"] = ALLOW in pr({}, "default", name="windows")
@@ -200,6 +203,7 @@ sys.stdin = io.StringIO(json.dumps(nat)); buf = io.StringIO(); sys.stdout = buf;
 c["normal mode, dialog skipped by a rule: the repeated call is asked through the hook"] = json.loads(buf.getvalue())["hookSpecificOutput"].get("permissionDecision") == "ask"
 perm.take("pending", nsig)
 hook.policy.blocked_category = lambda p, t="": None; hook._proc = lambda h: "notepad"
+perm.approve(hook.policy.window_key(hook.policy.ASK_ALL, "notepad", 1234))     # a window the user already approved this session
 sys.stdin = io.StringIO(json.dumps(dict(nat, tool_input={"window": "Notepad"}))); buf = io.StringIO(); sys.stdout = buf; hook.PENDING.clear(); hook.main(); sys.stdout = old
 c["normal mode, nothing to ask: allowed at once, so Claude Code's dialog never flashes"] = json.loads(buf.getvalue())["hookSpecificOutput"].get("permissionDecision") == "allow"
 hook.policy.blocked_category = lambda p, t="": "terminal or console"; hook._proc = lambda h: "windowsterminal"
