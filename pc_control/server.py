@@ -14,7 +14,7 @@ Permission modes (env PC_CONTROL_MODE, see policy.py)
   * Nothing here ever focuses a window, moves your mouse or injects keystrokes.
   * Dialogs that an action opens in YOUR apps are only sent behind other windows, and never if you are using them.
 """
-import asyncio, ctypes, ctypes.wintypes as wt, functools, inspect, os, shlex, time, traceback
+import asyncio, ctypes, ctypes.wintypes as wt, functools, inspect, os, re, shlex, time, traceback
 from concurrent.futures import ThreadPoolExecutor
 from pydantic import BaseModel, Field
 import uiautomation as auto
@@ -95,6 +95,22 @@ def tool(fn):
     wrapper.__signature__ = sig.replace(parameters=ps)
     wrapper.__annotations__ = {k: v for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
     return mcp.tool()(wrapper)
+
+
+def _target(target, allow_point=True):
+    """An element id (int) or an 'x,y' point (tuple) from what the model wrote; a clear ToolError otherwise."""
+    t = str(target).strip()
+    if allow_point and "," in t:
+        try:
+            x, y = (int(float(v)) for v in t.split(","))
+        except ValueError:
+            raise ToolError(f"bad point '{target}': write x,y in pixels of the last image, e.g. 120,45")
+        if x < 0 or y < 0:
+            raise ToolError(f"bad point '{target}': coordinates start at 0,0 (top-left of the last image)")
+        return x, y
+    if not t.isdigit():
+        raise ToolError(f"bad target '{target}': use an element id from look() (a number)" + (" or x,y" if allow_point else ""))
+    return int(t)
 
 
 def _proc(hwnd):
@@ -231,9 +247,12 @@ def verdict(result, delta):
         return "WARNING: the typed text is not in the field; check with look"
     if "the field now contains the text" in result:
         return "typing confirmed by reading the field back"
+    m = re.search(r"(\d+)%? -> (\d+)%?", result)
+    if result.startswith("ok") and "scroll" in result and m:                # a scroll reports its own position: that IS the measure
+        return "scrolled" if m.group(1) != m.group(2) else "did not move: already at the edge"
     if "Excel through COM" in result and "now shows" in result:
         return "cell written, confirmed by reading it back"
-    if "saved through COM" in result or "menu command «" in result or "pressed through UI Automation; no keys" in result:
+    if "saved through COM" in result or "menu command «" in result or ("through UI Automation)" in result and ("menu entry «" in result or "pressed «" in result)):
         return "command run by the app itself"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
@@ -264,7 +283,7 @@ def _act(hwnd, hidden, fn, note=""):
 
 @tool
 def windows() -> str:
-    """List open windows as 'hwnd | process | title', most recently used first. [IN USE] = the window the user is working in right now; [LAST USED] = the one they had in front before this chat (use it when they ask about "this app"). [PROTECTED: category] = PC-Control will ask the user for permission by itself when you use it (you cannot answer for them). (hidden) = on PC-Control's hidden desktop, (minimized) = minimized."""
+    """Open windows as 'hwnd | process | title', most recent first. [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat ("this app"). [PROTECTED: ...] = PC-Control asks the user itself before you act there (you cannot answer for them). (hidden) = hidden desktop; (minimized)."""
     _paused()
     m = policy.mode()
     fg = win32gui.GetForegroundWindow()
@@ -287,7 +306,7 @@ def windows() -> str:
 
 @tool
 def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confirm: bool = False):
-    """See a window WITHOUT focusing it. Picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks (keep mode=auto: image only if text is not enough). Elements are [id:name]; use the id with click/type. window = title substring or hwnd. find="Save|Cancel" returns ONLY the matching elements, also those scrolled out of view (cheapest way to locate something); "!Loading" means until that text is gone; wait=N seconds polls until found. Protected windows trigger a permission question to the user."""
+    """See a window without focusing it: UI-tree text, OCR or an image with numbered marks, whichever is cheapest (keep mode=auto). Elements are [id:name]; ids work with click/type/scroll/read until the next look. window = title substring or hwnd. find="Save|Cancel": only the matching elements, also out of view (cheapest way to locate something); "!Loading" = until that text is gone; wait=N seconds polls."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
         if find:
@@ -304,10 +323,10 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
 
 @tool
 def click(window: str, target: str, right: bool = False, double: bool = False, confirm: bool = False) -> str:
-    """Click an element id from look(), or 'x,y' in the pixels of the last image. In Word, the formatting buttons (bold, italic, alignment...) apply to the text Claude writes, never to the user's selection. Does not move the mouse or change focus. If the user moved or resized the window, the click is re-aimed on its own and the answer says so; it also says whether the click had a visible effect. Delicate actions (pay, delete, send, install) and protected windows make PC-Control ask the user for permission."""
+    """Click an element id from look(), or 'x,y' in pixels of the last image (right/double click too). Re-aims by itself if the window moved, and says whether the click had a visible effect. Word formatting buttons apply only to the text Claude writes. Delicate actions (pay, delete, send, install) ask the user first."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
-        t = tuple(int(float(v)) for v in target.split(",")) if "," in target else int(target)
+        t = _target(target)
         it = core._state.get(hwnd, {}).get("items", {}).get(t) if isinstance(t, int) else None
         if isinstance(t, int):
             policy.check_click(policy.mode(), it.name if it else "", confirm)
@@ -339,7 +358,7 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
 
 @tool
 def type(window: str, target: str, text: str, replace: bool = False, confirm: bool = False) -> str:
-    """Type text into the element id (from look()). Appends, or replaces with replace=true. On a drop-down or list it selects the entry with that text. Id is required: no blind typing. In Excel, target can be a cell address (B3, Sheet2!A1; '=...' writes a formula). Returns what changed. In Word, Claude writes at its OWN insertion point (not the user's caret) and the answer says in which paragraph and after which words, so the user clicking elsewhere cannot divert it. Protected windows trigger a permission question to the user."""
+    """Type into an element id from look() (appends; replace=true replaces). No blind typing. On a drop-down or list it selects the entry with that text. Excel: target can be a cell (B3, Sheet2!A1; '=...' = formula). Word: writes at Claude's OWN insertion point, not the user's caret, and says where. Answers with what changed."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
@@ -377,10 +396,17 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
 
 @tool
 def drag(window: str, points: str, shape: str = "path", right: bool = False, confirm: bool = False) -> str:
-    """Drag with the button held (draw in Paint, select, move), without moving the user's mouse or focus. points="x1,y1;x2,y2;..." in pixels of the last image. shape: path (freehand), line, rect or ellipse (the last three use 2 points/corners). Check the result with look mode=image."""
+    """Drag with the button held (draw, select, move) through points "x1,y1;x2,y2;..." in pixels of the last image. shape: path, line, rect or ellipse (2 points for the last three). Check the result with look mode=image."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
-        pts = [tuple(int(float(v)) for v in p.split(",")) for p in points.replace(" ", "").split(";") if p]
+        try:
+            pts = [tuple(int(float(v)) for v in p.split(",")) for p in points.replace(" ", "").split(";") if p]
+        except ValueError:
+            raise ToolError(f"bad points '{points[:40]}': write x1,y1;x2,y2;... in pixels of the last image")
+        if any(len(p) != 2 for p in pts):
+            raise ToolError("bad points: each point is x,y and points are separated by ';'")
+        if shape.lower() not in ("path", "line", "rect", "rectangle", "ellipse", "circle"):
+            raise ToolError(f"unknown shape '{shape}': path, line, rect or ellipse")
         shape_pts = core.shape_points(shape, pts)
         if _cursor_wanted(hwnd, hidden) and len(shape_pts) >= 2:      # the orange pointer goes to the start and follows the stroke
             s = cursor.scale_for(hwnd)
@@ -394,7 +420,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 @tool
 def key(window: str, name: str, confirm: bool = False) -> str:
-    """Press a key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, ctrl+shift+n, alt+f4). Shortcuts never press real keys: they run the app's own menu command or the element declaring that shortcut, or the text-box command (ctrl+a/c/x/v/z); if the app exposes none, it says so. In Word only enter, space and backspace, at Claude's own insertion point. Protected windows trigger a permission question to the user."""
+    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if the app has none, the answer lists the ones it has (they depend on its language). Word: only enter, space, backspace, at Claude's insertion point."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
@@ -403,27 +429,30 @@ def key(window: str, name: str, confirm: bool = False) -> str:
 
 @tool
 def scroll(window: str, direction: str = "down", target: str = "", amount: int = 1, confirm: bool = False) -> str:
-    """Scroll a window, or the element id from look(), by `amount` pages: direction up|down|left|right|top|bottom. No focus, no mouse. Then look again (ids still work)."""
+    """Scroll the window or an element id by `amount` pages: up|down|left|right|top|bottom. Then look again (old ids still work)."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
-        return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), target or None, direction, amount))
+        return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), _target(target, False) if str(target).strip() else None, direction, amount))
     return _on(window, run)
 
 
 @tool
 def read(window: str, target: str = "", start: int = 0, length: int = 6000, confirm: bool = False) -> str:
-    """The WHOLE text of the window's document, web page or editor (also what is scrolled out of view), or of an element id; in pieces: start/length. Cheaper than scrolling and looking. Password fields are never read."""
+    """The WHOLE text of the window's document, web page or editor (also out of view), or of an element id, in pieces (start/length). Excel: the cells; PowerPoint: slides and notes. Much cheaper than scrolling and looking. Never reads password fields."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
-        return actions.read_text(str(hwnd), target or None, start, length)
+        return actions.read_text(str(hwnd), _target(target, False) if str(target).strip() else None, start, length)
     return _on(window, run)
 
 
 @tool
 def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
-    """Launch an app MINIMIZED and un-focused: nothing on screen, its button in the taskbar so the user can open it with a click. hidden=true runs it on a hidden desktop instead (no taskbar button). Then use windows()/look()/click()/type(). Protected apps (terminal, password manager...) trigger a permission question to the user."""
+    """Launch an app minimized and unfocused, with its taskbar button so the user can open it; hidden=true: on a hidden desktop instead. Then windows/look."""
     _paused()
-    exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
+    try:
+        exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
+    except (ValueError, IndexError):
+        raise ToolError("bad command: give the program (quoted if it has spaces) and its arguments, e.g. notepad.exe \"my notes.txt\"")
     policy.check_launch(policy.mode(), exe, _allowed(), confirm)
     if hidden:
         r = DESK.open(command); where = "hidden desktop (no taskbar button)"

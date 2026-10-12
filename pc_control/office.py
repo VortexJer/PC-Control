@@ -126,7 +126,7 @@ def write(hwnd, target, text):
     if set(str(shown)) == {"#"}:                                            # ##### = the column is too narrow, the value is fine
         shown = _fmt(word.call(lambda: first.Value))
     err = " | WARNING: the formula gives an error" if bad else ""
-    return (f"ok (Excel through COM: {addr} of «{word.call(lambda: sh.Name)}» now shows «{shown}»; the user's selection is not touched){err}")
+    return (f"ok (Excel through COM: {addr} of «{word.call(lambda: sh.Name)}» now shows «{shown}»){err}")
 
 
 def save_combo(hwnd):
@@ -150,7 +150,7 @@ def save(hwnd):
         if not word.call(lambda: wb.Path):
             return "did not save: this workbook was never saved, so it has no name yet; the user must choose where (File > Save as)"
         word.call(wb.Save)
-        return f"ok (Excel workbook «{word.call(lambda: wb.Name)}» saved through COM; no keys pressed)"
+        return f"ok (Excel workbook «{word.call(lambda: wb.Name)}» saved through COM)"
     if cls == "OpusApp":
         w = word.window(hwnd)
         if w is None:
@@ -159,7 +159,7 @@ def save(hwnd):
         if not word.call(lambda: doc.Path):
             return "did not save: this document was never saved, so it has no name yet; the user must choose where (File > Save as)"
         word.call(doc.Save)
-        return f"ok (Word document «{word.call(lambda: doc.Name)}» saved through COM; no keys pressed)"
+        return f"ok (Word document «{word.call(lambda: doc.Name)}» saved through COM)"
     return None
 
 

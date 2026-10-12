@@ -143,8 +143,8 @@ def scroll(query, target=None, direction="down", amount=1):
             name = (ctrl.Name or ctrl.ControlTypeName[:-7].lower())[:40]
             if b is not None and a is not None:
                 edge = " (already at the edge: nothing more to scroll that way)" if a == b else ""
-                return f"ok (UI Automation scroll of «{name}»: {b}% -> {a}%{edge}; ids from the last look still work, look again to see the new content)"
-            return f"ok (UI Automation scroll of «{name}»; look again to see the new content)"
+                return f"ok (UI Automation scroll of «{name}»: {b}% -> {a}%{edge})"
+            return f"ok (UI Automation scroll of «{name}»)"
         except Exception:
             pass
     nh = 0                                                                  # 2) classic controls: scroll-bar messages
@@ -158,7 +158,7 @@ def scroll(query, target=None, direction="down", amount=1):
     if nh:
         res = _native_scroll(nh, direction, amount)
         if res and res[0] != res[1]:
-            return f"ok (scroll-bar messages to the control: position {res[0]} -> {res[1]}; look again to see the new content)"
+            return f"ok (scroll-bar messages to the control: position {res[0]} -> {res[1]})"
         if res and res[0] == res[1] and res[0] > 0 and direction in ("down", "bottom", "right"):
             return "ok (already at the edge: nothing more to scroll that way)"
         if direction in ("top", "bottom"):
@@ -282,6 +282,8 @@ def read_text(query, target=None, start=0, length=6000):
     if not text:
         return "no text found in this window (an image-only app: use look mode=image)"
     start = max(0, int(start or 0)); length = max(200, min(int(length or 6000), 40000))
+    if start >= len(text):
+        return f"{src}: start={start} is past the end: the text has {len(text)} characters"
     part = text[start:start + length]
     more = f" | more: read(start={start + len(part)})" if start + len(part) < len(text) else " | end of text"
     return f"{src}: characters {start}-{start + len(part)} of {len(text)}{more}\n{part}"
@@ -360,7 +362,7 @@ def _uia_accelerator(hwnd, combo, budget_s=3.0):
                     p = getattr(c, getter)()
                     if p:
                         getattr(p, call)()
-                        return f"ok (pressed «{name}», the element whose shortcut is {acc}, through UI Automation; no keys pressed)"
+                        return f"ok (pressed «{name}» ({acc}) through UI Automation)"
                 except Exception:
                     continue
         if d < 28:
@@ -434,7 +436,7 @@ def _menu_bar_accelerator(hwnd, combo, budget_s=8.0):
                         p = getattr(hit, getter)()
                         if p:
                             getattr(p, call)()
-                            return f"ok (menu entry «{name}» ({hit.AcceleratorKey}) pressed through UI Automation; no keys pressed)"
+                            return f"ok (menu entry «{name}» ({hit.AcceleratorKey}) pressed through UI Automation)"
                     except Exception:
                         continue
             try:
@@ -472,7 +474,7 @@ def shortcut(query, combo_text):
             if not enabled:
                 return f"did not press: the menu entry «{entry}» ({combo_text}) is disabled (greyed out) right now"
             win32gui.PostMessage(hwnd, win32con.WM_COMMAND, cid, 0)
-            return f"ok (menu command «{entry}» sent to the app, the same one {combo_text} triggers; no keys pressed)"
+            return f"ok (menu command «{entry}» run by the app)"
     done = _uia_accelerator(hwnd, combo)
     if done:
         return done
@@ -493,9 +495,8 @@ def shortcut(query, combo_text):
         return (f"did not press '{combo_text}': this app keeps its shortcuts inside menus that only exist while open, and opening them on the "
                 f"user's desktop could take the focus. Use the menu instead: look, click the menu (e.g. File), look, click the entry. "
                 f"(In apps opened with open_app(hidden=true) shortcuts like this work.)")
-    return (f"did not press '{combo_text}': no menu entry or element of this app has that shortcut (pressing real keys would need to focus "
-            f"the window and type on the user's keyboard)." + (f" Shortcuts this app does have (they depend on its language): {known}" if known
-            else " Do it through the menu instead: look, then click the entry."))
+    return (f"did not press '{combo_text}': this app has no command with that shortcut." + (f" Its shortcuts: {known}" if known
+            else " Use its menu instead: look, then click the entry."))
 
 
 # ---------- drop-downs and lists ----------
@@ -517,7 +518,7 @@ def select_option(ctrl, text):
             win32gui.SendMessage(nh, 0x014E, idx, 0)                         # CB_SETCURSEL
             parent = win32gui.GetParent(nh); cid = win32gui.GetDlgCtrlID(nh)
             win32gui.SendMessage(parent, win32con.WM_COMMAND, win32api.MAKELONG(cid & 0xFFFF, 1), nh)     # CBN_SELCHANGE
-            return f"ok (option {idx} selected in the drop-down by message, no focus)" + _readback(ctrl, text)
+            return f"ok (option {idx} selected in the drop-down by message)" + _readback(ctrl, text)
     if nh and "listbox" in cls:                                             # classic list: its own messages, then tell its parent
         idx = win32gui.SendMessage(nh, 0x01A2, -1, text)                     # LB_FINDSTRINGEXACT
         if idx < 0:
@@ -525,7 +526,7 @@ def select_option(ctrl, text):
         if idx >= 0:
             win32gui.SendMessage(nh, 0x0186, idx, 0)                         # LB_SETCURSEL
             win32gui.SendMessage(win32gui.GetParent(nh), win32con.WM_COMMAND, win32api.MAKELONG(win32gui.GetDlgCtrlID(nh) & 0xFFFF, 1), nh)  # LBN_SELCHANGE
-            return f"ok (entry {idx} selected in the list by message, no focus)" + _readback(ctrl, text)
+            return f"ok (entry {idx} selected in the list by message)" + _readback(ctrl, text)
     if nh and ("combobox" in cls or "listbox" in cls):
         names = _native_options(nh, "combobox" in cls)
         if names and not any(want in n.lower() for n in names):
@@ -560,7 +561,7 @@ def select_option(ctrl, text):
                 p = getattr(pick, getter)()
                 if p:
                     getattr(p, call)()
-                    return f"ok (option «{(pick.Name or '')[:40]}» selected through UI Automation, no focus)" + _readback(ctrl, pick.Name or text)
+                    return f"ok (option «{(pick.Name or '')[:40]}» selected through UI Automation)" + _readback(ctrl, pick.Name or text)
             except Exception:
                 continue
         return None
@@ -607,6 +608,9 @@ def find(query, terms, wait=0.0):
     want = [t.strip() for t in str(terms).split("|") if t.strip()]
     gone = [t[1:].lower() for t in want if t.startswith("!")]
     present = [t.lower() for t in want if not t.startswith("!")]
+    gone = [g for g in gone if g.strip()]
+    if not present and not gone:
+        return "nothing to find: write the text to look for, e.g. find=\"Save|Cancel\" (or \"!Loading\" to wait until it is gone)"
     t0 = time.time(); deadline = t0 + max(0.0, min(float(wait or 0), 120.0))
     while True:
         items = core.walk_uia(hwnd, win32gui.GetWindowRect(hwnd), offscreen_ok=True)
@@ -637,7 +641,7 @@ def find(query, terms, wait=0.0):
     if still:
         head += f" | still present: {', '.join(still)}"
     more = f" (+{len(hits) - 40} more)" if len(hits) > 40 else ""
-    return f"{head} | {len(hits)} match(es){more}; ids valid for click/type until the next look\n" + "\n".join(lines)
+    return f"{head} | {len(hits)} match(es){more}\n" + "\n".join(lines)
 
 
 def _off(it):
