@@ -382,6 +382,8 @@ def verdict(result, delta):
         return "NOT EXECUTED"
     if "drag of" in result:
         return "drag sent: to see whether it drew, check with look (image mode)"
+    if result.startswith("selected «"):
+        return "selection set by the app itself (it does not show in the tree: look with mode=image to see it)"
     if "is disabled" in result:
         return "NOT EXECUTED"
     if "saved through COM" in result or "menu command «" in result or ("through UI Automation)" in result and ("menu entry «" in result or "pressed «" in result)):
@@ -491,7 +493,7 @@ def windows(filter: str = "") -> str:
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
         mine = h in OPENED or fr in OPENED or win32process.GetWindowThreadProcessId(h)[1] in OPENED_PIDS
-        out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else "") + (" [mine]" if mine else "") + tag
+        out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else " (cloaked)" if _cloaked(fr) else "") + (" [mine]" if mine else "") + tag
                    + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
@@ -690,11 +692,15 @@ def scroll(window: str, direction: str = "down", target: str = "", amount: int =
 
 
 @tool
-def read(window: str, target: str = "", start: int = 0, length: int = 6000, find: str = "", confirm: bool = False) -> str:
-    """The WHOLE text of the window's document, page or editor (also out of view), or of an element, in pieces (start/length, 6000 characters by default). find=\"a|b\": only the matching lines, numbered. Excel: the cells; PowerPoint: slides and notes. Cheaper than scrolling and looking. Never reads password fields."""
+def read(window: str, target: str = "", start: int = 0, length: int = 6000, find: str = "", select: bool = False, confirm: bool = False) -> str:
+    """The WHOLE text of the window's document, page or editor (also out of view), or of an element, in pieces (start/length, 6000 characters by default). find=\"a|b\": only the matching lines, numbered; select=true selects the first match instead. Excel: cells; PowerPoint: slides, notes. Never password fields."""
     def run(hidden):
-        hwnd = _gate(window, False, confirm)
+        hwnd = _gate(window, bool(select), confirm)
         tgt = _target(target, False, hwnd) if str(target).strip() else None
+        if select:
+            if not find.strip():
+                raise ToolError("select needs find=\"the exact text to select\"")
+            return _act(hwnd, hidden, lambda: actions.select_text(str(hwnd), tgt, find.strip()))
         if not find.strip():
             return actions.read_text(str(hwnd), tgt, start, length)
         out = actions.read_text(str(hwnd), tgt, 0, 10 ** 7)          # the whole text, then only the lines that matter
@@ -707,6 +713,16 @@ def read(window: str, target: str = "", start: int = 0, length: int = 6000, find
     return _on(window, run)
 
 
+def _cloaked(hwnd):
+    """True if Windows keeps the window out of sight although it is not minimized: it lives on another virtual desktop, or it is a
+    suspended Store app (Settings...). The user cannot see an orange circle there."""
+    v = ctypes.c_int(0)
+    try:
+        ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 13, ctypes.byref(v), 4)          # DWMWA_CLOAKED
+    except Exception:
+        return False
+    return bool(v.value)
+
 def _do_show(hidden, window, target, label, seconds, confirm):
     """Draw the orange circle for the user. Returns (message for the model, token of the circle)."""
     hwnd = _gate(window, False, confirm)
@@ -714,6 +730,8 @@ def _do_show(hidden, window, target, label, seconds, confirm):
         raise ToolError("that window is on the hidden desktop: the user cannot see it")
     if win32gui.IsIconic(hwnd):
         raise ToolError("the window is minimized: ask the user to open it from the taskbar, then call show again")
+    if _cloaked(hwnd):
+        raise ToolError("the user cannot see that window: it is on another virtual desktop or a suspended app. Ask them to open it on this desktop, then repeat")
     t = _target(target, True, hwnd)
     l, tp = win32gui.GetWindowRect(hwnd)[:2]
     if isinstance(t, int):
@@ -812,7 +830,7 @@ def wait_for(window: str, target: str, label: str = "", timeout: int = 60, confi
 
 @tool
 def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
-    """Launch an app minimized and unfocused, with its taskbar button: the user watches what you do by opening it. hidden=true (invisible, hidden desktop) ONLY if the user asks for it."""
+    """Launch an app minimized and unfocused, with its taskbar button. hidden=true (invisible desktop) ONLY if the user asks, never in tests."""
     _paused()
     try:
         exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()

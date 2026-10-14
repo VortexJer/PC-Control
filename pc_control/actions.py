@@ -240,6 +240,44 @@ def _biggest_text(hwnd, budget_s=3.0):
     return best
 
 
+def select_text(query, target, needle):
+    """Select the first occurrence of `needle` in the window's document or field (the element `target`, or the one holding the most text),
+    through its UI Automation text pattern or EM_SETSEL. Never in password fields. Selecting is what a drag over the text would do."""
+    hwnd = core.find_window(query); st = core._state.get(hwnd); c = None
+    if target not in (None, ""):
+        it = st["items"].get(int(target)) if st else None
+        c = it.ctrl if it is not None else None
+    else:
+        best = _biggest_text(hwnd); c = best[0] if best else None
+    if c is None:
+        return "nothing to select in: look() first, or give the id of the document or field"
+    try:
+        if c.IsPassword or core.secret_name(c.Name, c.AutomationId, c.HelpText):
+            return "not selected: that field holds a secret"
+    except Exception:
+        pass
+    try:
+        tp = c.GetTextPattern()
+        if tp:
+            r = tp.DocumentRange.FindText(needle, False, True)
+            if r is None:
+                return f"«{needle[:60]}» is not in that text | NOT EXECUTED"
+            r.Select()
+            return f"selected «{needle[:60]}» (UI Automation text selection)"
+    except Exception:
+        pass
+    nh, cls = core._native(c)
+    if nh and ("edit" in cls or "rich" in cls):
+        text = _wm_text(nh)
+        if "rich" in cls:
+            text = text.replace("\r\n", "\r")                      # a rich edit counts a line break as ONE character
+        i = text.lower().find(needle.lower())
+        if i < 0:
+            return f"«{needle[:60]}» is not in that text | NOT EXECUTED"
+        win32gui.SendMessage(nh, 0x00B1, i, i + len(needle))      # EM_SETSEL
+        return f"selected «{needle[:60]}» (EM_SETSEL)"
+    return "this element does not allow selecting text by its content | NOT EXECUTED"
+
 def read_text(query, target=None, start=0, length=6000):
     """The whole text of the window's document/page/field (or of the element `target`), in pieces of `length` characters."""
     hwnd = core.find_window(query); st = core._state.get(hwnd); src = None; text = None
