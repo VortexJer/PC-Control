@@ -505,7 +505,9 @@ def verdict(result, delta):
         return "menu entry pressed through accessibility (the menu closes or opens the submenu: check with look)"
     if "Claude format" in result:
         return "format noted for what Claude types"
-    if "through WM_CHAR" in result and "unconfirmed" in result:          # keys sent to a window that gave no way to read them back (Electron and Chromium editors often ignore them)
+    if "through WM_CHAR" in result and "unconfirmed" in result:          # keys sent to a window that gave no way to read them back
+        if delta.startswith("+") or delta.startswith("the view changed a lot"):
+            return "typing probably arrived: the window changed the way typing changes it (a cursor position, a counter, text); it was not read back"
         return "WARNING: typing NOT CONFIRMED: it may not have arrived; check with look (mode=image)"
     if "WARNING: the field does NOT contain" in result:
         return "WARNING: the typed text is not in the field; check with look"
@@ -554,14 +556,40 @@ def _tr_report():
     return " | trace: " + ", ".join(out)
 
 
+_OVERLAYS = {"pc-control-cursor", "pc-control-caret", "pc-control-note", "pc-control-mark"}
+
+
+def _zinfo(hwnd):
+    """(position from the front, the window directly in front of it) among the real windows, or None."""
+    try:
+        tops = [h for h in core.top_windows() if win32gui.GetWindowText(h) not in _OVERLAYS]
+        i = tops.index(hwnd)
+        return i, (tops[i - 1] if i > 0 else None)
+    except Exception:
+        return None
+
+
+def _put_back(hwnd, z0):
+    """Pressing something can make an app raise ITSELF above the user's windows (Firefox does when it is invoked through UI Automation). If the window
+    was behind others before the action and is in front of where it was, it goes back to its place: nothing of the user's is covered."""
+    if not z0 or z0[0] == 0 or not z0[1] or not win32gui.IsWindow(z0[1]):
+        return
+    z1 = _zinfo(hwnd)
+    if z1 and z1[0] < z0[0]:
+        active = win32gui.GetForegroundWindow() == hwnd
+        # moving the ACTIVE window back (without "no activate") also hands the keyboard to the window now in front, the user's
+        ctypes.windll.user32.SetWindowPos(hwnd, z0[1], 0, 0, 0, 0, 0x0003 | (0 if active else 0x0010))
+
 def _act(hwnd, hidden, fn, note=""):
     """Run the action; reply with the result, only what changed and whether it did its job. On your desktop, any NEW
     windows that appear are sent behind the others (never if you are using them); on the hidden desktop this is not needed."""
     _tr("start")
     before = set(core.top_windows())
+    z0 = None if hidden else _zinfo(hwnd)
     result = fn(); _tr("action")
     time.sleep(0.05 if _FAST["skip"] else SETTLE_S); _tr("settle")
     if not hidden:
+        _put_back(hwnd, z0)                                 # an app that raised itself over the user's windows goes back where it was
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
     if _FAST["skip"]:                       # middle step of steps(): re-reading the whole tree costs ~1 s; the last step reports the sum
         _tr("changes")
