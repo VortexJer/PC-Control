@@ -15,7 +15,7 @@ Permission modes (env PC_CONTROL_MODE, see policy.py)
   * Dialogs that an action opens in YOUR apps are only sent behind other windows, and never if you are using them.
 """
 import asyncio, ctypes, ctypes.wintypes as wt, functools, inspect, os, re, shlex, time, traceback
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pydantic import BaseModel, Field
 import uiautomation as auto
 import win32gui, win32process
@@ -36,7 +36,46 @@ mcp = FastMCP("PC-Control")           # this is how it appears in the chat: mcp_
 def _init_main():
     global _uia_main
     _uia_main = auto.UIAutomationInitializerInThread(); _uia_main.__enter__()
-MAIN = ThreadPoolExecutor(1, thread_name_prefix="pc-control-main", initializer=_init_main)
+    _limit_uia_calls()
+
+
+UIA_CALL_MS = 4000                                         # Windows allows 20 000 ms PER question to another program: a big Firefox page is thousands of them
+_uia_limited = []
+
+
+def _limit_uia_calls():
+    """Every question UI Automation asks another program may take at most UIA_CALL_MS. The library uses the older COM object, which cannot be
+    limited, so it is swapped for the newer one (same methods) with the limit set. Done once for the whole process."""
+    if _uia_limited:
+        return
+    try:
+        import comtypes.client
+        import comtypes.gen.UIAutomationClient as types
+        from uiautomation.uiautomation import _AutomationClient
+        new = comtypes.client.CreateObject("{E22AD333-B25F-460C-83D0-0581107395C9}", interface=types.IUIAutomation6)       # CUIAutomation8
+        new.ConnectionTimeout = 2000; new.TransactionTimeout = UIA_CALL_MS
+        _AutomationClient.instance().IUIAutomation = new
+        _uia_limited.append(True)
+    except Exception:
+        pass                                               # older Windows: the per-call deadline in _on still protects the server
+
+
+def _new_main():
+    return ThreadPoolExecutor(1, thread_name_prefix="pc-control-main", initializer=_init_main)
+
+
+MAIN = _new_main()
+CALL_TIMEOUT = float(envvars.get("TIMEOUT") or 45)         # seconds one tool call may keep the UI thread busy
+
+
+def _replace_main():
+    """A call stuck inside another program (Firefox on a huge page, a web mail app) cannot be interrupted, and with ONE worker every later
+    call would wait behind it for minutes. The stuck thread is abandoned, a fresh one takes over, and the element table (whose UI Automation
+    objects belong to the abandoned thread) is cleared."""
+    global MAIN
+    old, MAIN = MAIN, _new_main()
+    old.shutdown(wait=False)
+    core._state.clear()
 
 
 class _Permission(BaseModel):
@@ -366,7 +405,14 @@ def _is_hidden(window):
 def _on(window, fn):
     if _is_hidden(window):
         return DESK.run(lambda: fn(True))
-    return MAIN.submit(lambda: fn(False)).result(timeout=120)
+    fut = MAIN.submit(lambda: fn(False))
+    try:
+        return fut.result(timeout=CALL_TIMEOUT)
+    except FutureTimeout:
+        _replace_main()
+        raise ToolError(f"timed out after {CALL_TIMEOUT:.0f} s: the app did not answer (a very large page, as in Firefox or a web mail client, can make its "
+                        f"accessibility interface hang). The server is free again and the element ids were reset. Try look(window, mode=\"image\"), "
+                        f"look with find=\"...\", read(window, find=\"...\"), or a smaller view of the app")
 
 
 def _cursor_wanted(hwnd, hidden):
