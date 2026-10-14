@@ -376,6 +376,30 @@ def _code_version():
     return p.stdout.strip() or "?"
 
 
+def _pid_alive(pid):
+    import ctypes
+    k = ctypes.windll.kernel32
+    k.OpenProcess.restype = ctypes.c_void_p
+    h = k.OpenProcess(0x00100000, False, int(pid))                     # SYNCHRONIZE
+    if not h:
+        return False
+    try:
+        return k.WaitForSingleObject(ctypes.c_void_p(h), 0) == 0x102   # WAIT_TIMEOUT: still running
+    finally:
+        k.CloseHandle(ctypes.c_void_p(h))
+
+
+def _run_from_launcher():
+    """True if this command was started through the `pc-control.exe` launcher (not `python -m pc_control.cli`)."""
+    return os.name == "nt" and os.path.splitext(os.path.basename(sys.argv[0]))[0].lower() in ("pc-control", "pc-control-mcp")      # the wrapper drops ".exe"; `python -m` gives cli.py
+
+
+def _update_in_new_window(stop_servers):
+    """pip cannot replace `pc-control.exe` while it is running, and this very command IS that program. So the update runs in a new window
+    through `python -m`, which starts when this launcher (and the python child it runs) has exited."""
+    cmd = [sys.executable, "-m", "pc_control.cli", "update", "--after-exit", f"{os.getpid()},{os.getppid()}"] + (["--stop-servers"] if stop_servers else [])
+    subprocess.Popen(cmd, creationflags=0x00000010)                         # CREATE_NEW_CONSOLE
+
 def update(stop_servers=False):
     """Bring the installed PC-Control up to date from ANY earlier version, then reinstall it with the same settings."""
     log = []
@@ -570,6 +594,7 @@ def main(argv=None):
     sub.add_parser("serve", help="launch the MCP server (what Claude Code runs)")
     up = sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
     up.add_argument("--stop-servers", action="store_true", help="stop the PC-Control servers of open Claude Code sessions (Windows cannot replace a running one)")
+    up.add_argument("--after-exit", default="", help=argparse.SUPPRESS)
     sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
     a = ap.parse_args(argv)
     try:
@@ -582,7 +607,23 @@ def main(argv=None):
         elif a.cmd in ("pause", "resume"):
             set_pause(a.cmd == "pause"); print("paused" if a.cmd == "pause" else "resumed")
         elif a.cmd == "update":
-            print("\n".join(update(a.stop_servers)))
+            if a.after_exit:                                           # the new window: wait for the launcher that started us to end, then update
+                import time
+                t0 = time.time()
+                while time.time() - t0 < 30 and any(_pid_alive(p) for p in a.after_exit.split(",") if p.strip().isdigit()):
+                    time.sleep(0.3)
+                try:
+                    print("\n".join(update(a.stop_servers)))
+                finally:
+                    try:
+                        input("\nPress Enter to close this window...")
+                    except EOFError:
+                        pass
+            elif _run_from_launcher():
+                print("Updating in a NEW window: Windows cannot replace pc-control.exe while this command runs.")
+                _update_in_new_window(a.stop_servers)
+            else:
+                print("\n".join(update(a.stop_servers)))
         elif a.cmd == "reinstall":
             print("\n".join(reinstall()))
         elif a.cmd == "serve":
