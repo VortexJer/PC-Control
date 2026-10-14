@@ -170,6 +170,17 @@ stop.set()
 c["NO test window was ever activated (neither the cursor's nor the helper ones)"] = not activated
 if activated: print("windows that took focus:", sorted(set(activated)))
 
+# the outline follows the element's shape: a circle for a small squarish one, a rounded rectangle for the rest
+def _alpha_at(w, h, dx, dy):
+    data, W, H, ex, ey = cursor.render_mark(w, h, "", 1.0)
+    a = np.frombuffer(data, np.uint8).reshape(H, W, 4)
+    return int(a[int(ey - 7 + dy), int(ex - 7 + dx), 3])                  # a point `dx,dy` px inside the corner of the outline's box
+import numpy as np
+c["a small square element gets a circle (the corner of its box stays empty)"] = _alpha_at(30, 30, 3, 3) < 40
+c["a large element gets a rounded rectangle (its top edge runs straight up to the corner)"] = _alpha_at(300, 200, 22, 2) > 200 and _alpha_at(300, 200, 150, 2) > 200
+c["a wide control gets a rounded rectangle too"] = _alpha_at(110, 30, 5, 5) > 200 or _alpha_at(110, 30, 8, 8) > 200
+d_small = cursor.render_mark(30, 30, "", 1.0); d_big = cursor.render_mark(300, 200, "", 1.0)
+c["the drawing keeps the element offset inside it (the caller aligns it with it)"] = d_small[3] > 0 and d_small[4] > 0 and d_big[1] > 300 and d_big[2] > 200
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 ok = all(c.values())
 print("cursor verification passed" if ok else "cursor verification FAILED")
