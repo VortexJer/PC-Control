@@ -148,6 +148,19 @@ Pick one with `pc-control install --mode ...` or the `PC_CONTROL_MODE` environme
 
 In every mode: creating `~/.pc-control/PAUSE` (or `PC_CONTROL_PAUSE=1`) makes every tool refuse, and `type` needs an element id from `look` (no blind typing).
 
+### Terminals
+
+A terminal is not a window where mouse messages or WM_CHAR work (Windows Terminal draws its own text), but every shell reads its keys from a **console input
+buffer**, and that buffer can be written to directly. So `type`, `key`, `read` and `look` talk to the console of the shell itself: no keyboard, no mouse, no
+focus, nothing of yours is touched, and the answer shows what the console says afterwards (the typing is *confirmed*, not assumed). It works with classic
+console windows and with the tabs of Windows Terminal, including terminals you already had open.
+
+- `type` writes the text; a line break in it presses Enter (it runs). `key` sends enter, tab, esc, arrows, home, end, pgup, pgdn, backspace, delete, ctrl+c.
+- Windows Terminal is ONE process for all its windows and tabs. The tab is found through who owns each console, and picked by the window's title; if that is
+  not unique the answer lists the candidates instead of guessing, because typing into the wrong shell is worse than not typing.
+- The terminal Claude Code itself runs in is never a target (it would type into its own prompt).
+- What you type in a terminal runs as you, so these windows stay **protected**: you are asked, and the question shows the full command, also inside `steps`.
+- A program running as administrator cannot be reached from a normal process; the answer says so.
 ### How the questions reach you
 
 Protected windows are **not blocked**; you decide, not the model. The model has no `confirm` flag it could set.
@@ -304,6 +317,7 @@ python tests/test_hidden_cleanup.py   # apps on the hidden desktop end with the 
 python tests/test_guard_descriptor.py # every tool has an inherit/review decision for HOL Guard (fails when a new tool has none)
 python tests/test_back_on_create.py # open_app(behind=true): at the very back, not minimized, no focus taken, fast
 python tests/test_hang.py         # a call stuck inside another program (Firefox on a huge page) does not freeze the server
+python tests/test_terminal.py     # terminals: type, key, read and look through the console; the right tab; never the terminal Claude Code runs in
 python tests/test_steps.py        # steps: several actions in one call, stops on failure or permission
 python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data

@@ -38,11 +38,23 @@ def _find(query):
 _VERBS = T("verbs")                   # in the user's language (see ui_text.py)
 
 
-def _action(tool, args, what):
-    """What Claude wants to do, in a sentence a human understands."""
+def _typed_texts(args):
+    """Everything a call would type, for the question: the text of a `type`, or that of every `type` / `key` inside a `steps`."""
+    if "text" in args:
+        return [str(args.get("text", ""))]
+    return [str(a.get("text") if a.get("do") == "type" else "<" + str(a.get("name")) + ">") for a in (args.get("todo") or [])
+            if isinstance(a, dict) and a.get("do") in ("type", "key")]
+
+
+def _action(tool, args, what, limit=60):
+    """What Claude wants to do, in a sentence a human understands. In a terminal what is typed is a COMMAND: the question shows all of it."""
+    if tool == "steps":
+        txt = " ".join(_typed_texts(args))
+        if txt:
+            return T("type", text=txt[:limit] + ("…" if len(txt) > limit else ""), what=what)
     if tool == "type":
         txt = str(args.get("text", ""))
-        return T("type", text=txt[:60] + ("…" if len(txt) > 60 else ""), what=what)
+        return T("type", text=txt[:limit] + ("…" if len(txt) > limit else ""), what=what)
     if tool == "key":
         return T("key", name=args.get("name", "?"), what=what)
     if tool == "click":
@@ -85,7 +97,7 @@ def _decide(data):
         if tool == "open_app":
             action = T("open", what=what)
         else:
-            action = _action(tool, args, what)
+            action = _action(tool, args, what, limit=400 if cat == "terminal or console" else 60)
         if cat == policy.ASK_ALL:                       # one short sentence: Claude Code itself shows yes / no / don't ask again
             return T("wants", action=action)
         return T("wants_protected", action=action, cat=category(cat))

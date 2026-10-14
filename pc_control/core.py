@@ -114,7 +114,7 @@ def mark_font(img_w):
 
 
 def fit(w, h, edge):
-    s = min(1.0, edge / max(w, h))
+    s = min(1.0, edge / max(1, w, h))                       # a window with no size yet (just created, or minimized to nothing) must not divide by zero
     return max(1, round(w * s)), max(1, round(h * s))
 
 def txt_cost(s):
