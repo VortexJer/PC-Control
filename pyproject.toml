@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-pc-control"
-version = "0.7.2"
+version = "0.7.3"
 description = "Let an AI see and operate Windows apps cheaply, without stealing focus or moving your mouse."
 readme = "README.md"
 license = {text = "MIT"}
