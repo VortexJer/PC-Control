@@ -155,8 +155,50 @@ try:
 finally:
     for _h in (11111, 22222):
         _s2.OPENED.discard(_h); _s2.OPENED_AT.pop(_h, None)
+# a click nobody checks that does nothing is the worst answer: a batch skips the check ONLY where clicks are known to work
+from pc_control import server as _s3
+seen = []
+real_proven, real_raw = _s3._clicks_proven, dict(_s3.RAW)
+try:
+    _s3.RAW["click"] = lambda window, **kw: seen.append(_s3._FAST["skip"]) or "ok | changes: x | effect observed"
+    _s3.RAW["key"] = lambda window, **kw: seen.append(_s3._FAST["skip"]) or "ok | changes: x | effect observed"
+    _s3._clicks_proven = lambda w: False
+    _s3.RAW["steps"]("w", [{"do": "click", "target": "A"}, {"do": "click", "target": "B"}, {"do": "click", "target": "C"}])
+    c["on a program whose clicks were never seen to work, no click of a batch skips its check"] = seen == [False, False, False]
+    seen.clear(); _s3._clicks_proven = lambda w: True
+    _s3.RAW["steps"]("w", [{"do": "click", "target": "A"}, {"do": "click", "target": "B"}, {"do": "click", "target": "C"}])
+    c["where clicks are proven, the middle ones skip the slow check and the last one keeps it"] = seen == [True, True, False]
+    seen.clear(); _s3._clicks_proven = lambda w: False
+    _s3.RAW["steps"]("w", [{"do": "key", "name": "tab"}, {"do": "key", "name": "tab"}, {"do": "click", "target": "C"}])
+    c["keys are not the risk: they skip the check even on an unknown program"] = seen[:2] == [True, True]
+finally:
+    _s3._clicks_proven = real_proven; _s3.RAW.clear(); _s3.RAW.update(real_raw)
+import win32gui as _wg
+real_cls, real_proc = _wg.GetClassName, _s3._proc
+try:
+    _wg.GetClassName = lambda h: "ApplicationFrameWindow"
+    c["a Store app (ApplicationFrameWindow) is pressed through UI Automation straight away"] = _s3._press_directly(1) is True
+    _wg.GetClassName = lambda h: "Notepad"; _s3._proc = lambda h: "someprog"
+    c["an ordinary program is not, until a plain click is seen to do nothing"] = _s3._press_directly(1) is False
+    _s3._MOUSE["ignored"].add(("Notepad", "someprog"))
+    c["a program that ignored a plain click is pressed directly from then on"] = _s3._press_directly(1) is True
+finally:
+    _wg.GetClassName, _s3._proc = real_cls, real_proc
+    _s3._MOUSE["ignored"].discard(("Notepad", "someprog"))
+# a Store app has two windows (content + frame): whichever one is named, an app PC-Control opened is recognised as its own
+real_fam, real_gtp = _s3._family_roots, _s3.win32process.GetWindowThreadProcessId
+try:
+    _s3._family_roots = lambda h: {h, 6}
+    _s3.win32process.GetWindowThreadProcessId = lambda h: (0, 4242)
+    _s3.OPENED.add(6); _s3.OPENED_AT[6] = _tm.time()
+    c["the frame is recognised as ours when only its content window was recorded (and the other way round)"] = _s3._mine(5) is True and _s3._fresh(5) is True
+    _s3.OPENED_AT[6] = _tm.time() - 600
+    c["...but only fresh for two minutes"] = _s3._mine(5) is True and _s3._fresh(5) is False
+finally:
+    _s3._family_roots, _s3.win32process.GetWindowThreadProcessId = real_fam, real_gtp
+    _s3.OPENED.discard(6); _s3.OPENED_AT.pop(6, None)
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 22 and all(c.values())
+ok = len(c) == 30 and all(c.values())
 print(f"steps verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
