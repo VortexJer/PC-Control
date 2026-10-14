@@ -66,6 +66,10 @@ async def _ask_user(ctx, e, tool_name, args):
     return r.action == "accept" and bool(getattr(r.data, "allow", False))        # a yes is valid for this time only; remembering the window is done by the hook (convert_rules)
 
 
+RAW = {}                                                        # tool name -> the plain function (no MCP wrapper)
+_FAST = {"skip": False}                                         # True while a middle step of steps() runs (actions all run on the MAIN thread, one at a time)
+
+
 def tool(fn):
     """Register the tool. Returns the REAL error to the model (and saves ONLY the last one in ~/.pc-control/last_error.log; it is overwritten and deleted after a day).
     Permissions are NOT a parameter the model can set: if the user's permission is needed, the server asks them."""
@@ -80,6 +84,10 @@ def tool(fn):
             with open(os.path.join(HOME, "last_error.log"), "w", encoding="utf-8") as f:        # only the LAST error: it is overwritten, never grows
                 f.write(f"{time.strftime('%F %T')} {fn.__name__}\n{traceback.format_exc()}\n")
             raise ToolError(f"{e.__class__.__name__}: {e}")      # note: the `type` tool shadows the builtin type()
+        finally:
+            _FAST["skip"] = False                                   # never leaks from steps() into the next call
+
+    RAW[fn.__name__] = inner                                   # the `steps` tool runs several of these in one call
 
     @functools.wraps(fn)
     async def wrapper(*a, ctx: Context, **k):
@@ -437,6 +445,9 @@ def _act(hwnd, hidden, fn, note=""):
     time.sleep(0.25); _tr("settle")
     if not hidden:
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
+    if _FAST["skip"]:                       # middle step of steps(): re-reading the whole tree costs ~1 s; the last step reports the sum
+        _tr("changes")
+        return f"{result} | changes: counted at the end of the batch" + _tr_report()
     if "through COM" in result and ("now shows" in result or "saved" in result):
         delta = "read back by the app itself"             # the grid/file is not in the UI tree: comparing it would say nothing
     else:
@@ -680,43 +691,106 @@ def read(window: str, target: str = "", start: int = 0, length: int = 6000, find
     return _on(window, run)
 
 
+def _do_show(hidden, window, target, label, seconds, confirm):
+    """Draw the orange circle for the user. Returns (message for the model, token of the circle)."""
+    hwnd = _gate(window, False, confirm)
+    if hidden:
+        raise ToolError("that window is on the hidden desktop: the user cannot see it")
+    if win32gui.IsIconic(hwnd):
+        raise ToolError("the window is minimized: ask the user to open it from the taskbar, then call show again")
+    t = _target(target, True, hwnd)
+    l, tp = win32gui.GetWindowRect(hwnd)[:2]
+    if isinstance(t, int):
+        it = core._state.get(hwnd, {}).get("items", {}).get(t)
+        if it is None:
+            raise ToolError("unknown id: call look() on this window first")
+        if it.ctrl is not None:
+            actions.scroll_into_view(it.ctrl)
+        rel = core.live_rel(hwnd, it) or it.rect
+        name = it.name[:40]
+    else:
+        k = core._state.get(hwnd, {}).get("scale", 1.0)
+        x, y = int(t[0] * k), int(t[1] * k); rel = (x - 14, y - 14, x + 14, y + 14); name = f"{t[0]},{t[1]}"
+    rect = (l + rel[0], tp + rel[1], l + rel[2], tp + rel[3])
+    secs = max(2, min(int(seconds or 10), 120))
+    shown = (f"{label[:30]} «{name[:24]}»" if label.strip() and core.norm_name(label) != core.norm_name(name) else label[:40])
+    token = cursor.CURSOR.mark(rect, shown, secs, cursor.scale_for(hwnd), owner=hwnd)          # the label never hides what the element really is
+    cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
+    front = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint((cx, cy)), 2) == hwnd
+    disabled = False
+    if isinstance(t, int) and it.ctrl is not None:
+        try:
+            disabled = not it.ctrl.IsEnabled
+        except Exception:
+            pass
+    return (f"shown to the user: an orange circle around «{name}» for {secs} s (nothing was clicked)"
+            + (". It is DISABLED (greyed out) right now: tell the user what enables it first" if disabled else "")
+            + ("" if front else ". The window is behind other windows there: tell the user to bring it to the front to see it")), token
+
+
 @tool
 def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
     """Show the USER where something is (for "where do I click to...?"): an orange circle around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
+    return _on(window, lambda hidden: _do_show(hidden, window, target, label, seconds, confirm)[0])
+
+
+_STEP_ARGS = {"click": ("target", "right", "double"), "type": ("target", "text", "replace"), "key": ("name",),
+              "scroll": ("direction", "target", "amount"), "read": ("target", "start", "length", "find"),
+              "look": ("mode", "find", "wait")}
+_STEP_BAD = ("NOT EXECUTED", "NO VISIBLE EFFECT")
+
+
+@tool
+def steps(window: str, todo: list[dict]) -> str:
+    """Several actions on ONE window in one call, in order (faster). todo=[{"do":"click","target":"Save"},{"do":"type","target":"Name","text":"x"},{"do":"key","name":"enter"},{"do":"wait","seconds":1}]; do = click|type|key|scroll|read|look|wait, same arguments as those tools. Use names, not ids, for what appears later. Stops at the first failure, no-effect or permission need (repeat that step alone)."""
+    if not 0 < len(todo) <= 12:
+        raise ToolError("give between 1 and 12 actions")
+    out = []
+    for n, a in enumerate(todo, 1):
+        verb = str(a.get("do", "")).strip().lower()
+        if verb == "wait":
+            time.sleep(max(0.0, min(float(a.get("seconds", 1)), 10.0)))
+            out.append(f"{n}. wait ok")
+            continue
+        fn = RAW.get(verb)
+        if verb not in _STEP_ARGS or fn is None:
+            out.append(f"{n}. unknown action '{verb}' | STOPPED")
+            break
+        kw = {k: a[k] for k in _STEP_ARGS[verb] if k in a}
+        _FAST["skip"] = n < len(todo) and not a.get("check")      # middle steps skip the (slow) diff of the tree; "check":true keeps it
+        try:
+            r = fn(window, **kw)
+        except policy.NeedsPermission:
+            out.append(f"{n}. {verb} needs the user's permission | STOPPED: repeat this step alone (a normal {verb} call) and the user will be asked")
+            break
+        except ToolError as e:
+            out.append(f"{n}. {verb} failed: {e} | STOPPED")
+            break
+        text = r if isinstance(r, str) else " ".join(x for x in r if isinstance(x, str))         # a look() may return text + image
+        last = n == len(todo)
+        bad = any(b in text for b in _STEP_BAD)
+        out.append(f"{n}. {verb}: " + (text if (last or bad or verb in ("read", "look")) else text.split(" | changes:")[0][:160]) + (" | STOPPED" if bad else ""))
+        if bad:
+            break
+    return "\n".join(out)
+
+
+@tool
+def wait_for(window: str, target: str, label: str = "", timeout: int = 60, confirm: bool = False) -> str:
+    """Like show() but WAITS until the user clicks the circled `target` (or it changes): returns clicked | changed | timeout (max 120 s), then give the next step. For guiding several steps in turn."""
     def run(hidden):
-        hwnd = _gate(window, False, confirm)
-        if hidden:
-            raise ToolError("that window is on the hidden desktop: the user cannot see it")
-        if win32gui.IsIconic(hwnd):
-            raise ToolError("the window is minimized: ask the user to open it from the taskbar, then call show again")
-        t = _target(target, True, hwnd)
-        l, tp = win32gui.GetWindowRect(hwnd)[:2]
-        if isinstance(t, int):
-            it = core._state.get(hwnd, {}).get("items", {}).get(t)
-            if it is None:
-                raise ToolError("unknown id: call look() on this window first")
-            if it.ctrl is not None:
-                actions.scroll_into_view(it.ctrl)
-            rel = core.live_rel(hwnd, it) or it.rect
-            name = it.name[:40]
-        else:
-            k = core._state.get(hwnd, {}).get("scale", 1.0)
-            x, y = int(t[0] * k), int(t[1] * k); rel = (x - 14, y - 14, x + 14, y + 14); name = f"{t[0]},{t[1]}"
-        rect = (l + rel[0], tp + rel[1], l + rel[2], tp + rel[3])
-        secs = max(2, min(int(seconds or 10), 60))
-        shown = (f"{label[:30]} «{name[:24]}»" if label.strip() and core.norm_name(label) != core.norm_name(name) else label[:40])
-        cursor.CURSOR.mark(rect, shown, secs, cursor.scale_for(hwnd), owner=hwnd)          # the label never hides what the element really is
-        cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
-        front = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint((cx, cy)), 2) == hwnd
-        disabled = False
-        if isinstance(t, int) and it.ctrl is not None:
-            try:
-                disabled = not it.ctrl.IsEnabled
-            except Exception:
-                pass
-        return (f"shown to the user: an orange circle around «{name}» for {secs} s (nothing was clicked)"
-                + (". It is DISABLED (greyed out) right now: tell the user what enables it first" if disabled else "")
-                + ("" if front else ". The window is behind other windows there: tell the user to bring it to the front to see it"))
+        msg, token = _do_show(hidden, window, target, label, timeout, confirm)
+        if "DISABLED" in msg:
+            return msg + " | not waiting: it cannot be clicked yet"
+        end = time.time() + max(2, min(int(timeout or 60), 120)) + 1.5
+        while time.time() < end:
+            r = cursor.CURSOR.mark_result
+            if r and r[0] == token:
+                why = r[1]
+                return (f"{why}: the user " + {"clicked": "clicked inside the circle", "changed": "changed what is inside it (they did the step)",
+                                               "timeout": f"did not do it in {timeout} s"}[why] + ". Look at the window to see the result, then give the next step.")
+            time.sleep(0.1)
+        return "timeout: the circle was not resolved in time"
     return _on(window, run)
 
 

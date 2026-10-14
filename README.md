@@ -238,6 +238,8 @@ You can keep working in the app while Claude works in it, as long as you do not 
 | `scroll` | Scrolls the window or an element by pages, or to the top/bottom, through UI Automation, scroll-bar messages or wheel messages: no focus, no mouse. Says the position before and after. |
 | `read` | The whole text of a document, web page, editor or field, also what is scrolled out of view, in pieces (`start`, `length`), or only the lines that match (`find="a|b"`, numbered). Much cheaper than scrolling and looking. In Excel, the cells of the sheet (tab-separated, with row numbers and column letters). In PowerPoint, every slide's text, tables and speaker notes. Never reads password fields. |
 | `show` | Shows **you** where something is: an orange circle around an element (by id, name or `x,y`) with an optional label, above its window, never clicking. It goes away when you click there, when that spot changes (you did it), or after a few seconds. For "where do I click to...?". |
+| `wait_for` | Same circle as `show`, but **waits** until you click it (or the spot changes) and then answers `clicked`, `changed` or `timeout`, so Claude can walk you through several steps one after another without guessing when you are done. |
+| `steps` | Runs up to 12 actions (click, type, key, scroll, read, look, wait) on one window in a single call, much faster than one call each. It stops at the first step that fails, has no visible effect or needs your permission; sensitive steps still ask you one by one. |
 | `open_app` | Launches an app minimized with its taskbar button, so you can open it and watch, in its own folder (as a shortcut does). If the window belongs to a process the launcher starts (Windows Media Player, Git GUI) or to a Store app, it is found and minimized too, and if it grabbed the focus it is handed back to you. Browsers (Edge, Chrome, Brave...) open behind your windows instead, not minimized, because a minimized browser hides its page from accessibility; the focus is never taken. `hidden=true` uses an invisible desktop, only when you ask for it. |
 
 ## Adapts to your PC
@@ -298,6 +300,7 @@ python tests/test_launcher.py     # a launcher whose window belongs to a child p
 python tests/test_identity.py     # what is re-verified before acting (mocks + a real Buy/Sell toggle)
 python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause, the package rename and its migration
+python tests/test_steps.py        # steps: several actions in one call, stops on failure or permission
 python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data
 ```

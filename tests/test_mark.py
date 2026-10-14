@@ -5,7 +5,8 @@ sys.stdout.reconfigure(encoding="utf-8")
 HERE = os.path.dirname(os.path.abspath(__file__)); sys.path.insert(0, os.path.dirname(HERE))
 import win32gui
 import uiautomation as auto
-from pc_control import actions, core, cursor
+import threading
+from pc_control import actions, core, cursor, server
 
 st = os.path.join(tempfile.gettempdir(), "pc-control_mark_state.json")
 app = subprocess.Popen(["powershell.exe", "-STA", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", os.path.join(HERE, "test_app2.ps1"), st],
@@ -24,7 +25,7 @@ try:
         core.look(str(hw), "uia")
         it = next(x for x in core._state[hw]["items"].values() if x.name == "Long text")
         l, t = win32gui.GetWindowRect(hw)[:2]; r = core.live_rel(hw, it)
-        cursor.CURSOR.mark((l + r[0], t + r[1], l + r[2], t + r[3]), "here", 20, 1.0, owner=hw)
+        token = cursor.CURSOR.mark((l + r[0], t + r[1], l + r[2], t + r[3]), "here", 20, 1.0, owner=hw)
         mk = cursor.CURSOR.hwnds["mark"]
         time.sleep(1.5)
         c["the oval is shown"] = bool(win32gui.IsWindowVisible(mk))
@@ -38,7 +39,11 @@ try:
         c["while nothing happens it stays"] = bool(win32gui.IsWindowVisible(mk))
         actions.scroll(str(hw), str(it.id), "down", 3)                  # what is inside the marked box changes
         time.sleep(3.0)                                                  # a few window captures, 0.35 s of steady change, and the fade
-        c["when what is inside it changes, it goes away by itself"] = not win32gui.IsWindowVisible(mk);
+        c["when what is inside it changes, it goes away by itself"] = not win32gui.IsWindowVisible(mk)
+        c["wait_for is told it changed (token + reason)"] = cursor.CURSOR.mark_result == (token, "changed")
+        c["wait_for gives up with 'timeout' when nobody does the step"] = server.RAW["wait_for"](str(hw), str(it.id), "go", 3, confirm=True).startswith("timeout")
+        threading.Timer(3.0, lambda: actions.scroll(str(hw), str(it.id), "up", 3)).start()          # the user "does" the step
+        c["wait_for returns 'changed' as soon as they do it"] = server.RAW["wait_for"](str(hw), str(it.id), "go", 15, confirm=True).startswith("changed")
 finally:
     try:
         win32gui.PostMessage(hw, 0x0010, 0, 0)
@@ -49,6 +54,6 @@ finally:
         app.kill()
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 4 and all(c.values())
+ok = len(c) == 7 and all(c.values())
 print(f"mark verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
