@@ -253,15 +253,39 @@ def _guard_point(hwnd, t, confirm):
 
 
 def _mine(hwnd):
-    return hwnd in OPENED or win32process.GetWindowThreadProcessId(hwnd)[1] in OPENED_PIDS
+    """A window PC-Control opened. A Store app has two windows (the content and its ApplicationFrameWindow): either one counts."""
+    return (hwnd in OPENED or win32process.GetWindowThreadProcessId(hwnd)[1] in OPENED_PIDS
+            or any(r in OPENED for r in _family_roots(hwnd)))
 
+
+_XAML = ("ApplicationFrameWindow", "Windows.UI.Core.CoreWindow")      # modern Store apps draw their own controls and ignore mouse messages
+_MOUSE = {"ok": set(), "ignored": set()}                              # (window class, process) -> a plain click was seen to work / to do nothing
+
+
+def _mouse_key(hwnd):
+    return (win32gui.GetClassName(hwnd), _proc(hwnd))
+
+
+def _press_directly(hwnd):
+    """True if an element of this window is pressed through UI Automation at once: a Store app, or a program that was seen to ignore mouse messages."""
+    return win32gui.GetClassName(hwnd) in _XAML or _mouse_key(hwnd) in _MOUSE["ignored"]
+
+
+def _clicks_proven(window):
+    """True if clicks on this window are known to take effect, so a batch may skip checking each one (a click nobody checks that does nothing
+    is the worst answer: it says ok). An unknown program is checked once, and then remembered."""
+    try:
+        hwnd = core.find_window(window)
+        return _press_directly(hwnd) or _mouse_key(hwnd) in _MOUSE["ok"]
+    except Exception:
+        return False
 
 OPENED_AT = {}                                           # hwnd -> when open_app opened it
 
 
 def _fresh(hwnd, secs=120):
     """True only for a window that open_app opened a moment ago: nobody has been using it. Closing and reopening an app is allowed only then."""
-    return hwnd in OPENED and time.time() - OPENED_AT.get(hwnd, 0) <= secs
+    return any(r in OPENED and time.time() - OPENED_AT.get(r, 0) <= secs for r in _family_roots(hwnd))
 
 
 def _behind_file():
@@ -532,7 +556,7 @@ def windows(filter: str = "") -> str:
         using = fg in (h, fr) or fg_root in (h, fr)
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
-        mine = h in OPENED or fr in OPENED or win32process.GetWindowThreadProcessId(h)[1] in OPENED_PIDS
+        mine = _mine(h) or _mine(fr)
         out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else " (cloaked)" if _cloaked(fr) else "") + (" [mine]" if mine else "") + tag
                    + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     if DESK.h:
@@ -615,7 +639,10 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
             if not hidden and it.ctrl is not None and rel is None:
                 return "did not press: the element is no longer where it was: look again | NOT EXECUTED"
         note = core.moved_note(old, rel) if rel else ""
-        res = _act(hwnd, hidden, lambda: core.click(str(hwnd), t, right, double, rel=rel), note)
+        direct = it is not None and it.ctrl is not None and not right and not hidden and _press_directly(hwnd)
+        act = (lambda: core.invoke(str(hwnd), t, double=double) or core.click(str(hwnd), t, right, double, rel=rel)) if direct else \
+              (lambda: core.click(str(hwnd), t, right, double, rel=rel))              # a Store app: straight to UI Automation, no wasted mouse message
+        res = _act(hwnd, hidden, act, note)
         # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
         # Not if the click already changed what the element is (a toggle): pressing it again would do the opposite.
@@ -625,6 +652,9 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
                 time.sleep(0.25)
                 delta = core.changes(str(hwnd))
                 res = f"{r2} | changes: {delta} | {verdict(r2, delta)} | the plain mouse click had no effect, so it was sent through UI Automation"
+                _MOUSE["ignored"].add(_mouse_key(hwnd))                              # remembered: next time (and inside steps) it goes straight there
+        elif "mouse message" in res and "effect observed" in res and it is not None and not right:
+            _MOUSE["ok"].add(_mouse_key(hwnd))                                       # a plain click was seen to work on this program
         return res
     return _on(window, run)
 
@@ -879,7 +909,8 @@ def steps(window: str, todo: list[dict]) -> str:
             out.append(f"{n}. unknown action '{verb}' | STOPPED")
             break
         kw = {k: a[k] for k in _STEP_ARGS[verb] if k in a}
-        _FAST["skip"] = n < len(todo) and not a.get("check")      # middle steps skip the (slow) diff of the tree; "check":true keeps it
+        # middle steps skip the (slow) diff of the tree; "check":true keeps it. Never for a click on a program whose clicks were not yet seen to work
+        _FAST["skip"] = n < len(todo) and not a.get("check") and (verb != "click" or _clicks_proven(window))
         try:
             r = fn(window, **kw)
         except policy.NeedsPermission:
