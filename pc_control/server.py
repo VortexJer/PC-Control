@@ -67,6 +67,7 @@ async def _ask_user(ctx, e, tool_name, args):
 
 
 RAW = {}                                                        # tool name -> the plain function (no MCP wrapper)
+SETTLE_S = 0.12                                                 # wait after an action before reading what changed (it was 0.25: the next call also reports what came late)
 _FAST = {"skip": False}                                         # True while a middle step of steps() runs (actions all run on the MAIN thread, one at a time)
 
 
@@ -442,7 +443,7 @@ def _act(hwnd, hidden, fn, note=""):
     _tr("start")
     before = set(core.top_windows())
     result = fn(); _tr("action")
-    time.sleep(0.25); _tr("settle")
+    time.sleep(0.05 if _FAST["skip"] else SETTLE_S); _tr("settle")
     if not hidden:
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
     if _FAST["skip"]:                       # middle step of steps(): re-reading the whole tree costs ~1 s; the last step reports the sum
@@ -550,10 +551,10 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None):   # an id that was never seen: nothing to travel to, core answers it
             # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
-            cursor.CURSOR.pointer(x, y, click=True, ms=240, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.27)
+            cursor.CURSOR.pointer(x, y, click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.17)
             x2, y2, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)     # the user may have moved/resized while it was travelling
             if abs(x2 - x) + abs(y2 - y) > 6:
-                cursor.CURSOR.pointer(x2, y2, click=True, ms=140, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.18)
+                cursor.CURSOR.pointer(x2, y2, click=True, ms=100, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.12)
                 rel = core.live_rel(hwnd, it) if (it and not hidden) else rel
         _tr("cursor")
         # the 0.4 s of the cursor's trip are the window of opportunity: verify AGAIN right before dispatching
@@ -626,14 +627,29 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
     return _on(window, run)
 
 
+def _drag_point(hwnd, token):
+    """One point of a drag: 'x,y' in pixels of the last image, or the id / name of an element (its centre, in the same pixels)."""
+    t = token.strip()
+    if "," in t and re.fullmatch(r"[-\d.\s]+,[-\d.\s]+", t):
+        return tuple(int(float(v)) for v in t.replace(" ", "").split(","))
+    tid = _target(t, False, hwnd)
+    st = core._state.get(hwnd, {})
+    it = st.get("items", {}).get(tid)
+    if it is None:
+        raise ToolError(f"unknown element '{t}': call look() first or use x,y")
+    rel = core.live_rel(hwnd, it) or it.rect
+    k = st.get("scale", 1.0) or 1.0
+    return int((rel[0] + rel[2]) / 2 / k), int((rel[1] + rel[3]) / 2 / k)
+
+
 @tool
 def drag(window: str, points: str, shape: str = "path", right: bool = False, confirm: bool = False) -> str:
-    """Drag (draw, select, move) through points "x1,y1;x2,y2;..." in pixels of the last image. shape: path, line, rect or ellipse (2 points for the last three). Check the result with look mode=image."""
+    """Drag (draw, select, move) through points "x1,y1;x2,y2" in pixels of the last image; a point can be an element id or name (its centre): "12;15" selects from one to the other. shape: path, line, rect, ellipse."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)
         try:
-            pts = [tuple(int(float(v)) for v in p.split(",")) for p in points.replace(" ", "").split(";") if p]
+            pts = [_drag_point(hwnd, p) for p in points.split(";") if p.strip()]
         except ValueError:
             raise ToolError(f"bad points '{points[:40]}': write x1,y1;x2,y2;... in pixels of the last image")
         if any(len(p) != 2 for p in pts):
@@ -736,13 +752,13 @@ def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: 
 
 _STEP_ARGS = {"click": ("target", "right", "double"), "type": ("target", "text", "replace"), "key": ("name",),
               "scroll": ("direction", "target", "amount"), "read": ("target", "start", "length", "find"),
-              "look": ("mode", "find", "wait")}
+              "look": ("mode", "find", "wait"), "drag": ("points", "shape", "right")}
 _STEP_BAD = ("NOT EXECUTED", "NO VISIBLE EFFECT")
 
 
 @tool
 def steps(window: str, todo: list[dict]) -> str:
-    """Several actions on ONE window in one call, in order (faster). todo=[{"do":"click","target":"Save"},{"do":"type","target":"Name","text":"x"},{"do":"key","name":"enter"},{"do":"wait","seconds":1}]; do = click|type|key|scroll|read|look|wait, same arguments as those tools. Use names, not ids, for what appears later. Stops at the first failure, no-effect or permission need (repeat that step alone)."""
+    """Several actions on ONE window in one call, in order (faster). todo=[{"do":"click","target":"Save"},{"do":"type","target":"Name","text":"x"},{"do":"key","name":"enter"},{"do":"wait","seconds":1}]; do = click|type|key|scroll|read|look|drag|wait, same arguments. Use names, not ids, for what appears later. Stops at the first failure, no-effect or permission need (repeat that step alone)."""
     if not 0 < len(todo) <= 12:
         raise ToolError("give between 1 and 12 actions")
     out = []

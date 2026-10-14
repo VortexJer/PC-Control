@@ -42,6 +42,8 @@ try:
         c["when what is inside it changes, it goes away by itself"] = not win32gui.IsWindowVisible(mk)
         c["wait_for is told it changed (token + reason)"] = cursor.CURSOR.mark_result == (token, "changed")
         c["wait_for gives up with 'timeout' when nobody does the step"] = server.RAW["wait_for"](str(hw), str(it.id), "go", 3, confirm=True).startswith("timeout")
+        pt = server._drag_point(hw, str(it.id)); w0, h0 = win32gui.GetWindowRect(hw)[2] - l, win32gui.GetWindowRect(hw)[3] - t
+        c["drag accepts an element (id) as a point, and x,y as before"] = 0 < pt[0] < w0 and 0 < pt[1] < h0 and server._drag_point(hw, "5, 7") == (5, 7)
         threading.Timer(3.0, lambda: actions.scroll(str(hw), str(it.id), "up", 3)).start()          # the user "does" the step
         c["wait_for returns 'changed' as soon as they do it"] = server.RAW["wait_for"](str(hw), str(it.id), "go", 15, confirm=True).startswith("changed")
 finally:
@@ -54,6 +56,6 @@ finally:
         app.kill()
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 7 and all(c.values())
+ok = len(c) == 8 and all(c.values())
 print(f"mark verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
