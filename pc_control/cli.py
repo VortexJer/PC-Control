@@ -326,12 +326,54 @@ def _heal_legacy_dist():
     if log:
         _, src = _installed()
         target = ["-e", src] if src else [REPO_ZIP]
+        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps"] + target, capture_output=True, text=True)
         if q.returncode != 0:
+            _restore_launchers(moved)
             raise RuntimeError(f"could not put '{DIST}' back after removing the old package: {(q.stdout + q.stderr).strip()[-300:]}")
         log.append(f"'{DIST}' reinstalled")
     return log
 
+
+def _script_dirs():
+    import sysconfig
+    dirs = [sysconfig.get_path("scripts")]
+    try:
+        dirs.append(sysconfig.get_path("scripts", "nt_user"))
+    except KeyError:
+        pass
+    return [d for d in dict.fromkeys(dirs) if d]
+
+
+def _free_launchers(dirs=None):
+    """Windows will not let pip replace a program that is running, and the `pc-control-mcp` server of every open Claude Code session
+    is one. It DOES let a running program be renamed: move the launchers out of the way (`.old`), so pip can write new ones.
+    Returns [(original, moved)] so a failed update can put them back; leftovers of earlier updates are deleted when possible."""
+    moved = []
+    for d in (dirs if dirs is not None else _script_dirs()):
+        for name in ("pc-control-mcp.exe", "pc-control.exe"):
+            f, old = os.path.join(d, name), os.path.join(d, name + ".old")
+            try:
+                if os.path.exists(old):
+                    os.remove(old)
+            except OSError:
+                old = f"{old}.{os.getpid()}"                                 # the previous one is still running: another name
+            if os.path.exists(f):
+                try:
+                    os.replace(f, old); moved.append((f, old))
+                except OSError:
+                    pass                                                     # not locked, or no rights: pip will say if it matters
+    return moved
+
+
+def _restore_launchers(moved):
+    """pip failed: give back the launchers that were moved aside (unless pip already wrote new ones)."""
+    for f, old in moved:
+        try:
+            if not os.path.exists(f) and os.path.exists(old):
+                os.replace(old, f)
+        except OSError:
+            pass
 
 def _installed():
     """(version, editable source folder or None) of the installed package."""
@@ -362,11 +404,14 @@ def update():
             raise RuntimeError(f"git pull failed in {src}: {(p.stdout + p.stderr).strip()[:300]}")
         log.append(f"source updated ({src}): {(p.stdout.strip().splitlines() or ['ok'])[-1]}")
         log += drop_legacy_dist()
+        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", src], capture_output=True, text=True)
     else:                                                             # a normal install: the latest version from GitHub (no git needed)
         log += drop_legacy_dist()
+        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
     if q.returncode != 0:
+        _restore_launchers(moved)
         raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
     r = subprocess.run([sys.executable, "-m", "pc_control.cli", "reinstall"], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")                          # the NEW code installs itself
@@ -401,14 +446,8 @@ def run_claude(args):
 
 def server_exe():
     """Full path of the `pc-control-mcp` launcher pip put next to this Python (its own folder, or the per-user one), or None."""
-    import sysconfig
-    dirs = [sysconfig.get_path("scripts")]
-    try:
-        dirs.append(sysconfig.get_path("scripts", "nt_user"))
-    except KeyError:
-        pass
-    for d in dirs:
-        f = os.path.join(d or "", "pc-control-mcp.exe")
+    for d in _script_dirs():
+        f = os.path.join(d, "pc-control-mcp.exe")
         if os.path.exists(f):
             return f
     return None

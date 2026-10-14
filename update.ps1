@@ -28,6 +28,25 @@ function Remove-LegacyPackage {
     }
 }
 
+# Windows will not let pip replace a program that is running, and the `pc-control-mcp` server of every open Claude Code session is one.
+# A running program CAN be renamed: move the launchers aside (.old) so pip can write new ones; put them back if pip fails.
+$script:moved = @()
+function Move-RunningLaunchers {
+    $r = Get-Python "import sysconfig; print(sysconfig.get_path('scripts')); print(sysconfig.get_path('scripts', 'nt_user'))"
+    if (-not $r.ok) { return }
+    foreach ($dir in ($r.out | Select-Object -Unique)) {
+        foreach ($name in 'pc-control-mcp.exe', 'pc-control.exe') {
+            $f = Join-Path $dir $name; $old = "$f.old"
+            if (-not (Test-Path $f)) { continue }
+            Remove-Item $old -Force -ErrorAction SilentlyContinue
+            if (Test-Path $old) { $old = "$old.$PID" }
+            try { Move-Item $f $old -Force -ErrorAction Stop; $script:moved += , @($f, $old) } catch { }
+        }
+    }
+}
+function Restore-Launchers {
+    foreach ($m in $script:moved) { if (-not (Test-Path $m[0]) -and (Test-Path $m[1])) { Move-Item $m[1] $m[0] -Force -ErrorAction SilentlyContinue } }
+}
 # where the installed code lives (empty if PC-Control is not installed, e.g. only the old "pcsight" is)
 $probe = Get-Python "import os, pc_control; print(os.path.dirname(os.path.dirname(os.path.abspath(pc_control.__file__))))"
 $src = $probe.out
@@ -35,12 +54,14 @@ if ($probe.ok -and $src -and (Test-Path (Join-Path $src '.git')) -and (Test-Path
     & git -C $src pull --ff-only
     if ($LASTEXITCODE -ne 0) { throw "git pull failed in $src" }
     Remove-LegacyPackage
+    Move-RunningLaunchers
     & python -m pip install -q -e $src
 } else {
     Remove-LegacyPackage
+    Move-RunningLaunchers
     & python -m pip install -q --upgrade $zip
 }
-if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
+if ($LASTEXITCODE -ne 0) { Restore-Launchers; throw 'pip install failed.' }
 
 & python -m pc_control.cli reinstall
 if ($LASTEXITCODE -ne 0) { throw 'pc-control reinstall failed.' }
