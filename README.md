@@ -303,6 +303,7 @@ python tests/test_cli.py          # install / uninstall / status / pause, the pa
 python tests/test_hidden_cleanup.py   # apps on the hidden desktop end with the session (shutdown, kill, leftovers of older versions)
 python tests/test_guard_descriptor.py # every tool has an inherit/review decision for HOL Guard (fails when a new tool has none)
 python tests/test_back_on_create.py # open_app(behind=true): at the very back, not minimized, no focus taken, fast
+python tests/test_hang.py         # a call stuck inside another program (Firefox on a huge page) does not freeze the server
 python tests/test_steps.py        # steps: several actions in one call, stops on failure or permission
 python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data
