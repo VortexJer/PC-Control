@@ -229,6 +229,28 @@ finally:
 c["the command line exposes --stop-servers"] = "--stop-servers" in open(cli.__file__, encoding="utf-8").read()
 c["update.ps1: checks for running servers first and stops them only with -StopServers"] = (
     "param([switch]$StopServers)" in rd_ps("update.ps1") and "-StopServers" in rd_ps("update.ps1") and "Move-RunningLaunchers" not in rd_ps("update.ps1"))
+# `pc-control update` IS pc-control.exe, which pip cannot replace while it runs: from the launcher it must update in a new window through `python -m`
+calls2 = []
+real2 = (cli.update, cli._update_in_new_window, sys.argv, cli._pid_alive)
+try:
+    cli.update = lambda stop_servers=False: calls2.append(("update", stop_servers)) or ["ok"]
+    cli._update_in_new_window = lambda stop: calls2.append(("window", stop))
+    sys.argv = [r"C:\x\Scripts\pc-control", "update"]                       # pip's wrapper drops the .exe from argv[0]
+    c["started from the pc-control command, the launcher is recognised"] = cli._run_from_launcher() is True
+    cli.main(["update", "--stop-servers"])
+    c["from the launcher, update does not run in-process: it opens a new window"] = calls2 == [("window", True)]
+    calls2.clear(); sys.argv = [sys.executable, "-m", "pc_control.cli", "update"]
+    c["via python -m it is not treated as the launcher"] = cli._run_from_launcher() is False
+    cli.main(["update"])
+    c["via python -m, update runs right here"] = calls2 == [("update", False)]
+    calls2.clear(); cli._pid_alive = lambda pid: False
+    cli.input = lambda *a: ""                                               # the "press Enter" pause of the new window
+    cli.main(["update", "--after-exit", "123,456"])
+    c["the new window updates once the launcher has exited"] = calls2 == [("update", False)]
+finally:
+    cli.update, cli._update_in_new_window, sys.argv, cli._pid_alive = real2
+    cli.__dict__.pop("input", None)
+c["a live pid is detected as alive, a dead one as gone"] = cli._pid_alive(os.getpid()) is True and cli._pid_alive(4294967) is False
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
