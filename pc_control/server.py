@@ -256,6 +256,38 @@ def _mine(hwnd):
     return hwnd in OPENED or win32process.GetWindowThreadProcessId(hwnd)[1] in OPENED_PIDS
 
 
+OPENED_AT = {}                                           # hwnd -> when open_app opened it
+
+
+def _fresh(hwnd, secs=120):
+    """True only for a window that open_app opened a moment ago: nobody has been using it. Closing and reopening an app is allowed only then."""
+    return hwnd in OPENED and time.time() - OPENED_AT.get(hwnd, 0) <= secs
+
+
+def _behind_file():
+    return os.path.join(HOME, "behind.txt")
+
+
+def _learned_behind():
+    """Programs that could not be read minimized (a name per line): from now on open_app starts them behind the user's windows."""
+    try:
+        with open(_behind_file(), encoding="utf-8") as f:
+            return {x.strip().lower() for x in f if x.strip()}
+    except OSError:
+        return set()
+
+
+def _learn_behind(proc):
+    proc = (proc or "").strip().lower()
+    if proc and proc not in _learned_behind():
+        try:
+            os.makedirs(HOME, exist_ok=True)
+            with open(_behind_file(), "a", encoding="utf-8") as f:
+                f.write(proc + "\n")
+        except OSError:
+            pass
+
+
 def _closing_guard(hwnd, confirm):
     """Closing a window Claude did not open can lose the user's work: it is a delicate action (asked every time)."""
     if policy.mode() != "bypass" and not confirm and not _mine(hwnd):
@@ -520,7 +552,14 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
         if find:
             return actions.find(str(hwnd), find, wait)
         r = core.look(str(hwnd), mode)
-        head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "")
+        advice = ""
+        if r["mode"] == "none" and r.get("minimized") and not hidden:
+            if _fresh(hwnd):                                   # an app we opened a moment ago cannot be read minimized: reopen it behind, and remember the program
+                _learn_behind(_proc(hwnd))
+                advice = " | you just opened it: close it (key alt+f4) and open it again with open_app(behind=true); PC-Control now remembers it and will start it behind the user's windows by itself"
+            else:                                              # the user may be using it (or has minimized it): never close it
+                advice = " | do NOT close it, the user may be using it: ask them to open it from the taskbar"
+        head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "") + advice
         if office.is_excel(hwnd):                          # the grid is not in the UI tree: say how to reach the cells
             head += "\n" + office.summary(hwnd)
         if r["mode"] == "image":
@@ -889,7 +928,7 @@ def open_app(command: str, hidden: bool = False, behind: bool = False, confirm: 
     if hidden:
         r = DESK.open(command); where = "hidden desktop (no taskbar button)"
     else:
-        if behind or exe in core.CHROMIUM:           # browsers (and apps the model says so) hide their content while minimized: behind the user's windows instead
+        if behind or exe in core.CHROMIUM or exe in _learned_behind():      # browsers, apps asked for and apps that proved unreadable minimized: behind the user's windows
             tok = shlex.split(command, posix=False)[0]
             extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in command] if exe in core.CHROMIUM else []
             r = core.open_behind(command.replace(tok, tok + " " + " ".join(extra), 1) if extra else command, exe)       # Chromium switches ONLY for browsers
@@ -898,6 +937,8 @@ def open_app(command: str, hidden: bool = False, behind: bool = False, confirm: 
             r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
     OPENED.update(w["hwnd"] for w in r["windows"]); OPENED_PIDS.update(r.get("pids", []))
+    for w in r["windows"]:
+        OPENED_AT[w["hwnd"]] = time.time()
     kept = r.get("foco_intacto", True)
     note = "" if kept else " | NOTE: the app took the keyboard focus although it is behind the other windows: it receives keys until the user clicks another window, so do not assume their typing goes to their own app"
     return f"pid {r['pid']} | {ws} | {where}{note}"

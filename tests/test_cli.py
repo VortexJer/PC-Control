@@ -251,6 +251,14 @@ finally:
     cli.update, cli._update_in_new_window, sys.argv, cli._pid_alive = real2
     cli.__dict__.pop("input", None)
 c["a live pid is detected as alive, a dead one as gone"] = cli._pid_alive(os.getpid()) is True and cli._pid_alive(4294967) is False
+# Claude decides when to open an app behind the user's windows: the skill says so, and so does the answer when a minimized app cannot be read
+from pc_control import core as _core
+_skill = open(cli.__file__, encoding="utf-8").read()
+c["the skill tells Claude to close and reopen with behind=true by itself, only for an app it JUST opened, never one the user may be using"] = (
+    "open_app(behind=true)" in _skill and "do not ask" in _skill and "JUST opened" in _skill and "never close an app the user may be using" in _skill)
+_srv_src = open(os.path.join(os.path.dirname(_core.__file__), "server.py"), encoding="utf-8").read()
+c["look names the way out for a fresh app (close, reopen behind) and forbids closing one the user may be using"] = (
+    "close it (key alt+f4) and open it again with open_app(behind=true)" in _srv_src and "do NOT close it, the user may be using it" in _srv_src)
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
