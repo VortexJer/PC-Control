@@ -9,7 +9,8 @@ LOCAL = os.path.join(ROOT, ".hygiene-local.txt")        # your own names/usernam
 PERSONAL = GENERIC + ([l.strip() for l in open(LOCAL, encoding="utf-8") if l.strip()] if os.path.exists(LOCAL) else [])
 
 # the project's own public repository URL is intended to be published (its owner is the repo owner, by design)
-ALLOWED = ["github.com/VortexJer/PC-Control"]
+ALLOWED = ["github.com/VortexJer/PC-Control",
+           "github.com/hashgraph-online/hol-guard"]          # the project PC-Control is listed in (a public project, not a person)
 
 def scan(text, patterns):
     for a in ALLOWED:

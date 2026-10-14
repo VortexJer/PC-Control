@@ -137,6 +137,12 @@ def _by_name(hwnd, name):
     if not hits:
         actions.find(str(hwnd), name)
         hits = matches()
+    if not hits and not core._state.get(hwnd, {}).get("items"):       # this window was never looked at: read its tree once so ANY element can be named
+        try:
+            core.look(str(hwnd), "uia")
+        except Exception:
+            pass
+        hits = matches()
     if len(hits) == 1:
         return hits[0][0]
     if not hits:
@@ -467,7 +473,9 @@ def _act(hwnd, hidden, fn, note=""):
 def windows(filter: str = "") -> str:
     """Open windows ('hwnd | process | title'), most recent first; filter = text in the title or process (cheaper). [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat. [mine] = opened by you. [PROTECTED] / [ASKS] = PC-Control asks the user itself before you act there. (hidden), (minimized)."""
     _paused()
-    flt = filter.strip().lower()
+    terms = [x.strip() for x in filter.lower().split("|") if x.strip()]         # "notepad|word": any of them
+    flt = bool(terms)
+    miss = lambda title, proc: flt and not any(x in title.lower() or x in proc for x in terms)
     m = policy.mode()
     fg = win32gui.GetForegroundWindow()
     fg_root = ctypes.windll.user32.GetAncestor(fg, 2) if fg else 0
@@ -484,7 +492,7 @@ def windows(filter: str = "") -> str:
             continue
         fr = frame_of.get(h, h)
         p, t = _proc(h), win32gui.GetWindowText(h)
-        if flt and flt not in t.lower() and flt not in p:
+        if miss(t, p):
             first = first and not (fg in (h, fr) or fg_root in (h, fr))           # the [LAST USED] mark must not move because of the filter
             continue
         t = t.lstrip("✳◑◐◒◓●• ")                # status icons that terminals put in their titles
@@ -497,7 +505,7 @@ def windows(filter: str = "") -> str:
                    + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
-            if flt and flt not in t.lower() and flt not in p:
+            if miss(t, p):
                 continue
             cat = policy.needs_ask(m, p, t)
             out.append(f"{h} | {p} | {t[:44]} (hidden) [mine]" + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
@@ -591,7 +599,8 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
             policy.check_type(policy.mode(), str(target), False)
             return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
         try:
-            it = core._state.get(hwnd, {}).get("items", {}).get(_target(target, False, hwnd))
+            tid = _target(target, False, hwnd)                                  # first: resolving a NAME may read the window and fill the table below
+            it = core._state.get(hwnd, {}).get("items", {}).get(tid)
         except ToolError as e:
             if "elements match" in str(e):
                 raise
@@ -723,6 +732,42 @@ def _cloaked(hwnd):
         return False
     return bool(v.value)
 
+def _family_roots(hwnd):
+    """The top-level windows that count as THIS window on screen: itself and, for a Store app, its ApplicationFrameWindow (the content
+    window is hosted inside it, and a click lands on the frame)."""
+    roots = {hwnd, ctypes.windll.user32.GetAncestor(hwnd, 2) or hwnd}
+    try:
+        title = win32gui.GetWindowText(hwnd)
+        if title and win32gui.GetClassName(hwnd) == "Windows.UI.Core.CoreWindow":
+            win32gui.EnumWindows(lambda h, _: roots.add(h) if win32gui.GetClassName(h) == "ApplicationFrameWindow"
+                                 and win32gui.GetWindowText(h) == title else None, None)
+    except Exception:
+        pass
+    return roots
+
+
+def _covered_by(hwnd, pt):
+    """None if the window is what the user sees at screen point `pt`; otherwise the title of what is in front of it there."""
+    top = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint(pt), 2)
+    if not top or top in _family_roots(hwnd):
+        return None
+    return win32gui.GetWindowText(top)[:40] or win32gui.GetClassName(top)
+
+
+class _FLASHWINFO(ctypes.Structure):
+    _fields_ = [("cbSize", wt.UINT), ("hwnd", wt.HWND), ("dwFlags", wt.DWORD), ("uCount", wt.UINT), ("dwTimeout", wt.DWORD)]
+
+
+def _flash(hwnd):
+    """Make the window's taskbar button flash until the user opens it: a way to say "it is over here" without raising it or taking focus."""
+    try:
+        frames = [h for h in _family_roots(hwnd) if win32gui.GetClassName(h) == "ApplicationFrameWindow"]
+        fi = _FLASHWINFO(ctypes.sizeof(_FLASHWINFO), (frames or [hwnd])[0], 0x2 | 0xC, 0, 0)       # FLASHW_TRAY | FLASHW_TIMERNOFG
+        ctypes.windll.user32.FlashWindowEx(ctypes.byref(fi))
+    except Exception:
+        pass
+
+
 def _do_show(hidden, window, target, label, seconds, confirm):
     """Draw the orange outline for the user. Returns (message for the model, token of the outline)."""
     hwnd = _gate(window, False, confirm)
@@ -748,9 +793,13 @@ def _do_show(hidden, window, target, label, seconds, confirm):
     rect = (l + rel[0], tp + rel[1], l + rel[2], tp + rel[3])
     secs = max(2, min(int(seconds or 10), 120))
     shown = (f"{label[:30]} «{name[:24]}»" if label.strip() and core.norm_name(label) != core.norm_name(name) else label[:40])
-    token = cursor.CURSOR.mark(rect, shown, secs, cursor.scale_for(hwnd), owner=hwnd)          # the label never hides what the element really is
     cx, cy = (rect[0] + rect[2]) // 2, (rect[1] + rect[3]) // 2
-    front = ctypes.windll.user32.GetAncestor(win32gui.WindowFromPoint((cx, cy)), 2) == hwnd
+    blocker = _covered_by(hwnd, (cx, cy))
+    if blocker:                                    # an outline nobody can see is worse than none: it would wait for a click that never comes
+        _flash(hwnd)
+        raise ToolError(f"the user cannot see that spot: the window is behind other windows (in front there: «{blocker}»). Its taskbar button is now "
+                        f"flashing. Ask them to bring it to the front (or open it from the taskbar), then repeat. PC-Control never raises windows itself")
+    token = cursor.CURSOR.mark(rect, shown, secs, cursor.scale_for(hwnd), owner=hwnd)          # the label never hides what the element really is
     disabled = False
     if isinstance(t, int) and it.ctrl is not None:
         try:
@@ -759,7 +808,7 @@ def _do_show(hidden, window, target, label, seconds, confirm):
             pass
     return (f"shown to the user: an orange outline around «{name}» for {secs} s (nothing was clicked)"
             + (". It is DISABLED (greyed out) right now: tell the user what enables it first" if disabled else "")
-            + ("" if front else ". The window is behind other windows there: tell the user to bring it to the front to see it")), token
+            ), token
 
 
 @tool

@@ -21,6 +21,7 @@ try:
             hw = h[0]; break
     assert hw, "the test window did not appear"
     time.sleep(0.8)
+    win32gui.SetWindowPos(hw, -1, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)         # TOPMOST | NOMOVE | NOSIZE | NOACTIVATE: in front of the user's windows, no focus
     with auto.UIAutomationInitializerInThread():
         core.look(str(hw), "uia")
         it = next(x for x in core._state[hw]["items"].values() if x.name == "Long text")
@@ -53,8 +54,32 @@ try:
             c["a cloaked window is refused with a clear message"] = "cannot see" in str(e)
         finally:
             server._cloaked = real_cloaked
+        real_cov, real_flash, real_mark = server._covered_by, server._flash, cursor.CURSOR.mark
+        flashed, drawn = [], []
+        server._covered_by = lambda h, pt: "Otra ventana"                         # as if another window were in front of that spot
+        server._flash = lambda h: flashed.append(h)
+        cursor.CURSOR.mark = lambda *a, **k: drawn.append(1) or 1
+        try:
+            server.RAW["wait_for"](str(hw), str(it.id), "go", 3, confirm=True)
+            c["a window covered by another is refused: nothing drawn, taskbar button flashed, the culprit named"] = False
+        except server.ToolError as e:
+            c["a window covered by another is refused: nothing drawn, taskbar button flashed, the culprit named"] = (
+                "behind other windows" in str(e) and "Otra ventana" in str(e) and flashed == [hw] and drawn == [])
+        finally:
+            server._covered_by, server._flash, cursor.CURSOR.mark = real_cov, real_flash, real_mark
+        real_wfp = win32gui.WindowFromPoint
+        try:
+            win32gui.WindowFromPoint = lambda pt: hw
+            c["a click that lands on the outlined window counts"] = cursor._owner_under(hw, (10, 10)) is True
+            win32gui.WindowFromPoint = lambda pt: win32gui.GetDesktopWindow()
+            c["a click on ANOTHER window that lies over that spot does not count"] = cursor._owner_under(hw, (10, 10)) is False
+        finally:
+            win32gui.WindowFromPoint = real_wfp
         threading.Timer(3.0, lambda: actions.scroll(str(hw), str(it.id), "up", 3)).start()          # the user "does" the step
         c["wait_for returns 'changed' as soon as they do it"] = server.RAW["wait_for"](str(hw), str(it.id), "go", 15, confirm=True).startswith("changed")
+        core._state.pop(hw, None)                                                        # a window nobody has looked at yet
+        r = server.RAW["type"](str(hw), "Long text", "z", confirm=True)
+        c["typing by NAME works on a window that was never looked at"] = "unknown id" not in r and not r.startswith("did not")
 finally:
     try:
         win32gui.PostMessage(hw, 0x0010, 0, 0)
@@ -65,6 +90,6 @@ finally:
         app.kill()
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 10 and all(c.values())
+ok = len(c) == 14 and all(c.values())
 print(f"mark verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

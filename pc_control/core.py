@@ -1017,7 +1017,8 @@ def _read_back(ctrl, text, replace):
     if v is None:
         return ""
     norm = v.replace("\r\n", "\n").replace("\r", "").strip()
-    ok = (norm == text.strip()) if replace else (text.strip() in norm)
+    flat = lambda s: s.replace("\r", "").replace("\n", "")                  # many apps report a multi-line field with its line breaks dropped
+    ok = (norm == text.strip() or flat(norm) == flat(text.strip())) if replace else (text.strip() in norm or flat(text.strip()) in flat(norm))
     tail = norm[-50:] if len(norm) > 50 else norm
     return " | read back: " + ("the field now contains the text" if ok else "WARNING: the field does NOT contain the typed text") + f' ("{tail}")'
 

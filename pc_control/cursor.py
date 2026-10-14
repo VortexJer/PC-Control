@@ -250,7 +250,28 @@ def mark_clicked(M, d):
     if not (u.GetAsyncKeyState(0x01) & 0x8000 or u.GetAsyncKeyState(0x02) & 0x8000):
         return False
     pt = wt.POINT(); u.GetCursorPos(ctypes.byref(pt))
-    return l - pad <= pt.x <= r + pad and t - pad <= pt.y <= b + pad
+    return l - pad <= pt.x <= r + pad and t - pad <= pt.y <= b + pad and _owner_under(M.get("owner"), (pt.x, pt.y))
+
+
+def _owner_under(owner, pt):
+    """True if the window the user is really pointing at, at screen point `pt`, is the one the outline belongs to (or its Store-app frame).
+    Otherwise a click on whatever else lies over that part of the screen would count as "they did it". The outline itself is click-through."""
+    if not owner:
+        return True
+    import win32gui
+    try:
+        top = u_root(win32gui.WindowFromPoint(pt))
+        mine = u_root(owner)
+        if top in (owner, mine):
+            return True
+        title = win32gui.GetWindowText(owner)
+        return bool(title) and win32gui.GetWindowText(top) == title             # a Store app: the content window is hosted in a frame with the same title
+    except Exception:
+        return True
+
+
+def u_root(h):
+    return _u.GetAncestor(h, 2) or h
 
 
 def mark_done(M, d):
