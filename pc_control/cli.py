@@ -47,6 +47,8 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
    - `scroll(window, "down", target=id, amount=2)` scrolls by pages, or `top`/`bottom`.
    - `type` on a drop-down or list picks the entry with that text.
    - If the user asks WHERE to click ("where is the button to...?"), answer with `show` (a circle around it), do not click it for them. For a task with several steps ("how do I do X?"), use `wait_for` once per step: it circles the element and waits until the user clicks it, then give the next step.
+   - FAST: every call costs a round trip. Elements can be targeted by NAME without a prior `look`, and several actions on one window go in ONE
+     `steps` call (e.g. click "File", click "Save", type the name, key enter); it stops by itself if a step fails or needs the user's permission.
    - Excel: the grid is not in `look`; `read(window)` gives the cells and `type(window, "B3", text)` writes one (`=...` = formula).
    - Keep `look` in mode auto: ask for `mode=image` only when the text really is not enough (an image costs several times more).
 
