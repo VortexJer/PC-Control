@@ -201,8 +201,10 @@ finally:
 c["a window that no longer exists (a click on Close ended it) gives no key and no crash"] = _s3._mouse_key(999999999) is None and _s3._press_directly(999999999) is False
 c["typing that cannot be read back is reported as NOT CONFIRMED, not as ok"] = "NOT CONFIRMED" in _s3.verdict("ok (3 characters through WM_CHAR; unconfirmed)", "no changes")
 c["typing that WAS read back still says so"] = "confirmed by reading" in _s3.verdict("ok (WM_SETTEXT) | read back: the field now contains the text (\"x\")", "no changes")
+c["typing that could not be read back but made the window change like typing does is reported as probably arrived"] = "probably arrived" in _s3.verdict("ok (11 characters through WM_CHAR to the window; unconfirmed)", "+ Ln 1, Col 12 | - Ln 1, Col 1")
+c["a window that is not a Chromium/Electron one has no page widget to type into"] = _s3.core.chromium_input(0) == 0
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 33 and all(c.values())
+ok = len(c) == 35 and all(c.values())
 print(f"steps verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

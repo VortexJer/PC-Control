@@ -1003,7 +1003,21 @@ def _focus_hwnd(hwnd):
                     ("hwndCapture", ctypes.c_void_p), ("hwndMenuOwner", ctypes.c_void_p), ("hwndMoveSize", ctypes.c_void_p),
                     ("hwndCaret", ctypes.c_void_p), ("rcCaret", ctypes.c_long * 4)]
     g = GTI(); g.cbSize = ctypes.sizeof(GTI); ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(g))
-    return g.hwndFocus or hwnd
+    return g.hwndFocus or chromium_input(hwnd) or hwnd
+
+
+def chromium_input(hwnd):
+    """The window of a Chromium / Electron app (Chrome, Edge, VS Code, Spotify, Discord, Slack...) that RECEIVES the keys: the child that draws the page.
+    Messages posted to the top-level window are ignored by these apps, and a window that is not active has no focus window to ask for."""
+    try:
+        if not win32gui.GetClassName(hwnd).startswith("Chrome_WidgetWin"):
+            return 0
+        kids = []
+        win32gui.EnumChildWindows(hwnd, lambda k, _: kids.append(k) if win32gui.GetClassName(k) == "Chrome_RenderWidgetHostHWND" else None, None)
+        return kids[0] if kids else 0
+    except Exception:
+        return 0
+
 
 def word_caret(hwnd):
     """Where CLAUDE's insertion point in Word is (x, center_y, height) on screen, through COM. None if it is not visible."""
@@ -1065,9 +1079,16 @@ def type_text(query, text, target=None, replace=False, progress=None):
                 pass
         dest = nh or None
     dest = dest or _focus_hwnd(hwnd)
+    page = dest == chromium_input(hwnd) and dest != 0
+    if page and target is not None and st and target in st["items"] and st["items"][target].ctrl is not None:
+        try:
+            st["items"][target].ctrl.SetFocus()                               # inside the page: which element receives the keys (the app is not brought to the front)
+        except Exception:
+            pass
     for ch in text.replace("\r\n", "\n").replace("\n", "\r"):                  # a line break is Enter (CR), not LF
         win32gui.PostMessage(dest, win32con.WM_CHAR, ord(ch), 0)
-    return f"ok ({len(text)} characters through WM_CHAR; unconfirmed)"
+    where = "to the page of this Chromium/Electron app" if page else "to the window"
+    return f"ok ({len(text)} characters through WM_CHAR {where}; unconfirmed)"
 
 _VK = {"enter": 0x0D, "tab": 0x09, "esc": 0x1B, "up": 0x26, "down": 0x28, "left": 0x25, "right": 0x27,
        "backspace": 0x08, "delete": 0x2E, "home": 0x24, "end": 0x23, "pgup": 0x21, "pgdn": 0x22, "space": 0x20,
