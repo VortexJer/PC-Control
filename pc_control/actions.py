@@ -263,7 +263,14 @@ def select_text(query, target, needle):
             if r is None:
                 return f"«{needle[:60]}» is not in that text | NOT EXECUTED"
             r.Select()
-            return f"selected «{needle[:60]}» (UI Automation text selection)"
+            try:                                                      # read the selection back: what the app really holds, drawn or not
+                got = tp.GetSelection()[0].GetText(-1)
+            except Exception:
+                got = None
+            if got is not None and needle.lower() not in got.lower():
+                return f"did not select «{needle[:60]}»: the app reports another selection ({got[:40]!r})"
+            return (f"selected «{needle[:60]}» (UI Automation text selection" + (", confirmed by reading it back" if got is not None else "") +
+                    "). A window that is not the active one often does not DRAW its selection: it is held anyway")
     except Exception:
         pass
     nh, cls = core._native(c)

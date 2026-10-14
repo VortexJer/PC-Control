@@ -301,11 +301,27 @@ python tests/test_identity.py     # what is re-verified before acting (mocks + a
 python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause, the package rename and its migration
 python tests/test_hidden_cleanup.py   # apps on the hidden desktop end with the session (shutdown, kill, leftovers of older versions)
+python tests/test_guard_descriptor.py # every tool has an inherit/review decision for HOL Guard (fails when a new tool has none)
 python tests/test_steps.py        # steps: several actions in one call, stops on failure or permission
 python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data
 ```
 
+### HOL Guard
+
+[HOL Guard](https://github.com/hashgraph-online/hol-guard) lists PC-Control in `contributions/mcp-servers/mcp.pc-control.json` (in its repository): which
+tools it should ask about (`review`) and which it can let through (`inherit`). When a tool is added here that list goes stale, so it is generated from
+the live server. The one decision per tool lives in `tools/guard_descriptor.py`; a new tool is `review` until it is classified there, and
+`tests/test_guard_descriptor.py` fails until it is.
+
+```
+python tools/guard_descriptor.py --guard-repo PATH_TO_HOL_GUARD            # show what would change
+python tools/guard_descriptor.py --guard-repo PATH_TO_HOL_GUARD --check    # exit 1 if it is out of date (release checklist)
+python tools/guard_descriptor.py --guard-repo PATH_TO_HOL_GUARD --write    # update it and run Guard's own trust check
+```
+
+It only rewrites the tool list, the "keep ... on review" sentence and the pinned version. It never opens a pull request: sending the change to
+Guard is a human decision.
 ## Tested with
 
 Besides the throw-away test windows: Word, Excel, PowerPoint, Notepad, File Explorer, Edge (web pages), Calculator, Paint, Settings,

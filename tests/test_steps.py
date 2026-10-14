@@ -86,8 +86,43 @@ try:
 finally:
     actions.core.find_window, actions.core._native, actions._wm_text, actions.win32gui.SendMessage = sv[:4]
     actions.core._state.clear(); actions.core._state.update(sv[4])
+# a multi-line field read back with its line breaks dropped is NOT a failed typing
+real_fv = core.field_value
+try:
+    core.field_value = lambda ctrl, editable_only=False: "Primera lineaSegunda lineaTercera linea"
+    c["multi-line typing is confirmed even if the app reports the field without line breaks"] = "does NOT contain" not in core._read_back(object(), "Primera linea\nSegunda linea\nTercera linea", False)
+    c["a really different text is still flagged"] = "does NOT contain" in core._read_back(object(), "otra cosa\ndistinta", False)
+finally:
+    core.field_value = real_fv
+# UI Automation selection (modern apps): the selection is read back from the app; a different one is reported as failed
+class _Rng:
+    def __init__(self, text): self.text = text; self.selected = False
+    def Select(self): self.selected = True
+    def GetText(self, n): return self.text
+class _Doc:
+    def __init__(self, found, held): self.found, self.held = found, held
+    def FindText(self, needle, back, ignore): return self.found
+class _TP:
+    def __init__(self, found, held): self.DocumentRange = _Doc(found, held); self._held = held
+    def GetSelection(self): return [_Rng(self._held)]
+class _UCtrl:
+    IsPassword = False; Name = "Editor"; AutomationId = ""; HelpText = ""
+    def __init__(self, tp): self.tp = tp
+    def GetTextPattern(self): return self.tp
+sv2 = (actions.core.find_window, actions.core._state.copy())
+try:
+    actions.core.find_window = lambda q: 1
+    actions.core._state[1] = {"items": {3: SimpleNamespace(ctrl=_UCtrl(_TP(_Rng("Segunda linea"), "Segunda linea")))}}
+    r = actions.select_text("w", 3, "Segunda linea")
+    c["a UI Automation selection is confirmed by reading it back"] = r.startswith("selected") and "confirmed by reading it back" in r
+    actions.core._state[1] = {"items": {3: SimpleNamespace(ctrl=_UCtrl(_TP(_Rng("Segunda linea"), "otra cosa")))}}
+    r = actions.select_text("w", 3, "Segunda linea")
+    c["if the app holds another selection it is reported as NOT selected"] = r.startswith("did not select")
+finally:
+    actions.core.find_window = sv2[0]
+    actions.core._state.clear(); actions.core._state.update(sv2[1])
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 12 and all(c.values())
+ok = len(c) == 16 and all(c.values())
 print(f"steps verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
