@@ -61,7 +61,7 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
   the answer lists the ones the app has.
 - Delicate actions (pay, delete, send, install) and protected windows are asked by PC-Control itself (you cannot answer for the user).
   PC-Control never types into password fields.
-- `open_app` opens the app minimized with its taskbar button; the user sees what you do by opening it. Use `hidden=true` (an invisible desktop) ONLY when the user asks not to see the app. A minimized app is read as text, not as an image.
+- `open_app` opens the app minimized with its taskbar button; the user sees what you do by opening it. Use `hidden=true` (an invisible desktop) ONLY when the user explicitly asks not to see the app: never for tests or demos, where the user wants to watch. A minimized app is read as text, not as an image.
 - Word: Claude has its OWN insertion point (a hidden bookmark). `type` writes there through COM, without touching the user's selection or
   caret, and the answer says in which paragraph and after which words the text landed (check that it is what you expected). The formatting
   buttons (bold, italic, alignment...) apply to what Claude writes, not to the user's selection, so the user can click anywhere without
