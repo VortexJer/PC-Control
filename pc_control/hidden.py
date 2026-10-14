@@ -31,12 +31,85 @@ class _PROCESS_INFORMATION(ctypes.Structure):
     _fields_ = [("hProcess", wt.HANDLE), ("hThread", wt.HANDLE), ("dwProcessId", wt.DWORD), ("dwThreadId", wt.DWORD)]
 
 
+# A job object that kills everything in it when the server dies, however it dies (EOF, crash, killed): the apps PC-Control starts on the
+# hidden desktop can then never outlive their session.
+_k.CreateJobObjectW.restype = wt.HANDLE
+_k.CreateJobObjectW.argtypes = [ctypes.c_void_p, wt.LPCWSTR]
+_k.AssignProcessToJobObject.argtypes = [wt.HANDLE, wt.HANDLE]
+_k.SetInformationJobObject.argtypes = [wt.HANDLE, ctypes.c_int, ctypes.c_void_p, wt.DWORD]
+_u.EnumDesktopsW.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.LPARAM]
+_u.OpenDesktopW.restype = wt.HANDLE
+_u.OpenDesktopW.argtypes = [wt.LPCWSTR, wt.DWORD, wt.BOOL, wt.DWORD]
+_u.EnumDesktopWindows.argtypes = [wt.HANDLE, ctypes.c_void_p, wt.LPARAM]
+_u.GetProcessWindowStation.restype = wt.HANDLE
+
+
+class _JOB_BASIC(ctypes.Structure):
+    _fields_ = [("PerProcessUserTimeLimit", ctypes.c_int64), ("PerJobUserTimeLimit", ctypes.c_int64), ("LimitFlags", wt.DWORD),
+                ("MinimumWorkingSetSize", ctypes.c_size_t), ("MaximumWorkingSetSize", ctypes.c_size_t), ("ActiveProcessLimit", wt.DWORD),
+                ("Affinity", ctypes.c_size_t), ("PriorityClass", wt.DWORD), ("SchedulingClass", wt.DWORD)]
+
+
+class _JOB_EXTENDED(ctypes.Structure):
+    _fields_ = [("Basic", _JOB_BASIC), ("IoInfo", ctypes.c_uint64 * 6), ("ProcessMemoryLimit", ctypes.c_size_t),
+                ("JobMemoryLimit", ctypes.c_size_t), ("PeakProcessMemoryUsed", ctypes.c_size_t), ("PeakJobMemoryUsed", ctypes.c_size_t)]
+
+
+def _make_kill_job():
+    """A job object whose processes are all killed when its last handle closes (our process dying closes it). None if it cannot be made."""
+    job = _k.CreateJobObjectW(None, None)
+    if not job:
+        return None
+    info = _JOB_EXTENDED(); info.Basic.LimitFlags = 0x2000                       # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not _k.SetInformationJobObject(job, 9, ctypes.byref(info), ctypes.sizeof(info)):      # JobObjectExtendedLimitInformation
+        _k.CloseHandle(job); return None
+    return job
+
+
+def _terminate(pid):
+    hp = _k.OpenProcess(0x0001, False, pid)                                       # PROCESS_TERMINATE
+    if hp:
+        _k.TerminateProcess(hp, 0); _k.CloseHandle(hp)
+
+
+def _alive(pid):
+    hp = _k.OpenProcess(0x00100000, False, pid)                                   # SYNCHRONIZE
+    if not hp:
+        return False
+    try:
+        return _k.WaitForSingleObject(hp, 0) == 0x102                             # WAIT_TIMEOUT: still running
+    finally:
+        _k.CloseHandle(hp)
+
+
+def reap_orphans():
+    """Desktops named pc_control_<pid> whose server (pid) is gone: whatever still has a window there is ended. They are ONLY ours. Older
+    versions ended the server without closing its desktop, so apps stayed alive on a desktop nobody could see. Returns the pids ended."""
+    names = []
+    _ENUM = ctypes.WINFUNCTYPE(wt.BOOL, wt.LPWSTR, wt.LPARAM)
+    _u.EnumDesktopsW(_u.GetProcessWindowStation(), _ENUM(lambda n, _: names.append(n) or True), 0)
+    ended = []
+    for name in names:
+        if not name.lower().startswith("pc_control_") or not name[11:].isdigit() or _alive(int(name[11:])):
+            continue
+        hd = _u.OpenDesktopW(name, 0, False, 0x41)                                # DESKTOP_READOBJECTS | DESKTOP_ENUMERATE
+        if not hd:
+            continue
+        pids = set()
+        _WENUM = ctypes.WINFUNCTYPE(wt.BOOL, wt.HWND, wt.LPARAM)
+        _u.EnumDesktopWindows(hd, _WENUM(lambda h, _: pids.add(win32process.GetWindowThreadProcessId(h)[1]) or True), 0)
+        _u.CloseDesktop(hd)
+        for pid in pids - {os.getpid(), 0}:
+            _terminate(pid); ended.append(pid)
+    return ended
+
 class HiddenDesktop:
     def __init__(self):
         self.name = f"pc_control_{os.getpid()}"
         self.h = None
         self.pool = None
         self.procs = {}                 # pid -> process handle
+        self.job = None                 # kills what we launched when this process ends, however it ends
         atexit.register(self.close)
 
     # -- lifecycle --
@@ -63,23 +136,22 @@ class HiddenDesktop:
     def close(self):
         if self.h and self.pool:                         # apps that re-launch themselves (Store apps) run under another pid: end them too
             try:
-                own = {p for _, _, p in self.windows()} - set(self.procs) - {os.getpid()}
+                own = {p for _, _, p in self.pool.submit(self._enum).result(timeout=3)} - set(self.procs) - {os.getpid()}
             except Exception:
                 own = set()
             for pid in own:
-                hp = _k.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
-                if hp:
-                    _k.TerminateProcess(hp, 0); _k.CloseHandle(hp)
+                _terminate(pid)
         for pid, hp in list(self.procs.items()):
             _k.TerminateProcess(hp, 0)
             _k.CloseHandle(hp)
         self.procs.clear()
+        if self.job:                                     # kills anything that is left (children of the apps)
+            _k.CloseHandle(self.job); self.job = None
         if self.pool:
             self.pool.shutdown(wait=False)
         if self.h:
             _u.CloseDesktop(self.h)
             self.h = None
-
     # -- processes and windows --
     def launch(self, command):
         self.ensure()
@@ -90,6 +162,10 @@ class HiddenDesktop:
         if not _k.CreateProcessW(None, buf, None, None, False, 0x08000000, None, app_dir(command), ctypes.byref(si), ctypes.byref(pi)):
             raise OSError(f"could not launch the app (error {ctypes.get_last_error()})")
         _k.CloseHandle(pi.hThread)
+        if self.job is None:
+            self.job = _make_kill_job()
+        if self.job:
+            _k.AssignProcessToJobObject(self.job, pi.hProcess)           # best effort: if it fails, close() still ends it
         self.procs[pi.dwProcessId] = pi.hProcess
         return pi.dwProcessId
 

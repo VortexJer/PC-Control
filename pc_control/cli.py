@@ -326,11 +326,9 @@ def _heal_legacy_dist():
     if log:
         _, src = _installed()
         target = ["-e", src] if src else [REPO_ZIP]
-        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--force-reinstall", "--no-deps"] + target, capture_output=True, text=True)
         if q.returncode != 0:
-            _restore_launchers(moved)
-            raise RuntimeError(f"could not put '{DIST}' back after removing the old package: {(q.stdout + q.stderr).strip()[-300:]}")
+                raise RuntimeError(f"could not put '{DIST}' back after removing the old package: {(q.stdout + q.stderr).strip()[-300:]}")
         log.append(f"'{DIST}' reinstalled")
     return log
 
@@ -345,35 +343,20 @@ def _script_dirs():
     return [d for d in dict.fromkeys(dirs) if d]
 
 
-def _free_launchers(dirs=None):
-    """Windows will not let pip replace a program that is running, and the `pc-control-mcp` server of every open Claude Code session
-    is one. It DOES let a running program be renamed: move the launchers out of the way (`.old`), so pip can write new ones.
-    Returns [(original, moved)] so a failed update can put them back; leftovers of earlier updates are deleted when possible."""
-    moved = []
-    for d in (dirs if dirs is not None else _script_dirs()):
-        for name in ("pc-control-mcp.exe", "pc-control.exe"):
-            f, old = os.path.join(d, name), os.path.join(d, name + ".old")
-            try:
-                if os.path.exists(old):
-                    os.remove(old)
-            except OSError:
-                old = f"{old}.{os.getpid()}"                                 # the previous one is still running: another name
-            if os.path.exists(f):
-                try:
-                    os.replace(f, old); moved.append((f, old))
-                except OSError:
-                    pass                                                     # not locked, or no rights: pip will say if it matters
-    return moved
+def _running_servers():
+    """PIDs of the PC-Control MCP servers running right now (one per open Claude Code session that uses it). Windows will not let pip
+    replace `pc-control-mcp.exe` while they run, and the launcher cannot even be renamed: its child python keeps the file open."""
+    if os.name != "nt":
+        return []
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*pc-control-mcp.ex[e]*' } "
+          "| ForEach-Object { $_.ProcessId }")                                  # `ex[e]`: this very command line does not match itself
+    p = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
+    return sorted({int(x) for x in p.stdout.split() if x.isdigit() and int(x) != os.getpid()})
 
 
-def _restore_launchers(moved):
-    """pip failed: give back the launchers that were moved aside (unless pip already wrote new ones)."""
-    for f, old in moved:
-        try:
-            if not os.path.exists(f) and os.path.exists(old):
-                os.replace(old, f)
-        except OSError:
-            pass
+def _stop_servers(pids):
+    for pid in pids:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True)
 
 def _installed():
     """(version, editable source folder or None) of the installed package."""
@@ -393,9 +376,17 @@ def _code_version():
     return p.stdout.strip() or "?"
 
 
-def update():
+def update(stop_servers=False):
     """Bring the installed PC-Control up to date from ANY earlier version, then reinstall it with the same settings."""
     log = []
+    pids = _running_servers()
+    if pids:                                                          # before touching anything: a half update is worse than a clear message
+        if not stop_servers:
+            raise RuntimeError(f"PC-Control's server is running (processes {", ".join(map(str, pids))}; each open Claude Code session that uses it has one) "
+                               f"and Windows will not let it be replaced meanwhile. Close those sessions and run `pc-control update` again, "
+                               f"or run `pc-control update --stop-servers` (their PC-Control tools stop until you open a new session).")
+        _stop_servers(pids)
+        log.append(f"stopped {len(pids)} running PC-Control server process(es): {", ".join(map(str, pids))}")
     before = _code_version()
     _, src = _installed()
     if src and os.path.isdir(os.path.join(src, ".git")):              # installed from a checkout (pip install -e): pull it
@@ -404,14 +395,11 @@ def update():
             raise RuntimeError(f"git pull failed in {src}: {(p.stdout + p.stderr).strip()[:300]}")
         log.append(f"source updated ({src}): {(p.stdout.strip().splitlines() or ['ok'])[-1]}")
         log += drop_legacy_dist()
-        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", src], capture_output=True, text=True)
     else:                                                             # a normal install: the latest version from GitHub (no git needed)
         log += drop_legacy_dist()
-        moved = _free_launchers()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
     if q.returncode != 0:
-        _restore_launchers(moved)
         raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
     r = subprocess.run([sys.executable, "-m", "pc_control.cli", "reinstall"], capture_output=True, text=True,
                        encoding="utf-8", errors="replace")                          # the NEW code installs itself
@@ -580,7 +568,8 @@ def main(argv=None):
     sub.add_parser("pause", help="kill switch: every tool refuses")
     sub.add_parser("resume", help="remove the pause")
     sub.add_parser("serve", help="launch the MCP server (what Claude Code runs)")
-    sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
+    up = sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
+    up.add_argument("--stop-servers", action="store_true", help="stop the PC-Control servers of open Claude Code sessions (Windows cannot replace a running one)")
     sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
     a = ap.parse_args(argv)
     try:
@@ -593,7 +582,7 @@ def main(argv=None):
         elif a.cmd in ("pause", "resume"):
             set_pause(a.cmd == "pause"); print("paused" if a.cmd == "pause" else "resumed")
         elif a.cmd == "update":
-            print("\n".join(update()))
+            print("\n".join(update(a.stop_servers)))
         elif a.cmd == "reinstall":
             print("\n".join(reinstall()))
         elif a.cmd == "serve":

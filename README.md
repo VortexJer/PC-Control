@@ -300,6 +300,7 @@ python tests/test_launcher.py     # a launcher whose window belongs to a child p
 python tests/test_identity.py     # what is re-verified before acting (mocks + a real Buy/Sell toggle)
 python tests/test_fuzz.py         # 59 bad or odd inputs through the real protocol: clear answers, no crashes
 python tests/test_cli.py          # install / uninstall / status / pause, the package rename and its migration
+python tests/test_hidden_cleanup.py   # apps on the hidden desktop end with the session (shutdown, kill, leftovers of older versions)
 python tests/test_steps.py        # steps: several actions in one call, stops on failure or permission
 python tests/test_lifecycle.py    # the server exits with Claude Code (EOF or abrupt death), whether launched as a module or as pc-control-mcp
 python tests/test_hygiene.py      # license, README, no personal data
