@@ -121,8 +121,42 @@ try:
 finally:
     actions.core.find_window = sv2[0]
     actions.core._state.clear(); actions.core._state.update(sv2[1])
+# programs that could not be read minimized are remembered, and open_app then starts them behind the user's windows
+import tempfile
+from pc_control import server as _srv
+_home = tempfile.mkdtemp(prefix="pc-control_behind_")
+real_home, real_behind, real_min, real_mode = _srv.HOME, _srv.core.open_behind, _srv.core.open_minimized, _srv.policy.mode
+calls3 = []
+try:
+    _srv.HOME = _home
+    c["nothing is remembered at first"] = _srv._learned_behind() == set()
+    _srv._learn_behind("Spotify"); _srv._learn_behind("spotify"); _srv._learn_behind("")
+    c["a program is remembered once, in lower case, and an empty name is ignored"] = _srv._learned_behind() == {"spotify"} and len(open(_srv._behind_file(), encoding="utf-8").read().split()) == 1
+    _srv.policy.mode = lambda: "bypass"
+    _srv.core.open_behind = lambda command, exe, **k: calls3.append(("behind", exe)) or {"pid": 1, "windows": [], "note": "x", "foco_intacto": True}
+    _srv.core.open_minimized = lambda command, **k: calls3.append(("minimized", command)) or {"pid": 1, "windows": [], "note": "x"}
+    _srv.RAW["open_app"]("spotify.exe", confirm=True)
+    _srv.RAW["open_app"]("someotherapp.exe", confirm=True)
+    _srv.RAW["open_app"]("someotherapp.exe", behind=True, confirm=True)
+    c["open_app starts a remembered program behind, an unknown one minimized, and behind=true always behind"] = calls3 == [("behind", "spotify"), ("minimized", "someotherapp.exe"), ("behind", "someotherapp")]
+    r = _srv.core.open_behind  # noqa
+finally:
+    _srv.HOME, _srv.core.open_behind, _srv.core.open_minimized, _srv.policy.mode = real_home, real_behind, real_min, real_mode
+    import shutil as _sh; _sh.rmtree(_home, ignore_errors=True)
+# closing and reopening an app is only for one that open_app opened a moment ago, never for one the user may be using
+import time as _tm
+from pc_control import server as _s2
+_s2.OPENED.add(11111); _s2.OPENED_AT[11111] = _tm.time()
+_s2.OPENED.add(22222); _s2.OPENED_AT[22222] = _tm.time() - 600
+try:
+    c["an app opened a moment ago counts as fresh"] = _s2._fresh(11111) is True
+    c["an app opened long ago (the user may have taken it over) is not fresh"] = _s2._fresh(22222) is False
+    c["a window open_app never opened (the user's) is never fresh"] = _s2._fresh(33333) is False
+finally:
+    for _h in (11111, 22222):
+        _s2.OPENED.discard(_h); _s2.OPENED_AT.pop(_h, None)
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 16 and all(c.values())
+ok = len(c) == 22 and all(c.values())
 print(f"steps verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)

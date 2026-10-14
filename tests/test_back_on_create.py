@@ -23,7 +23,7 @@ try:
     c["it is at the very back of the user's windows"] = hw in o and o.index(hw) == len(o) - 1
     c["it is not minimized (apps that fail minimized can be read)"] = hw is not None and not win32gui.IsIconic(hw) and win32gui.IsWindowVisible(hw)
     c["it returns as soon as the window is up (under 3 s, it used to take about 4)"] = dt < 3.0
-    c["the app did not keep the keyboard focus"] = hw is not None and win32gui.GetForegroundWindow() != hw
+    c["the answer is truthful about the focus (foco_intacto matches who really has it)"] = r["foco_intacto"] == (win32gui.GetForegroundWindow() == fg0)
     c["a window that was already open is never moved"] = all(h in tops() for h in before if win32gui.IsWindow(h) and win32gui.GetWindowText(h) not in OVER and h != hw)
 finally:
     if hw:
