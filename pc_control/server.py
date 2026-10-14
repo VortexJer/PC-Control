@@ -26,7 +26,7 @@ except ImportError:                               # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image, Context
     from mcp.server.fastmcp.exceptions import ToolError
 from . import actions, core, cursor, envvars, office, perm, policy
-from .hidden import DESK
+from .hidden import DESK, reap_orphans
 
 NOTICE_SECONDS = 10.0                 # how long the notice banner lasts, and how long to wait for the user to put the window back as it was
 HOME = envvars.get("HOME") or os.path.join(os.path.expanduser("~"), ".pc-control")
@@ -869,6 +869,10 @@ def _shutdown():
         time.sleep(0.15)                                  # let the cursor thread hide and destroy its windows
     except Exception:
         pass
+    try:
+        DESK.close()                                      # os._exit skips atexit: end what runs on the hidden desktop here (the kill-on-close job covers a crash)
+    except Exception:
+        pass
     os._exit(0)
 
 
@@ -911,6 +915,10 @@ _slim_schemas()
 def main():
     _clean_old_log()
     _watch_parent()
+    try:
+        reap_orphans()                                     # apps left on the hidden desktop of a server that is gone (older versions)
+    except Exception:
+        pass
     try:
         mcp.run()
     finally:                                               # the connection closed (EOF) or something failed: leave no cursors or process behind

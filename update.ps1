@@ -7,6 +7,7 @@
   2. Runs the NEW code's `pc-control reinstall`: same mode/scope/options as before, and whatever an earlier version left behind
      (old server name, skill, CLAUDE.md block, hooks, permission rules) is removed. Open a NEW Claude Code session afterwards.
 #>
+param([switch]$StopServers)
 $ErrorActionPreference = 'Stop'
 $zip = 'https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip'
 if (-not (Get-Command python -ErrorAction SilentlyContinue)) { throw 'Python was not found in PATH.' }
@@ -28,24 +29,16 @@ function Remove-LegacyPackage {
     }
 }
 
-# Windows will not let pip replace a program that is running, and the `pc-control-mcp` server of every open Claude Code session is one.
-# A running program CAN be renamed: move the launchers aside (.old) so pip can write new ones; put them back if pip fails.
-$script:moved = @()
-function Move-RunningLaunchers {
-    $r = Get-Python "import sysconfig; print(sysconfig.get_path('scripts')); print(sysconfig.get_path('scripts', 'nt_user'))"
-    if (-not $r.ok) { return }
-    foreach ($dir in ($r.out | Select-Object -Unique)) {
-        foreach ($name in 'pc-control-mcp.exe', 'pc-control.exe') {
-            $f = Join-Path $dir $name; $old = "$f.old"
-            if (-not (Test-Path $f)) { continue }
-            Remove-Item $old -Force -ErrorAction SilentlyContinue
-            if (Test-Path $old) { $old = "$old.$PID" }
-            try { Move-Item $f $old -Force -ErrorAction Stop; $script:moved += , @($f, $old) } catch { }
-        }
+# Windows will not let pip replace `pc-control-mcp.exe` while it runs (one server per open Claude Code session that uses PC-Control), and
+# the launcher cannot even be renamed. Say so BEFORE touching anything, or stop those servers when asked with -StopServers.
+$servers = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*pc-control-mcp.ex[e]*' })
+if ($servers.Count) {
+    $ids = ($servers | ForEach-Object { $_.ProcessId }) -join ', '
+    if (-not $StopServers) {
+        throw "PC-Control's server is running (processes ${ids}; each open Claude Code session that uses it has one) and Windows will not let it be replaced meanwhile. Close those sessions and run this again, or run it with -StopServers (their PC-Control tools stop until you open a new session)."
     }
-}
-function Restore-Launchers {
-    foreach ($m in $script:moved) { if (-not (Test-Path $m[0]) -and (Test-Path $m[1])) { Move-Item $m[1] $m[0] -Force -ErrorAction SilentlyContinue } }
+    $servers | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
+    Write-Host "Stopped the running PC-Control server processes: $ids"
 }
 # where the installed code lives (empty if PC-Control is not installed, e.g. only the old "pcsight" is)
 $probe = Get-Python "import os, pc_control; print(os.path.dirname(os.path.dirname(os.path.abspath(pc_control.__file__))))"
@@ -54,14 +47,12 @@ if ($probe.ok -and $src -and (Test-Path (Join-Path $src '.git')) -and (Test-Path
     & git -C $src pull --ff-only
     if ($LASTEXITCODE -ne 0) { throw "git pull failed in $src" }
     Remove-LegacyPackage
-    Move-RunningLaunchers
     & python -m pip install -q -e $src
 } else {
     Remove-LegacyPackage
-    Move-RunningLaunchers
     & python -m pip install -q --upgrade $zip
 }
-if ($LASTEXITCODE -ne 0) { Restore-Launchers; throw 'pip install failed.' }
+if ($LASTEXITCODE -ne 0) { throw 'pip install failed.' }
 
 & python -m pc_control.cli reinstall
 if ($LASTEXITCODE -ne 0) { throw 'pc-control reinstall failed.' }

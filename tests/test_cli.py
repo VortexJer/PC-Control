@@ -203,31 +203,32 @@ for ps1 in ("install.ps1", "update.ps1"):                    # PowerShell 5.1: a
     c[f"{ps1}: the 'is the old package there?' probe cannot abort the script when it is not there"] = (
         "$ErrorActionPreference = 'Continue'" in s and "sys.exit(0 if 'pc-control' in" in s and "m.distribution('pc-control')" not in s)
 c["uninstall.ps1: removes the package under either name"] = "pip uninstall -y claude-pc-control pc-control" in rd_ps("uninstall.ps1")
-# a RUNNING launcher (the MCP server of an open session) cannot be overwritten by pip, but it can be renamed: the update moves it aside
-import tempfile, shutil as _sh, subprocess as _sp, time as _t
-tmp = tempfile.mkdtemp(prefix="pc-control_launcher_")
-proc = None
+# Windows cannot replace pc-control-mcp.exe while a Claude Code session runs it (and cannot even rename it): update must say so BEFORE touching anything
+calls = []
+real = (cli._running_servers, cli._stop_servers, cli.subprocess.run)
 try:
-    exe = os.path.join(tmp, "pc-control-mcp.exe")
-    _sh.copy2(sys.executable, exe)
-    proc = _sp.Popen([exe, "-c", "import time; time.sleep(60)"], creationflags=0x08000000); _t.sleep(1.0)
+    cli._running_servers = lambda: [111, 222]
+    cli._stop_servers = lambda pids: calls.append(("stop", list(pids)))
+    cli.subprocess.run = lambda *a, **k: calls.append(("run", a[0][:3] if a else None)) or (_ for _ in ()).throw(AssertionError("must not run anything"))
     try:
-        os.remove(exe); locked = False
-    except OSError:
-        locked = True
-    c["test setup: a running copy of the launcher really is locked against deletion"] = locked
-    moved = cli._free_launchers([tmp])
-    c["a running launcher is moved aside so pip can write a new one"] = (not os.path.exists(exe)) and os.path.exists(exe + ".old") and proc.poll() is None and len(moved) == 1
-    open(exe, "w").close()                                                    # pip writes the new launcher
-    cli._restore_launchers(moved)
-    c["restoring never overwrites a launcher pip already wrote"] = os.path.getsize(exe) == 0
-    os.remove(exe); cli._restore_launchers(moved)
-    c["a failed update puts the old launcher back"] = os.path.exists(exe) and os.path.getsize(exe) > 1000
+        cli.update()
+        msg = ""
+    except RuntimeError as e:
+        msg = str(e)
+    c["update with servers running stops first, explains and touches nothing"] = ("111" in msg and "222" in msg and "--stop-servers" in msg and calls == [])
+    def _stop_then_halt(*a, **k):
+        raise StopIteration                                            # the first real command after the stop: enough to know the order
+    cli.subprocess.run = _stop_then_halt
+    try:
+        cli.update(stop_servers=True)
+    except StopIteration:
+        pass
+    c["with --stop-servers it stops exactly those servers before anything else"] = calls == [("stop", [111, 222])]
 finally:
-    if proc is not None:
-        proc.kill(); proc.wait()
-    _sh.rmtree(tmp, ignore_errors=True)
-c["update.ps1: moves running launchers aside before each pip install and restores them if pip fails"] = rd_ps("update.ps1").count("Move-RunningLaunchers") == 3 and "Restore-Launchers; throw" in rd_ps("update.ps1")
+    cli._running_servers, cli._stop_servers, cli.subprocess.run = real
+c["the command line exposes --stop-servers"] = "--stop-servers" in open(cli.__file__, encoding="utf-8").read()
+c["update.ps1: checks for running servers first and stops them only with -StopServers"] = (
+    "param([switch]$StopServers)" in rd_ps("update.ps1") and "-StopServers" in rd_ps("update.ps1") and "Move-RunningLaunchers" not in rd_ps("update.ps1"))
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
