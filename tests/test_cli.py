@@ -203,6 +203,31 @@ for ps1 in ("install.ps1", "update.ps1"):                    # PowerShell 5.1: a
     c[f"{ps1}: the 'is the old package there?' probe cannot abort the script when it is not there"] = (
         "$ErrorActionPreference = 'Continue'" in s and "sys.exit(0 if 'pc-control' in" in s and "m.distribution('pc-control')" not in s)
 c["uninstall.ps1: removes the package under either name"] = "pip uninstall -y claude-pc-control pc-control" in rd_ps("uninstall.ps1")
+# a RUNNING launcher (the MCP server of an open session) cannot be overwritten by pip, but it can be renamed: the update moves it aside
+import tempfile, shutil as _sh, subprocess as _sp, time as _t
+tmp = tempfile.mkdtemp(prefix="pc-control_launcher_")
+proc = None
+try:
+    exe = os.path.join(tmp, "pc-control-mcp.exe")
+    _sh.copy2(sys.executable, exe)
+    proc = _sp.Popen([exe, "-c", "import time; time.sleep(60)"], creationflags=0x08000000); _t.sleep(1.0)
+    try:
+        os.remove(exe); locked = False
+    except OSError:
+        locked = True
+    c["test setup: a running copy of the launcher really is locked against deletion"] = locked
+    moved = cli._free_launchers([tmp])
+    c["a running launcher is moved aside so pip can write a new one"] = (not os.path.exists(exe)) and os.path.exists(exe + ".old") and proc.poll() is None and len(moved) == 1
+    open(exe, "w").close()                                                    # pip writes the new launcher
+    cli._restore_launchers(moved)
+    c["restoring never overwrites a launcher pip already wrote"] = os.path.getsize(exe) == 0
+    os.remove(exe); cli._restore_launchers(moved)
+    c["a failed update puts the old launcher back"] = os.path.exists(exe) and os.path.getsize(exe) > 1000
+finally:
+    if proc is not None:
+        proc.kill(); proc.wait()
+    _sh.rmtree(tmp, ignore_errors=True)
+c["update.ps1: moves running launchers aside before each pip install and restores them if pip fails"] = rd_ps("update.ps1").count("Move-RunningLaunchers") == 3 and "Restore-Launchers; throw" in rd_ps("update.ps1")
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
