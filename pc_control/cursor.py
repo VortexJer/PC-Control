@@ -273,6 +273,7 @@ class ClaudeCursor:
         self.thread = None
         self.ready = threading.Event()
         self.hwnds = {}                               # layer -> hwnd of its window ("pointer", "caret", "note")
+        self.mark_result = None                       # (token, why) when the last circle went away; wait_for reads it
 
     @property
     def hwnd(self):
@@ -295,7 +296,11 @@ class ClaudeCursor:
     def mark(self, rect, label="", hold=10.0, scale=1.0, owner=0):
         """Draw an orange oval around rect = (left, top, right, bottom) on screen, with an optional label, for `hold` seconds: to SHOW the
         user where something is (nothing is clicked). It follows its window if the user moves it."""
-        self._ensure(); self.q.put(("mark", tuple(int(v) for v in rect), str(label), float(hold), float(scale), int(owner)))
+        self._ensure()
+        self._mark_seq = getattr(self, "_mark_seq", 0) + 1
+        self.mark_result = None                                   # (token, "clicked" | "changed" | "timeout"): set when the circle goes away
+        self.q.put(("mark", tuple(int(v) for v in rect), str(label), float(hold), float(scale), int(owner), self._mark_seq))
+        return self._mark_seq
 
     def hide_note(self):
         if self.thread and self.thread.is_alive():
@@ -446,12 +451,12 @@ class ClaudeCursor:
                         N.update(on=True, owner=own, until=now + hold, data=(data, nw, nh, x - nw // 2, y), closing=False, dirty=True, a=0.0)
                         wins["note"].set_owner(own); N["org"] = origin(own) if own else None
                     elif cmd[0] == "mark":
-                        _, (l, t, r, b), label, hold, s, own = cmd
+                        _, (l, t, r, b), label, hold, s, own, M_token = cmd
                         data, mw, mh, ex, ey = render_mark(max(1, r - l), max(1, b - t), label, s)
                         wo = origin(own) if own else (0, 0)
                         M.update(on=True, owner=own, until=now + hold, data=(data, mw, mh, l - ex, t - ey), closing=False, dirty=True, a=0.0,
                                  rect=(l, t, r, b), rel=(l - wo[0], t - wo[1], r - wo[0], b - wo[1]) if wo else (0, 0, 0, 0),
-                                 base=None, t_shown=now, changed_since=None, next_check=now + 0.5, s=s)
+                                 base=None, t_shown=now, changed_since=None, next_check=now + 0.5, s=s, token=M_token)
                         wins["mark"].set_owner(own); M["org"] = origin(own) if own else None
                     elif cmd[0] == "hide_note":
                         N["closing"] = True
@@ -466,12 +471,16 @@ class ClaudeCursor:
                     continue
                 w, o = wins[name], L["owner"]
                 if name in ("note", "mark") and now > L["until"]:
+                    if name == "mark" and not L["closing"]:
+                        self.mark_result = (L.get("token"), "timeout")
                     L["closing"] = True
                 if name == "mark" and not L["closing"] and L["a"] > 0 and mark_clicked(L, L.get("d", (0, 0))):
+                    self.mark_result = (L.get("token"), "clicked")
                     L["closing"] = True                                    # the user clicked inside the circle: job done
                 if name == "mark" and not L["closing"] and now >= L["next_check"]:
                     L["next_check"] = now + 0.25
                     if mark_done(L, L.get("d", (0, 0))):                   # what is inside it changed: the user did it
+                        self.mark_result = (L.get("token"), "changed")
                         L["closing"] = True
                 if L.get("close_at") and now >= L["close_at"]:
                     L["closing"] = True; L["close_at"] = None
