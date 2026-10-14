@@ -471,7 +471,7 @@ def _act(hwnd, hidden, fn, note=""):
 
 @tool
 def windows(filter: str = "") -> str:
-    """Open windows ('hwnd | process | title'), most recent first; filter = text in the title or process (cheaper). [IN USE] = where the user works now; [LAST USED] = what they had in front before this chat. [mine] = opened by you. [PROTECTED] / [ASKS] = PC-Control asks the user itself before you act there. (hidden), (minimized)."""
+    """Open windows ('hwnd | process | title'), most recent first; filter = text in the title or process, "a|b" for either. [IN USE] = where the user works now; [LAST USED] = in front before this chat. [mine] = opened by you. [PROTECTED] / [ASKS] = PC-Control asks the user itself first. (hidden), (minimized), (cloaked)."""
     _paused()
     terms = [x.strip() for x in filter.lower().split("|") if x.strip()]         # "notepad|word": any of them
     flt = bool(terms)
@@ -514,7 +514,7 @@ def windows(filter: str = "") -> str:
 
 @tool
 def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confirm: bool = False):
-    """See a window without focusing it: UI-tree text, OCR or an image with numbered marks, whichever is cheapest (keep mode=auto). Elements are [id:name]; ids stay valid (find never renumbers). 'blind n/m' = zones with content but no text (mode=image shows them). window = title substring or hwnd. find="Save|Cancel": only the matching elements, also out of view (cheapest way to locate something); "!Loading" = until that text is gone; wait=N seconds polls."""
+    """See a window without focusing it: UI-tree text, OCR or an image with numbered marks, whichever is cheapest (keep mode=auto). Elements are [id:name]; ids stay valid. 'blind n/m' = zones with content but no text (mode=image shows them). window = title substring or hwnd. find="Save|Cancel": only the matching elements, also out of view (cheapest way to locate); "!Loading" = until that text is gone; wait=N seconds polls."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
         if find:
@@ -681,7 +681,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 @tool
 def key(window: str, name: str, confirm: bool = False) -> str:
-    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if missing, the answer lists the app's shortcuts (language-dependent). Word: only enter, space, backspace, at Claude's insertion point."""
+    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if missing, the answer lists the app's shortcuts. Word: only enter, space, backspace, at Claude's insertion point."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)
@@ -693,7 +693,7 @@ def key(window: str, name: str, confirm: bool = False) -> str:
 
 @tool
 def scroll(window: str, direction: str = "down", target: str = "", amount: int = 1, confirm: bool = False) -> str:
-    """Scroll the window or an element id by `amount` pages: up|down|left|right|top|bottom. Then look again (old ids still work)."""
+    """Scroll the window or an element id by `amount` pages: up|down|left|right|top|bottom. Then look again."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
         return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), _target(target, False, hwnd) if str(target).strip() else None, direction, amount))
@@ -813,7 +813,7 @@ def _do_show(hidden, window, target, label, seconds, confirm):
 
 @tool
 def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
-    """Show the USER where something is (for "where do I click to...?"): an orange outline around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
+    """Show the USER where something is ("where do I click?"): an orange outline around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click or it changes."""
     return _on(window, lambda hidden: _do_show(hidden, window, target, label, seconds, confirm)[0])
 
 
@@ -825,7 +825,7 @@ _STEP_BAD = ("NOT EXECUTED", "NO VISIBLE EFFECT")
 
 @tool
 def steps(window: str, todo: list[dict]) -> str:
-    """Several actions on ONE window in one call, in order (faster). todo=[{"do":"click","target":"Save"},{"do":"type","target":"Name","text":"x"},{"do":"key","name":"enter"},{"do":"wait","seconds":1}]; do = click|type|key|scroll|read|look|drag|wait, same arguments. Use names, not ids, for what appears later. Stops at the first failure, no-effect or permission need (repeat that step alone)."""
+    """Several actions on ONE window in one call (faster). todo=[{"do":"click","target":"Save"},{"do":"type","target":"Name","text":"x"},{"do":"key","name":"enter"},{"do":"wait","seconds":1}]; do = click|type|key|scroll|read|look|drag|wait, same arguments. Use names, not ids, for what appears later. Stops at the first failure, no-effect or permission need (repeat that step alone)."""
     if not 0 < len(todo) <= 12:
         raise ToolError("give between 1 and 12 actions")
     out = []
@@ -878,8 +878,8 @@ def wait_for(window: str, target: str, label: str = "", timeout: int = 60, confi
 
 
 @tool
-def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
-    """Launch an app minimized and unfocused, with its taskbar button. hidden=true (invisible desktop) ONLY if the user asks, never in tests."""
+def open_app(command: str, hidden: bool = False, behind: bool = False, confirm: bool = False) -> str:
+    """Launch an app minimized, unfocused (taskbar button). behind=true: not minimized, behind all windows, for apps that fail minimized. hidden=true (invisible desktop) ONLY if the user asks."""
     _paused()
     try:
         exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
@@ -889,16 +889,18 @@ def open_app(command: str, hidden: bool = False, confirm: bool = False) -> str:
     if hidden:
         r = DESK.open(command); where = "hidden desktop (no taskbar button)"
     else:
-        if exe in core.CHROMIUM:                     # browsers hide the page while minimized: behind the user's windows instead
+        if behind or exe in core.CHROMIUM:           # browsers (and apps the model says so) hide their content while minimized: behind the user's windows instead
             tok = shlex.split(command, posix=False)[0]
-            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in command]
-            r = core.open_behind(command.replace(tok, tok + " " + " ".join(extra), 1) if extra else command, exe)
-            where = "behind the user's windows, not minimized (a minimized browser hides the page), with its button in the taskbar"
+            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in command] if exe in core.CHROMIUM else []
+            r = core.open_behind(command.replace(tok, tok + " " + " ".join(extra), 1) if extra else command, exe)       # Chromium switches ONLY for browsers
+            where = "behind the user's windows, not minimized (a minimized app may hide its content), with its button in the taskbar"
         else:
             r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
     OPENED.update(w["hwnd"] for w in r["windows"]); OPENED_PIDS.update(r.get("pids", []))
-    return f"pid {r['pid']} | {ws} | {where}"
+    kept = r.get("foco_intacto", True)
+    note = "" if kept else " | NOTE: the app took the keyboard focus although it is behind the other windows: it receives keys until the user clicks another window, so do not assume their typing goes to their own app"
+    return f"pid {r['pid']} | {ws} | {where}{note}"
 
 
 def _clean_old_log():

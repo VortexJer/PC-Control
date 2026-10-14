@@ -1258,32 +1258,102 @@ def app_dir(command):
 CHROMIUM = {"msedge", "chrome", "brave", "opera", "vivaldi", "chromium", "arc", "thorium"}
 
 
+_EVENT_PROC = ctypes.WINFUNCTYPE(None, ctypes.wintypes.HANDLE, ctypes.wintypes.DWORD, ctypes.wintypes.HWND, ctypes.wintypes.LONG,
+                                 ctypes.wintypes.LONG, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD)
+
+
+class _BackOnCreate:
+    """While active, every NEW top-level window of the given processes (or of programs with that name) is sent to the very back the instant
+    Windows creates it, BEFORE the app shows it, and again if the app activates itself. A window that is never shown above the others is
+    never seen above them: it does not flash over what the user is doing and, sitting at the back, most apps do not take the focus either.
+    Polling for the window and sending it back afterwards (the old way) left it drawn on top for 20-45 ms; this leaves 0 ms for most apps.
+    Only windows that did not exist before are touched: the user's own windows of the same program are never sunk."""
+    def __init__(self, pids, exe, before):
+        self.pids, self.exe, self.before, self.sent = pids, exe, set(before), []
+        threading = __import__("threading")
+        self.stop = threading.Event(); self.ready = threading.Event(); self.thread = None
+
+    def _callback(self, hook, event, hwnd, id_object, id_child, thread, ms):
+        if id_object != 0 or id_child != 0 or hwnd in self.before:           # OBJID_WINDOW only, and never a window that was already there
+            return
+        try:
+            u = self.u
+            if u.GetAncestor(hwnd, 2) != hwnd:                                # top-level windows only
+                return
+            pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+            if pid in self.pids or psutil_name(pid) == self.exe:
+                # at creation: to the back without activating. If the app has just activated ITSELF, sinking it WITHOUT "no activate" makes
+                # Windows hand the focus to the next window down, the user's: with it the window would stay at the back but keep the keyboard
+                u.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0003 if event == 0x0003 else 0x0013)       # HWND_BOTTOM | NOSIZE | NOMOVE (| NOACTIVATE)
+                self.sent.append(hwnd)
+        except Exception:
+            pass
+
+    def _pump(self):
+        u = self.u = ctypes.WinDLL("user32", use_last_error=True)           # our own copy: the prototypes below must not leak to other code
+        u.SetWinEventHook.restype = ctypes.wintypes.HANDLE
+        u.SetWinEventHook.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.HMODULE, _EVENT_PROC,
+                                      ctypes.wintypes.DWORD, ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+        u.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]; u.GetAncestor.restype = ctypes.wintypes.HWND
+        proc = _EVENT_PROC(self._callback)                                    # kept alive here for as long as the hooks live
+        hooks = [u.SetWinEventHook(0x8000, 0x8002, None, proc, 0, 0, 0),     # EVENT_OBJECT_CREATE .. EVENT_OBJECT_SHOW
+                 u.SetWinEventHook(0x0003, 0x0003, None, proc, 0, 0, 0)]     # EVENT_SYSTEM_FOREGROUND: the app activated itself
+        self.ready.set()
+        msg = ctypes.wintypes.MSG()
+        while not self.stop.is_set():
+            if u.PeekMessageW(ctypes.byref(msg), 0, 0, 0, 1):                  # events reach this thread as messages
+                u.DispatchMessageW(ctypes.byref(msg))
+            else:
+                time.sleep(0.0003)
+        for h in hooks:
+            if h:
+                u.UnhookWinEvent(h)
+
+    def start(self):
+        self.thread = __import__("threading").Thread(target=self._pump, name="pc-control-back-on-create", daemon=True)
+        self.thread.start(); self.ready.wait(2)
+        return self
+
+    def close(self):
+        self.stop.set()
+
+
+BACK_GRACE_S = 8.0           # the hook outlives open_behind by this long: apps open a second window (splash, then the main one) a bit later
+
+
 def open_behind(command, exe, wait_s=15.0):
-    """Browsers hide the page from accessibility while minimized, so a browser is opened NOT minimized but behind your windows and
-    without activating it: its button is in the taskbar and the page can be read and used. The focus is never taken."""
-    si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
+    """Open an app NOT minimized but behind all the user's windows, without activating it and without drawing it above anything: its button
+    is in the taskbar and its window can be read and used (browsers and some apps hide their content while minimized). The focus is never
+    taken by us; the window is sent to the back the instant it is created (see _BackOnCreate). Returns as soon as the window is up."""
     before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
-    p = subprocess.Popen(command, startupinfo=si, cwd=app_dir(command))
-    found, t0, last = {}, time.time(), 0.0
-    while time.time() - t0 < wait_s:
-        for h in top_windows():
-            if h in before or h in found:
-                continue
-            try:
-                pid = win32process.GetWindowThreadProcessId(h)[1]
-            except Exception:
-                continue
-            if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
-                ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)        # HWND_BOTTOM | NOSIZE | NOMOVE | NOACTIVATE
-                found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
-        if found and time.time() - last > 1.0:
-            break
-        time.sleep(0.01)
-    time.sleep(0.8)                                                            # the title settles once the page has loaded
+    si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
+    pids = set()
+    hook = _BackOnCreate(pids, exe, before).start()
+    try:
+        p = subprocess.Popen(command, startupinfo=si, cwd=app_dir(command)); pids.add(p.pid)
+        found, t0, last = {}, time.time(), 0.0
+        while time.time() - t0 < wait_s:
+            for h in top_windows():
+                if h in before or h in found:
+                    continue
+                try:
+                    pid = win32process.GetWindowThreadProcessId(h)[1]
+                except Exception:
+                    continue
+                if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
+                    ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)        # HWND_BOTTOM | NOSIZE | NOMOVE | NOACTIVATE (again, in case it moved)
+                    found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+            if any(found.values()) and time.time() - last > 0.3:
+                break
+            time.sleep(0.005)
+        if exe in CHROMIUM:
+            time.sleep(0.8)                                                    # a browser's title settles once the page has loaded
+    finally:
+        threading = __import__("threading")
+        t = threading.Timer(BACK_GRACE_S, hook.close); t.daemon = True; t.start()      # keep catching late windows, off the caller's time
     wins = [{"hwnd": h, "title": win32gui.GetWindowText(h)[:50]} for h in found if win32gui.IsWindow(h)]
     return {"pid": p.pid, "windows": [w for w in wins if w["title"]], "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if wins else "no window with a title (it may have joined a browser that was already open)"}
-
 
 def psutil_name(pid):
     k = ctypes.windll.kernel32
