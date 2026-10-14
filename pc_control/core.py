@@ -1037,11 +1037,12 @@ def type_text(query, text, target=None, replace=False, progress=None):
     if target is not None and st and target in st["items"] and st["items"][target].ctrl is not None:
         nh, cls = _native(st["items"][target].ctrl)
         if nh and "edit" in cls:
+            crlf = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")      # a classic edit box breaks a line only with CR LF
             if replace:
-                win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, text)
+                win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, crlf)
                 return "ok (WM_SETTEXT)" + _read_back(st["items"][target].ctrl, text, True)
             win32gui.SendMessage(nh, 0x00B1, -1, -1)                     # EM_SETSEL to the end
-            win32gui.SendMessage(nh, 0x00C2, 1, text)
+            win32gui.SendMessage(nh, 0x00C2, 1, crlf)
             return "ok (EM_REPLACESEL)" + _read_back(st["items"][target].ctrl, text, False)
         ctrl = st["items"][target].ctrl
         from . import actions
@@ -1063,7 +1064,7 @@ def type_text(query, text, target=None, replace=False, progress=None):
                 pass
         dest = nh or None
     dest = dest or _focus_hwnd(hwnd)
-    for ch in text:
+    for ch in text.replace("\r\n", "\n").replace("\n", "\r"):                  # a line break is Enter (CR), not LF
         win32gui.PostMessage(dest, win32con.WM_CHAR, ord(ch), 0)
     return f"ok ({len(text)} characters through WM_CHAR; unconfirmed)"
 
