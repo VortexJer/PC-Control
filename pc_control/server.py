@@ -715,7 +715,7 @@ def read(window: str, target: str = "", start: int = 0, length: int = 6000, find
 
 def _cloaked(hwnd):
     """True if Windows keeps the window out of sight although it is not minimized: it lives on another virtual desktop, or it is a
-    suspended Store app (Settings...). The user cannot see an orange circle there."""
+    suspended Store app (Settings...). The user cannot see an orange outline there."""
     v = ctypes.c_int(0)
     try:
         ctypes.windll.dwmapi.DwmGetWindowAttribute(hwnd, 13, ctypes.byref(v), 4)          # DWMWA_CLOAKED
@@ -724,7 +724,7 @@ def _cloaked(hwnd):
     return bool(v.value)
 
 def _do_show(hidden, window, target, label, seconds, confirm):
-    """Draw the orange circle for the user. Returns (message for the model, token of the circle)."""
+    """Draw the orange outline for the user. Returns (message for the model, token of the outline)."""
     hwnd = _gate(window, False, confirm)
     if hidden:
         raise ToolError("that window is on the hidden desktop: the user cannot see it")
@@ -757,14 +757,14 @@ def _do_show(hidden, window, target, label, seconds, confirm):
             disabled = not it.ctrl.IsEnabled
         except Exception:
             pass
-    return (f"shown to the user: an orange circle around «{name}» for {secs} s (nothing was clicked)"
+    return (f"shown to the user: an orange outline around «{name}» for {secs} s (nothing was clicked)"
             + (". It is DISABLED (greyed out) right now: tell the user what enables it first" if disabled else "")
             + ("" if front else ". The window is behind other windows there: tell the user to bring it to the front to see it")), token
 
 
 @tool
 def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
-    """Show the USER where something is (for "where do I click to...?"): an orange circle around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
+    """Show the USER where something is (for "where do I click to...?"): an orange outline around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click it or it changes."""
     return _on(window, lambda hidden: _do_show(hidden, window, target, label, seconds, confirm)[0])
 
 

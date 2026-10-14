@@ -176,11 +176,17 @@ def render_note(text, s=1.0, max_w=470):
 
 
 def render_mark(w, h, label="", s=1.0):
-    """An orange oval drawn AROUND a w x h element (it does not cover it), with an optional label underneath, to show the user where
-    something is. Returns (premultiplied BGRA bytes, width, height, x offset, y offset of the element inside the drawing)."""
+    """An orange outline drawn AROUND a w x h element (it does not cover it) that follows its shape: a circle for a small, squarish
+    element (icon, check box, round button), a rounded rectangle for the rest. Optional label underneath, to show the user where something
+    is. Returns (premultiplied BGRA bytes, width, height, x offset, y offset of the element inside the drawing)."""
     from PIL import ImageFont
     K = 2
-    pad, th = 14 * s, 4 * s                                   # margin around the element and line thickness
+    th = 4 * s                                                # line thickness
+    if max(w, h) <= 40 * s and 0.75 <= w / max(h, 1) <= 1.33:
+        circle, pad, rad = True, 7 * s, 0                     # margin between the element and the outline
+    else:
+        circle, pad, rad = False, 6 * s, min(h / 2 + 6 * s, 14 * s)     # a small control gets a pill, a big panel a softly rounded rectangle
+    m = pad + 3 * s                                           # canvas margin around the element: outline + white halo
     font = None
     if label:
         try:
@@ -190,31 +196,36 @@ def render_mark(w, h, label="", s=1.0):
     meas = ImageDraw.Draw(Image.new("L", (1, 1)))
     lw = (meas.textlength(label, font=font) / K + 20 * s) if label else 0
     lh = (font.getbbox("Ag")[3] / K + 12 * s) if label else 0
-    W = int(max(w + 2 * pad + 2 * th, lw) + 4); H = int(h + 2 * pad + 2 * th + (lh + 8 * s if label else 0) + 4)
+    W = int(max(w + 2 * m, lw) + 4); H = int(h + 2 * m + (lh + 8 * s if label else 0) + 4)
     im = Image.new("RGBA", (W * K, H * K), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
-    ox, oy = (W - (w + 2 * pad + 2 * th)) / 2, 2
-    box = [(ox + th / 2) * K, (oy + th / 2) * K, (ox + w + 2 * pad + 1.5 * th) * K, (oy + h + 2 * pad + 1.5 * th) * K]
-    d.ellipse([box[0] - 1.5 * K * s, box[1] - 1.5 * K * s, box[2] + 1.5 * K * s, box[3] + 1.5 * K * s], outline=WHITE + (230,), width=int((th + 3 * s) * K))
-    d.ellipse(box, outline=ORANGE + (255,), width=int(th * K))
-    # a small "x" badge on the oval: it tells the user a click there makes it go away (any click inside the circle does)
-    bx, by, br = box[2] - 0.15 * (box[2] - box[0]), box[1] + 0.15 * (box[3] - box[1]), 9 * s * K
+    ox, oy = (W - (w + 2 * m)) / 2, 2
+    box = [(ox + m - pad) * K, (oy + m - pad) * K, (ox + m + w + pad) * K, (oy + m + h + pad) * K]
+    shape = (lambda bb, **kw: d.ellipse(bb, **kw)) if circle else (lambda bb, **kw: d.rounded_rectangle(bb, radius=rad * K, **kw))
+    g = 1.5 * K * s
+    shape([box[0] - g, box[1] - g, box[2] + g, box[3] + g], outline=WHITE + (230,), width=int((th + 3 * s) * K))
+    shape(box, outline=ORANGE + (255,), width=int(th * K))
+    # a small "x" badge on the outline: it tells the user a click there makes it go away (any click inside the outline does)
+    if circle:
+        bx, by = box[2] - 0.15 * (box[2] - box[0]), box[1] + 0.15 * (box[3] - box[1])
+    else:
+        bx, by = box[2] - 6 * s * K, box[1] + 6 * s * K
+    br = 9 * s * K
     d.ellipse([bx - br, by - br, bx + br, by + br], fill=ORANGE + (255,), outline=WHITE + (255,), width=int(1.6 * s * K))
     q = br * 0.42
     d.line([bx - q, by - q, bx + q, by + q], fill=WHITE + (255,), width=int(2.2 * s * K))
     d.line([bx - q, by + q, bx + q, by - q], fill=WHITE + (255,), width=int(2.2 * s * K))
     if label:
-        lx, ly = (W - lw) / 2, oy + h + 2 * pad + 2 * th + 6 * s
+        lx, ly = (W - lw) / 2, oy + m + h + pad + 6.5 * s
         d.rounded_rectangle([lx * K, ly * K, (lx + lw) * K, (ly + lh) * K], radius=int(lh * K / 2), fill=ORANGE + (255,))
         d.text(((lx + 10 * s) * K, (ly + 5 * s) * K), label, fill=(20, 20, 24, 255), font=font)
     im = im.resize((W, H), Image.LANCZOS)
     a = np.asarray(im).astype(np.uint16); alpha = a[..., 3:4]
     data = np.concatenate([(a[..., :3] * alpha // 255)[..., ::-1], alpha], axis=2).astype(np.uint8).tobytes()
-    return data, W, H, int(ox + pad + th), int(oy + pad + th)
-
+    return data, W, H, int(ox + m), int(oy + m)
 
 def _region(owner, rel):
     """Grayscale picture of the INSIDE of the marked element, taken from the WINDOW's own pixels (PrintWindow): it is right even if
-    other windows cover it, and the oval (drawn around the element, in another window) is never in it."""
+    other windows cover it, and the outline (drawn around the element, in another window) is never in it."""
     import win32gui
     from .core import grab
     l, t, r, b = rel
@@ -231,10 +242,10 @@ def _region(owner, rel):
 
 
 def mark_clicked(M, d):
-    """True if the user is pressing a mouse button inside the circle (the oval and its margin). Called on EVERY frame, so even a quick
+    """True if the user is pressing a mouse button inside the outline (its margin, line and halo). Called on EVERY frame, so even a quick
     click is caught. It only READS the mouse position and button state: nothing is moved or pressed."""
     l, t, r, b = M["rect"]; l, t, r, b = l + d[0], t + d[1], r + d[0], b + d[1]
-    pad = 26 * M.get("s", 1.0)                                       # the whole oval, not only the element inside it
+    pad = 14 * M.get("s", 1.0)                                       # the whole outline (margin + line + halo), not only the element inside it
     u = ctypes.windll.user32
     if not (u.GetAsyncKeyState(0x01) & 0x8000 or u.GetAsyncKeyState(0x02) & 0x8000):
         return False
@@ -294,7 +305,7 @@ class ClaudeCursor:
         self._ensure(); self.q.put(("note", str(text), int(x), int(y), float(hold), float(scale), int(owner)))
 
     def mark(self, rect, label="", hold=10.0, scale=1.0, owner=0):
-        """Draw an orange oval around rect = (left, top, right, bottom) on screen, with an optional label, for `hold` seconds: to SHOW the
+        """Draw an orange outline (circle or rounded rectangle) around rect = (left, top, right, bottom) on screen, with an optional label, for `hold` seconds: to SHOW the
         user where something is (nothing is clicked). It follows its window if the user moves it."""
         self._ensure()
         self._mark_seq = getattr(self, "_mark_seq", 0) + 1
