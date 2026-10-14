@@ -197,8 +197,12 @@ try:
 finally:
     _s3._family_roots, _s3.win32process.GetWindowThreadProcessId = real_fam, real_gtp
     _s3.OPENED.discard(6); _s3.OPENED_AT.pop(6, None)
+# found on a real machine: a click on "Close" ends the window, and asking about it afterwards crashed the answer; typing that could not be read back said ok
+c["a window that no longer exists (a click on Close ended it) gives no key and no crash"] = _s3._mouse_key(999999999) is None and _s3._press_directly(999999999) is False
+c["typing that cannot be read back is reported as NOT CONFIRMED, not as ok"] = "NOT CONFIRMED" in _s3.verdict("ok (3 characters through WM_CHAR; unconfirmed)", "no changes")
+c["typing that WAS read back still says so"] = "confirmed by reading" in _s3.verdict("ok (WM_SETTEXT) | read back: the field now contains the text (\"x\")", "no changes")
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)
-ok = len(c) == 30 and all(c.values())
+ok = len(c) == 33 and all(c.values())
 print(f"steps verification {'passed' if ok else 'FAILED'}")
 sys.exit(0 if ok else 1)
