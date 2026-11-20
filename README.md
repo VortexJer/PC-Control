@@ -3,11 +3,46 @@
 ![PC-Control: Claude works in a Word window with its own orange cursor while your mouse stays untouched](docs/pc-control.png)
 
 Let an AI see and operate Windows apps cheaply, **without stealing focus, moving your mouse or typing on your keyboard**.
-An MCP server for Claude Code (and any MCP client). Early version: it works, but expect rough edges.
+An MCP server for Claude Code and Codex (and any MCP client). Early version: it works, but expect rough edges.
+
+### Install in Codex
+
+Windows 10/11, 64-bit Python 3.10+ and the Codex CLI are required. From a checkout:
+
+```powershell
+.\install.ps1 -Client codex              # add -Editable for development
+pc-control status --client codex
+```
+
+If the current Python package is already installed:
+
+```powershell
+pc-control install --client codex
+pc-control reinstall --client codex
+pc-control uninstall --client codex      # keeps shared runtime data and the Python package
+```
+
+The installer uses `codex mcp add` to register **PC-Control** in the user's Codex configuration
+(`$CODEX_HOME/config.toml`, normally `~/.codex/config.toml`). It installs a skill in `~/.agents/skills/pc-control`,
+adds a managed instruction block to `$CODEX_HOME/AGENTS.md`, and records ownership in
+`$CODEX_HOME/pc-control-install.json`. Other MCP servers, instructions and foreign skills are preserved.
+Reconnect MCP or open a new Codex session to load the tools and skill.
+
+The native focus guard is included in the package (64-bit Python; x64 and ARM64 binaries). No compiler is needed to install it.
+The x64 build is verified on Windows; the ARM64 build is cross-compiled and has not been run on ARM hardware.
+
+Claude remains the default client; its installation commands and permission hooks continue to work.
+Codex uses MCP elicitation to ask the user for permission; no Claude hooks or settings are changed.
+If Codex cannot display a permission request, the action is refused. `--mode follow` uses PC-Control's
+`auto` policy in Codex; it does **not** infer Codex's sandbox or approval mode. Other modes work as documented below.
+Only user scope is supported for Codex; `--allow-reads` is specific to Claude and is rejected for Codex.
+`pc-control reinstall` (also used by updates) refreshes both clients when both have installation records.
+Pause/resume and runtime data are shared. Removing one client keeps runtime data while the other is installed;
+`.\uninstall.ps1 -Client codex` also keeps the shared package if Claude is still installed.
 
 ## Quick start
 
-Windows 10/11, Python 3.10+ and [Claude Code](https://claude.com/claude-code). In PowerShell:
+Windows 10/11, 64-bit Python 3.10+ and [Claude Code](https://claude.com/claude-code). In PowerShell:
 
 **Install**
 
@@ -35,7 +70,7 @@ Then open a **new** Claude Code session and ask, for example, *"what do I have o
 - **Sees a window without focusing it.** `look` picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks.
   It never sends empty text, text that costs more than the image, or text that does not cover the window.
 - **Acts on a window without focusing it.** Clicks and typing go straight to the control (`BM_CLICK`, `EM_REPLACESEL`, UI Automation patterns...).
-  Nothing in the package calls `SetForegroundWindow`, `SendInput`, `keybd_event` or `SetCursorPos` (a test scans the code for them).
+  Nothing in the package calls `SetFocus`, `SetForegroundWindow`, `SendInput`, `keybd_event` or `SetCursorPos` (a test scans the code for them).
 - **Answers with only what changed** after each action, not the whole screen again, and says whether the action had a visible effect.
 - **Does what people ask for, still without focus.** Scroll, read a whole document or page, keyboard shortcuts, drop-downs, find an element (even scrolled out of view) and wait for something to appear.
 - **Opens apps out of your way, but where you can watch.** `open_app` starts the app minimized with its button in the taskbar (no focus taken):
@@ -234,7 +269,10 @@ You can keep working in the app while Claude works in it, as long as you do not 
   and the answer says in which paragraph and after which words. The formatting buttons (bold, italic, alignment...) apply to what Claude
   writes, never to your selection. The Styles gallery (Heading 1, Normal, Strong...) works the same way: a style is Claude's own and is applied only to the new paragraph it starts (never to a paragraph of yours; if the text lands in one of yours, the answer says so). In Word `key` only offers `enter`, `space` and `backspace`, acting at Claude's own insertion point.
 - **Your mouse:** if you are holding a mouse button (dragging, selecting), Claude waits for you to release it instead of breaking your gesture.
-- **Your keyboard:** a key press waits until you stop typing, so it never lands in the middle of your word.
+- **Your keyboard:** message-based keys wait for a quiet interval and for held keys, modifiers and mouse buttons to be released. This is coordination, not a second independent keyboard.
+- **Text fields:** native edits append at the actual end of the document and restore the prior selection if no new real input arrived meanwhile. Accessible fields use `ValuePattern.SetValue` or `LegacyIAccessible.SetValue` without focusing them. An unsupported explicit target is refused; PC-Control never focuses it or redirects the text to another field. A field you are actively editing yields to your input.
+- **Modern RichEdit editors (including Notepad):** writes use the editor's Text Object Model when available, through a separate text range; no selection command is sent. EOF positions are resolved by the editor, including Unicode and line breaks. A COM write whose outcome cannot be confirmed is reported as unconfirmed and is not retried through a second backend.
+- **Keys in RichEdit documents:** Enter and Space append through ranges. Movement/deletion keys refuse to modify the user's caret; an open dialog/menu must be targeted explicitly. Other key routes verify that the focused control belongs to the requested window or its owned dialog, even when two windows share a GUI thread. Ambiguous Chromium input hosts are not guessed.
 - **Right click** opens the app's real context menu, which closes with any click of yours, so Claude only opens it when you have been idle
   for a few seconds and no menu is open. Menu entries are pressed through UI Automation patterns (by id, like any button).
 
@@ -271,15 +309,17 @@ You can keep working in the app while Claude works in it, as long as you do not 
 
 - Shortcuts work only where the app exposes them as a command (a classic menu, a menu entry or element with that shortcut, or a text box). Modern menus (WinUI, WPF) only exist while open, so they are searched only for apps on the hidden desktop: opening them on your desktop could take the focus.
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
-- Modern Store/XAML apps (Calculator, Paint, Settings) ignore mouse messages sent to a background window. For buttons, PC-Control notices that a click had no visible effect and presses the element through UI Automation `Invoke` (what a screen reader does: no mouse, no focus), and the answer says so. A drawing canvas has no such pattern, so `drag` does nothing there (modern Paint).
-- Store apps ignore "start minimized" and activate themselves a moment later: PC-Control minimizes them again for a few seconds and hands the focus back, but they can flash on screen for a fraction of a second.
+- Modern Store/XAML apps (Calculator, Paint, Settings) may ignore background mouse messages. For buttons, PC-Control can use UI Automation patterns. These patterns are app-provided and are not a universal focus-isolation guarantee. The modern Paint canvas ignores background drags: PC-Control now refuses that unsupported operation instead of reporting a successful stroke. Other canvases still require visual verification.
+- Some apps ignore "start minimized". A native, thread-specific CBT guard now vetoes programmatic activation/focus changes in compatible target threads, rather than restoring focus after it was stolen. It distinguishes top-level windows sharing a process, while allowing their own dialogs and user activation. A temporary, thread-specific message hook confirms delivery with a tagged `WM_NULL` heartbeat; it inspects no keyboard/mouse contents and is removed immediately. Startup GUI-queue initialization, new broker processes, protected apps and architecture differences still limit coverage; this is not a universal guarantee for every app.
 - Chromium browsers (Chrome, Edge) and Electron apps expose the page contents only while their accessibility support is on; if a page shows only the browser's own controls, start it with `--force-renderer-accessibility`. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
 - A minimized window is read through its UI tree only: no screenshot, no scrolling, no clicks by coordinates (it would have to be shown).
   Open it from the taskbar when that is needed.
 - Store (UWP) apps cannot run on a hidden desktop.
-- Background typing through `WM_CHAR` is not accepted by every app (the modern Notepad ignores it); use element ids.
-- An app that activates itself while starting can take the focus for a moment (measured: under a second) before PC-Control hands it back.
+- Background `WM_CHAR` typing is not accepted by every app. Targeted typing uses native editor messages or writable accessibility value patterns, including the modern Notepad editor. Fields that expose neither are refused rather than focused.
+- Protected/incompatible target processes may refuse the native hook. Guarded actions then refuse instead of silently using an unprotected fallback. Startup aliases that hand off to another process require monitoring and are not guaranteed race-free. The visible tests record transient foreground/focus events as well as final state.
+
+The [input limitations audit](docs/INPUT_LIMITS.md) records what was fixed, what was tested in real visible windows, and what remains unsupported. It does not claim independent input support in every Windows application.
 
 ## Tests
 
@@ -301,6 +341,13 @@ python tests/test_mark.py         # show(): the circle is above its window and g
 python tests/test_resize.py       # moving / resizing the window mid-action
 python tests/test_word.py         # Word: Claude's own insertion point (simulated Word)
 python tests/test_input_share.py  # you and Claude working in the same app
+python tests/test_modern_input.py # focused-target refusal, value-pattern fallbacks, preserved selections and drag limits (simulated controls)
+python tests/test_richedit.py     # independent ranges, Unicode/line breaks, COM errors and no unsafe retry (simulated document)
+python tests/test_focus_guard.py  # real visible app: 24 startup + 24 runtime activation/focus attempts; WinEvent observer
+python tests/test_focus_safety.py # no acknowledgement => no mutation; partial hooks removed (simulated failures)
+python tools/visible_input_demo.py # visible real Win32 edits/canvas; nonactivating, ordinary window; foreground/focus events monitored
+python tools/probe_modern_input.py notepad --exercise # visible disposable document in the installed modern Notepad
+python tools/probe_modern_input.py mspaint --exercise # visible disposable bitmap; compares canvas pixels and reports the unsupported drag
 python tests/test_drag.py         # drag / draw
 python tests/test_menu.py         # menu entries pressed through accessibility
 python tests/test_menu_real.py    # ... against a real Windows menu
