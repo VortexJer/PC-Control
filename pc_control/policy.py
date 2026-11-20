@@ -117,6 +117,8 @@ def follow_mode():
     """PC_CONTROL_MODE=follow (default): PC-Control follows CLAUDE CODE's permission mode, as cautious as the user chose to be:
     bypassPermissions -> bypass (asks nothing); auto -> auto (protected windows and delicate actions); default, acceptEdits and plan
     -> ask (every window the first time, "don't ask again" per window). If Claude Code's mode is unknown (no hook), it behaves like auto."""
+    if envvars.get("CLIENT") == "codex":
+        return "auto"
     try:
         from . import perm
         pm = perm.cc_mode().strip().lower()
