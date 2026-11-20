@@ -10,6 +10,8 @@ ROOT_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 tmp = tempfile.mkdtemp(prefix="pc-control_cli_")
 ch, ph = os.path.join(tmp, "claude"), os.path.join(tmp, "home")
 os.environ["PC_CONTROL_CLAUDE_HOME"], os.environ["PC_CONTROL_HOME"] = ch, ph
+os.environ["CODEX_HOME"] = os.path.join(tmp, "codex")
+os.environ["PC_CONTROL_CODEX_SKILLS_HOME"] = os.path.join(tmp, "codex-skills")
 from pc_control import cli
 
 c = {}

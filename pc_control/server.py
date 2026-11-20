@@ -90,6 +90,9 @@ async def _ask_user(ctx, e, tool_name, args):
     try:
         r = await ctx.elicit(e.question, _Permission)
     except Exception:
+        if envvars.get("CLIENT") == "codex":
+            raise ToolError(f"{e.question} Not executed: Codex could not display the MCP permission request. "
+                            "Reconnect the MCP server in a client that supports elicitation. Do not retry automatically.")
         s = perm.sig(tool_name, args)
         if perm.take("asked", s):                       # the hook asked the user and they said yes: valid for THIS time only
             if perm.flag("pr_seen") and not perm.take("shown", s):

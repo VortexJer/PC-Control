@@ -1,7 +1,8 @@
-"""PC-Control command line: install / uninstall in Claude Code, status, pause.
+"""PC-Control command line: install / uninstall in Claude Code or Codex, status, pause.
 
     pc-control install [--mode follow|auto|ask|strict|bypass] [--scope user|project|local] [--allow-reads]
     pc-control uninstall [--keep-data]
+    pc-control install --client codex     (Claude remains the default client)
     pc-control status
     pc-control pause | resume
     pc-control serve                     (the MCP server, what Claude Code launches)
@@ -438,17 +439,27 @@ def update(stop_servers=False):
     return log
 
 
-def reinstall(runner=None):
+def reinstall(runner=None, client=None):
     """`install` again with the mode, scope and options recorded by the previous install (or the defaults if there is no record:
     a very old version, or the old 'pcsight' one)."""
+    if client == "codex":
+        from . import codex
+        return codex.reinstall(runner)
     rec = _load(_paths()["record"], {})
     old = _load(os.path.join(claude_home(), LEGACY_RECORDS[0]), {})
     mode = rec.get("mode") or {"auto": "follow"}.get(old.get("mode"), old.get("mode")) or "follow"
     if mode not in ("follow", "auto", "ask", "strict", "bypass"):
         mode = "follow"
     healed = _heal_legacy_dist()
-    return healed + install(mode, rec.get("scope") or old.get("scope") or "user", bool(rec.get("allow_added") or old.get("allow_added")),
-                   **({"runner": runner} if runner else {}))
+    log = []
+    from . import codex
+    has_codex = os.path.exists(codex.paths()["record"])
+    if rec or old or not has_codex or client == "claude":
+        log += healed + install(mode, rec.get("scope") or old.get("scope") or "user", bool(rec.get("allow_added") or old.get("allow_added")),
+                               **({"runner": runner} if runner else {}))
+    if has_codex and client is None:
+        log += codex.reinstall()
+    return log
 
 
 def run_claude(args):
@@ -558,7 +569,11 @@ def uninstall(keep_data=False, scope="user", runner=run_claude):
         os.remove(bak); log.append("settings backup removed")
     if os.path.exists(pth["record"]):
         os.remove(pth["record"])
-    if not keep_data and os.path.isdir(data_home()):
+    from . import codex
+    shared = os.path.exists(codex.paths()["record"])
+    if shared:
+        log.append("shared runtime data kept: Codex is still installed")
+    if not keep_data and not shared and os.path.isdir(data_home()):
         shutil.rmtree(data_home(), ignore_errors=True); log.append(f"data folder {data_home()} removed")
     log.append(f"done. To remove the package itself: pip uninstall {DIST}")
     return log
@@ -586,7 +601,7 @@ def set_pause(on):
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pc-control", description="PC-Control: let an AI see and operate Windows apps. Install, uninstall and control.")
     sub = ap.add_subparsers(dest="cmd", required=True)
-    i = sub.add_parser("install", help="register in Claude Code and leave the skill")
+    i = sub.add_parser("install", help="register in Claude Code or Codex and leave the skill")
     i.add_argument("--mode", choices=["follow", "auto", "ask", "strict", "bypass"], default="follow")
     i.add_argument("--scope", choices=["user", "project", "local"], default="user")
     i.add_argument("--allow-reads", action="store_true", help="allow windows and look without asking")
@@ -599,15 +614,31 @@ def main(argv=None):
     up = sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
     up.add_argument("--stop-servers", action="store_true", help="stop the PC-Control servers of open Claude Code sessions (Windows cannot replace a running one)")
     up.add_argument("--after-exit", default="", help=argparse.SUPPRESS)
-    sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
+    ri = sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
+    ri.add_argument("--client", choices=["claude", "codex"], default=None)
+    for parser in (i, u, sub.choices["status"]):
+        parser.add_argument("--client", choices=["claude", "codex"], default="claude", help="MCP client to configure (default: claude)")
     a = ap.parse_args(argv)
     try:
         if a.cmd == "install":
-            print("\n".join(install(a.mode, a.scope, a.allow_reads)))
+            if a.client == "codex":
+                from . import codex
+                print("\n".join(codex.install(a.mode, a.scope, a.allow_reads)))
+            else:
+                print("\n".join(install(a.mode, a.scope, a.allow_reads)))
         elif a.cmd == "uninstall":
-            print("\n".join(uninstall(a.keep_data)))
+            if a.client == "codex":
+                from . import codex
+                print("\n".join(codex.uninstall(a.keep_data)))
+            else:
+                print("\n".join(uninstall(a.keep_data)))
         elif a.cmd == "status":
-            for k, v in status().items(): print(f"{k}: {v}")
+            if a.client == "codex":
+                from . import codex
+                state = codex.status()
+            else:
+                state = status()
+            for k, v in state.items(): print(f"{k}: {v}")
         elif a.cmd in ("pause", "resume"):
             set_pause(a.cmd == "pause"); print("paused" if a.cmd == "pause" else "resumed")
         elif a.cmd == "update":
@@ -629,7 +660,7 @@ def main(argv=None):
             else:
                 print("\n".join(update(a.stop_servers)))
         elif a.cmd == "reinstall":
-            print("\n".join(reinstall()))
+            print("\n".join(reinstall(client=a.client)))
         elif a.cmd == "serve":
             from .server import main as serve
             serve()
