@@ -4,6 +4,8 @@ __pycache__/
 *.png
 bench_*.json
 .pc-control/
+.goldentokens/
+pc_control/native/*.lib
 GATES.md
 @AutomationLog.txt
 .hygiene-local.txt

@@ -1,0 +1,12 @@
+{
+  "focus_guard_x64.dll": {
+    "source_sha256": "be2e55194cc8eaa8e070138f89461721c1ef6f2367ecf7ce2631e5e542f615cf",
+    "binary_sha256": "6d24eb8e1038852635484c533f14bd1289027a6458c3fbca6d0443e7d86387a3",
+    "compiler": "0.17.1"
+  },
+  "focus_guard_arm64.dll": {
+    "source_sha256": "be2e55194cc8eaa8e070138f89461721c1ef6f2367ecf7ce2631e5e542f615cf",
+    "binary_sha256": "53b3e9d2aaae0bdf1abb3e9f5a925c41d9188078b4b6bb3f7039d02ba2715e0c",
+    "compiler": "0.17.1"
+  }
+}

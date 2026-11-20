@@ -34,3 +34,6 @@ pc-control-mcp = "pc_control.server:main"
 
 [tool.setuptools]
 packages = ["pc_control"]
+
+[tool.setuptools.package-data]
+pc_control = ["native/*.dll", "native/*.json"]
