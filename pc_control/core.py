@@ -80,10 +80,19 @@ def field_value(ctrl, editable_only=False):
     try:
         if ctrl.IsPassword:
             return None
-        pat = ctrl.GetValuePattern()
-        if editable_only and pat.IsReadOnly:
-            return None
-        return pat.Value
+        for getter in ("GetValuePattern", "GetLegacyIAccessiblePattern"):
+            try:
+                pat = getattr(ctrl, getter)()
+                if not pat:
+                    continue
+                if editable_only and (getattr(pat, "IsReadOnly", False) or getattr(pat, "State", 0) & 0x40):
+                    continue
+                value = pat.Value
+                if value is not None:
+                    return value
+            except Exception:
+                continue
+        return None
     except Exception:
         return None
 
@@ -455,7 +464,7 @@ def _look_minimized(hwnd, mode, edge):
             assign_ids(hwnd, items)
             text = list_format(items); tok = txt_cost(text)
             _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items},
-                            "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia", "pid": window_pid(hwnd)}
+                            "rect": (0, 0, 0, 0), "scale": 1.0, "mode": "uia", "pid": window_pid(hwnd), "title": win32gui.GetWindowText(hwnd)}
             return {"window": win32gui.GetWindowText(hwnd)[:50], "hwnd": hwnd, "size": f"{w}x{h}", "image_cost": img_cost(*fit(w, h, edge)),
                     "mode": "uia", "why": f"minimized: tree {tok} tok, no capture", "tokens": tok, "text": text, "minimized": True}
     # Capturing a minimized window would force it to be shown (Windows does not allow restoring it off-screen): flicker.
@@ -512,7 +521,7 @@ def _look(hwnd, mode, edge):
         else:
             res.update(text=text, tokens=tokens)
         _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items if it.src == "uia"},
-                        "rect": rect, "scale": scale, "mode": kind, "pid": window_pid(hwnd)}
+                        "rect": rect, "scale": scale, "mode": kind, "pid": window_pid(hwnd), "title": win32gui.GetWindowText(hwnd)}
         return res
 
     def numbered(items):
@@ -729,16 +738,31 @@ MOUSE_WAIT, KEY_QUIET_WAIT = 2.0, 3.0          # how long to wait for the user t
 
 def _buttons_down():
     """True if the user is holding a mouse button down (dragging, selecting...). It is only read, nothing is touched."""
-    return any(win32api.GetAsyncKeyState(vk) & 0x8000 for vk in (0x01, 0x02, 0x04))
+    return any(win32api.GetAsyncKeyState(vk) & 0x8000 for vk in (0x01, 0x02, 0x04, 0x05, 0x06))
 
 
-def _idle_ms():
-    """Milliseconds since the user's last input (mouse or keyboard)."""
+def _keys_down():
+    """A held key/modifier is input too, even before key repeat updates GetLastInputInfo."""
+    return any(win32api.GetAsyncKeyState(vk) & 0x8000 for vk in range(0x08, 0xFF))
+
+
+def _input_tick():
+    """Timestamp of real input; None if Windows could not report it."""
     class LII(ctypes.Structure):
         _fields_ = [("cbSize", ctypes.c_uint), ("dwTime", ctypes.c_uint)]
     li = LII(); li.cbSize = ctypes.sizeof(LII)
-    ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li))
-    return (ctypes.windll.kernel32.GetTickCount() - li.dwTime) & 0xFFFFFFFF
+    return li.dwTime if ctypes.windll.user32.GetLastInputInfo(ctypes.byref(li)) else None
+
+
+def _idle_ms():
+    """Milliseconds since the user's last input; a failed query is treated as busy."""
+    tick = _input_tick()
+    return (ctypes.windll.kernel32.GetTickCount() - tick) & 0xFFFFFFFF if tick is not None else 0
+
+
+def window_busy(hwnd):
+    """Mutating controls in the user's active window must yield to current input."""
+    return win32gui.GetForegroundWindow() == hwnd and (_idle_ms() < 250 or _buttons_down() or _keys_down())
 
 
 def wait_user_mouse_idle(timeout=None):
@@ -754,7 +778,7 @@ def wait_user_mouse_idle(timeout=None):
 def wait_user_quiet(quiet=0.25, timeout=None):
     """Wait until the user has stopped typing/moving the mouse for `quiet` seconds before sending a key (so it does not land in the middle of their word)."""
     end = time.time() + (KEY_QUIET_WAIT if timeout is None else timeout)
-    while _idle_ms() < quiet * 1000:
+    while _idle_ms() < quiet * 1000 or _buttons_down() or _keys_down():
         if time.time() > end:
             return False
         time.sleep(0.03)
@@ -838,10 +862,19 @@ def drag(query, points, shape="path", right=False, step=6, delay=0.006):
         return "window minimized: there are no coordinates; use an element id, or ask the user to open it from the taskbar"
     if st and _size(win32gui.GetWindowRect(hwnd)) != _size(st["rect"]):
         return "the window changed size since the last image: those coordinates are no longer valid; look again with look"
+    if win32gui.GetClassName(hwnd) == "MSPaintApp":
+        modern = []
+        win32gui.EnumChildWindows(hwnd, lambda h, _: modern.append(h) if win32gui.GetClassName(h) == "Microsoft.UI.Content.DesktopChildSiteBridge" else None, None)
+        if modern:
+            return ("did not drag: this modern Paint canvas ignores background mouse messages and exposes no drawing pattern. "
+                    "Real pointer injection would interfere with your input, so it was not used")
     k = st.get("scale", 1.0) if st else 1.0
     pts = [(int(x * k), int(y * k)) for x, y in shape_points(shape, points)]
     if len(pts) < 2:
         return "at least 2 points are needed (or 2 corners for rect/ellipse)"
+    width, height = _size(win32gui.GetWindowRect(hwnd))
+    if any(x < 0 or y < 0 or x >= width or y >= height for x, y in pts):
+        return "did not drag: a point is outside the window; look again and use points inside the image"
     path = _densify(pts, step)
     l, t = win32gui.GetWindowRect(hwnd)[:2]
     if not wait_user_mouse_idle():
@@ -849,14 +882,18 @@ def drag(query, points, shape="path", right=False, step=6, delay=0.006):
     tgt, _ = _child_at(hwnd, l + path[0][0], t + path[0][1])
     mk, d, u = (win32con.MK_RBUTTON, win32con.WM_RBUTTONDOWN, win32con.WM_RBUTTONUP) if right else (win32con.MK_LBUTTON, win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP)
     lp = lambda p: win32api.MAKELONG(win32gui.ScreenToClient(tgt, (l + p[0], t + p[1]))[0] & 0xFFFF, win32gui.ScreenToClient(tgt, (l + p[0], t + p[1]))[1] & 0xFFFF)
+    down, last = False, path[0]
     try:
         win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, lp(path[0]))
         win32gui.PostMessage(tgt, d, mk, lp(path[0]))
+        down = True
         for p in path[1:]:
             win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, mk, lp(p))
+            last = p
             time.sleep(delay)
     finally:
-        win32gui.PostMessage(tgt, u, 0, lp(path[-1]))                 # the button is ALWAYS released, whatever happens
+        if down:
+            win32gui.PostMessage(tgt, u, 0, lp(last))       # release only our drag, where it actually reached
     return f"ok (drag of {len(path)} moves, from {pts[0][0]},{pts[0][1]} to {pts[-1][0]},{pts[-1][1]}, through mouse messages to the window)"
 
 
@@ -902,6 +939,8 @@ def invoke(query, target, why="this app ignores mouse messages", double=False):
     (modern Store/XAML apps such as Calculator or Paint) ignore the mouse messages, but a screen reader's Invoke works on them: it neither
     moves the mouse nor needs focus. Returns a result text, or None if the element has no such pattern."""
     hwnd = find_window(query); st = _state.get(hwnd)
+    if window_busy(hwnd):
+        return "did not press: you are using this window; your current input was left untouched"
     it = st["items"].get(target) if st and isinstance(target, int) else None
     if it is None or it.ctrl is None:
         return None
@@ -923,6 +962,8 @@ def invoke(query, target, why="this app ignores mouse messages", double=False):
 def click(query, target, right=False, double=False, allow_focus=False, rel=None):
     """Order: 1) direct message to the control (no focus)  2) mouse message  (UIA only with allow_focus=True: it may activate the window)."""
     hwnd = find_window(query); st = _state.get(hwnd)
+    if window_busy(hwnd):
+        return "did not press: you are using this window; your current input was left untouched"
     if isinstance(target, int):
         if not st or target not in st["items"]:
             return "unknown id: call look() first"
@@ -996,14 +1037,34 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         return "did not press: you are pressing or dragging with the mouse and a click of mine would break your gesture; retry when you let go"
     return f"ok (BM_CLICK at {x},{y})" if how == "button" else f"ok (mouse message at {x},{y} of the window)"
 
-def _focus_hwnd(hwnd):
+def _thread_focus(hwnd):
     tid = win32process.GetWindowThreadProcessId(hwnd)[0]
     class GTI(ctypes.Structure):
         _fields_ = [("cbSize", ctypes.c_uint), ("flags", ctypes.c_uint), ("hwndActive", ctypes.c_void_p), ("hwndFocus", ctypes.c_void_p),
                     ("hwndCapture", ctypes.c_void_p), ("hwndMenuOwner", ctypes.c_void_p), ("hwndMoveSize", ctypes.c_void_p),
                     ("hwndCaret", ctypes.c_void_p), ("rcCaret", ctypes.c_long * 4)]
-    g = GTI(); g.cbSize = ctypes.sizeof(GTI); ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(g))
-    return g.hwndFocus or chromium_input(hwnd) or hwnd
+    g = GTI(); g.cbSize = ctypes.sizeof(GTI)
+    return g.hwndFocus if ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(g)) else 0
+
+
+def _root_window(hwnd):
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    u.GetAncestor.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT]
+    u.GetAncestor.restype = ctypes.wintypes.HWND
+    return u.GetAncestor(hwnd, 2)
+
+
+def _focus_hwnd(hwnd):
+    """A thread can host multiple top-level windows: its focus is NOT necessarily ours."""
+    focused = _thread_focus(hwnd)
+    root = _root_window(focused) if focused else 0
+    seen = set()
+    while root and root not in seen:
+        if root == hwnd:
+            return focused
+        seen.add(root)
+        root = win32gui.GetWindow(root, win32con.GW_OWNER)
+    return chromium_input(hwnd)  # scoped to this window; never another window's editor
 
 
 def chromium_input(hwnd):
@@ -1013,8 +1074,8 @@ def chromium_input(hwnd):
         if not win32gui.GetClassName(hwnd).startswith("Chrome_WidgetWin"):
             return 0
         kids = []
-        win32gui.EnumChildWindows(hwnd, lambda k, _: kids.append(k) if win32gui.GetClassName(k) == "Chrome_RenderWidgetHostHWND" else None, None)
-        return kids[0] if kids else 0
+        win32gui.EnumChildWindows(hwnd, lambda k, _: kids.append(k) if win32gui.GetClassName(k) == "Chrome_RenderWidgetHostHWND" and win32gui.IsWindowVisible(k) else None, None)
+        return kids[0] if len(kids) == 1 else 0
     except Exception:
         return 0
 
@@ -1037,8 +1098,51 @@ def _read_back(ctrl, text, replace):
     return " | read back: " + ("the field now contains the text" if ok else "WARNING: the field does NOT contain the typed text") + f' ("{tail}")'
 
 
+def _edit_selection(hwnd):
+    """EM_GETSEL with full 32-bit offsets (the return value packs only 16 bits each)."""
+    u = ctypes.WinDLL("user32", use_last_error=True)
+    send = u.SendMessageW
+    send.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.UINT, ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM]
+    send.restype = ctypes.wintypes.LPARAM
+    start, end = ctypes.wintypes.DWORD(), ctypes.wintypes.DWORD()
+    send(hwnd, 0x00B0, ctypes.addressof(start), ctypes.addressof(end))
+    return start.value, end.value
+
+
+def _typing_busy(hwnd, ctrl=None, native=0):
+    """Yield when the user is editing this very field; independent background fields remain usable."""
+    if win32gui.GetForegroundWindow() != hwnd:
+        return False
+    focused = native and _focus_hwnd(hwnd) == native
+    if ctrl is not None:
+        try:
+            focused = focused or ctrl.HasKeyboardFocus
+        except Exception:
+            pass
+    return bool(focused and (_idle_ms() < 250 or _buttons_down() or _keys_down()))
+
+
+def _set_accessible_text(ctrl, text, replace):
+    """Try only value setters; never focus a field to route keyboard messages to it."""
+    for getter in ("GetValuePattern", "GetLegacyIAccessiblePattern"):
+        try:
+            pat = getattr(ctrl, getter)()
+            if not pat or getattr(pat, "IsReadOnly", False) or getattr(pat, "State", 0) & (0x40 | 0x20000000):
+                continue
+            old = pat.Value
+            if old is None and not replace:
+                continue                # unknown old content must not be erased by an append
+            value = text if replace else str(old) + text
+            if pat.SetValue(value) is False:
+                continue
+            return "ok (UI Automation " + ("LegacyIAccessible.SetValue" if "Legacy" in getter else "SetValue") + ")" + _read_back(ctrl, text, replace)
+        except Exception:
+            continue
+    return None
+
+
 def type_text(query, text, target=None, replace=False, progress=None):
-    """Order: 1) EM_REPLACESEL/WM_SETTEXT to the control  2) WM_CHAR to the control or to the app's focus. Never activates the window."""
+    """Explicit targets use RichEdit ranges, native edits or value patterns. Unsupported targets never focus or receive blind keys."""
     hwnd = find_window(query); st = _state.get(hwnd)
     if win32gui.GetClassName(hwnd) == "OpusApp":                 # Word ignores WM_CHAR: typing is done through COM, at Claude's OWN point
         from . import word
@@ -1050,16 +1154,34 @@ def type_text(query, text, target=None, replace=False, progress=None):
             return out
     dest = None
     if target is not None and st and target in st["items"] and st["items"][target].ctrl is not None:
-        nh, cls = _native(st["items"][target].ctrl)
+        ctrl = st["items"][target].ctrl
+        nh, cls = _native(ctrl)
+        if _typing_busy(hwnd, ctrl, nh):
+            return "did not type: you are editing this field; your keyboard and selection were left untouched"
+        if nh and "richedit" in cls:
+            expected_title = st.get("title")
+            if expected_title is not None and expected_title.lstrip("*").strip() != win32gui.GetWindowText(hwnd).lstrip("*").strip():
+                return "did not type: the document/tab title changed since look(); look again and confirm the intended document"
+            from . import richedit
+            done = richedit.type_text(nh, text, replace)
+            if done is not None:
+                return done
         if nh and "edit" in cls:
             crlf = text.replace("\r\n", "\n").replace("\r", "\n").replace("\n", "\r\n")      # a classic edit box breaks a line only with CR LF
-            if replace:
-                win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, crlf)
-                return "ok (WM_SETTEXT)" + _read_back(st["items"][target].ctrl, text, True)
-            win32gui.SendMessage(nh, 0x00B1, -1, -1)                     # EM_SETSEL to the end
-            win32gui.SendMessage(nh, 0x00C2, 1, crlf)
-            return "ok (EM_REPLACESEL)" + _read_back(st["items"][target].ctrl, text, False)
-        ctrl = st["items"][target].ctrl
+            selection, tick = _edit_selection(nh), _input_tick()
+            if tick is None:
+                return "did not type: Windows could not report user input state; your selection was left untouched"
+            try:
+                if replace:
+                    win32gui.SendMessage(nh, win32con.WM_SETTEXT, 0, crlf)
+                else:
+                    end = win32gui.SendMessage(nh, win32con.WM_GETTEXTLENGTH, 0, 0)
+                    win32gui.SendMessage(nh, 0x00B1, end, end)          # -1 removes the selection; it does NOT mean end of document
+                    win32gui.SendMessage(nh, 0x00C2, 1, crlf)
+            finally:
+                if tick is not None and _input_tick() == tick:
+                    win32gui.SendMessage(nh, 0x00B1, *selection)        # preserve their caret; do not undo a new selection they made meanwhile
+            return ("ok (WM_SETTEXT)" if replace else "ok (EM_REPLACESEL)") + _read_back(ctrl, text, replace)
         from . import actions
         picked = actions.select_option(ctrl, text)                       # drop-down or list: pick the entry with that text
         if picked:
@@ -1069,22 +1191,18 @@ def type_text(query, text, target=None, replace=False, progress=None):
             if inner:
                 win32gui.SendMessage(inner, win32con.WM_SETTEXT, 0, text)
                 return "ok (WM_SETTEXT into the drop-down's text box)" + _read_back(ctrl, text, True)
-        if not nh:                                                       # no native edit window (web page, WPF, XAML): UI Automation value
-            try:
-                pat = ctrl.GetValuePattern()
-                if pat and not pat.IsReadOnly:
-                    pat.SetValue(text if replace else (pat.Value or "") + text)
-                    return "ok (UI Automation SetValue)" + _read_back(ctrl, text, replace)
-            except Exception:
-                pass
-        dest = nh or None
+        done = _set_accessible_text(ctrl, text, replace)
+        if done:
+            return done
+        return "did not type: this control exposes no writable value interface; focusing it or sending keys to another field would interfere with your input"
     dest = dest or _focus_hwnd(hwnd)
+    if not dest:
+        return "did not type: no unambiguous input control belongs to this window; another window's caret was not used"
     page = dest == chromium_input(hwnd) and dest != 0
-    if page and target is not None and st and target in st["items"] and st["items"][target].ctrl is not None:
-        try:
-            st["items"][target].ctrl.SetFocus()                               # inside the page: which element receives the keys (the app is not brought to the front)
-        except Exception:
-            pass
+    if target is not None:
+        return "did not type: the target has no live control; look again instead of typing at the user's caret"
+    if not wait_user_quiet():
+        return "did not type: you are using the keyboard or mouse; your input was left untouched"
     for ch in text.replace("\r\n", "\n").replace("\n", "\r"):                  # a line break is Enter (CR), not LF
         win32gui.PostMessage(dest, win32con.WM_CHAR, ord(ch), 0)
     where = "to the page of this Chromium/Electron app" if page else "to the window"
@@ -1113,9 +1231,22 @@ def key(query, name):
     if len(parts) == 1 and parts[0] not in _VK and len(parts[0]) > 1:
         return f"did not press '{name}': unknown key. Keys: {', '.join(_VK)}; shortcuts like ctrl+s"
     if len(parts) == 1 and parts[0] in _VK:
+        documents = [it for it in _state.get(hwnd, {}).get("items", {}).values()
+                     if getattr(it, "kind", "") == "document" and it.ctrl is not None
+                     and "richedit" in _native(it.ctrl)[1] and not is_secret_field(it)]
+        if len(documents) == 1:
+            if popup_windows(hwnd):
+                return "did not press: a dialog/menu is open; target it explicitly instead of editing the document behind it"
+            if parts[0] in ("enter", "space"):
+                return type_text(query, "\r" if parts[0] == "enter" else " ", documents[0].id)
+            return f"did not press '{parts[0]}': RichEdit movement/deletion keys would affect the user's caret; use type by id, or enter/space at the document end"
         if not wait_user_quiet():
             return "did not press the key: you are typing and it would mix with your text; retry when you stop"
         tgt = _focus_hwnd(hwnd); vk = _VK[parts[0]]
+        if not tgt:
+            return "did not press: no unambiguous input control belongs to this window; another window's caret was not used"
+        if "richedit" in win32gui.GetClassName(tgt).lower():
+            return "did not press: look at this RichEdit document first; raw keys would affect the user's caret"
         win32gui.PostMessage(tgt, win32con.WM_KEYDOWN, vk, 0); win32gui.PostMessage(tgt, win32con.WM_KEYUP, vk, 0xC0000001)
         return "ok (key sent by message to the app, at its focus point)"
     from . import actions
@@ -1181,11 +1312,18 @@ def is_hidden(hwnd):
 
 # ---------- apps opened by PC-Control on your desktop: minimized, with their button in the taskbar ----------
 def open_minimized(command, wait_s=10.0, creationflags=0):
+    from .focus import FocusGuard
+    exe = os.path.basename(_exe_of(command)).lower().removesuffix(".exe")
+    with FocusGuard(exe).start() as focus_guard:
+        return _open_minimized(command, wait_s, creationflags, focus_guard)
+
+
+def _open_minimized(command, wait_s, creationflags, focus_guard):
     """Launch an app MINIMIZED and without activating it: no window on screen, no focus stolen, and its button stays in the
     taskbar so you can open it with a click. If the app ignores the request and appears open, it is minimized immediately."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
     before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
-    p = subprocess.Popen(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
+    p = focus_guard.launch(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
     found, honored, t0, last = {}, True, time.time(), 0.0
     family = {p.pid}
     via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")     # shell:AppsFolder\... (Store apps)
@@ -1200,23 +1338,23 @@ def open_minimized(command, wait_s=10.0, creationflags=0):
         for h in mine:
             if h in before or h in found:
                 continue
-            if not win32gui.IsIconic(h) and win32gui.GetWindowText(h):
+            focus_guard.verify_window(h, timeout=3.0)
+            if not win32gui.IsIconic(h) and win32gui.GetWindowText(h) and not focus_guard.user_selected(h):
                 honored = False
-                # the app ignored nCmdShow: minimize it. If it already took the focus, SW_MINIMIZE (6) hands the focus back to the next
-                # window (the user's); otherwise SW_SHOWMINNOACTIVE (7) leaves the focus where it is.
-                ctypes.windll.user32.ShowWindow(h, 6 if h == win32gui.GetForegroundWindow() else 7)
+                # The native guard prevents activation where supported; minimizing
+                # must not itself activate anything or undo the user's choice.
+                ctypes.windll.user32.ShowWindow(h, 7)
             found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
         if any(found.values()) and time.time() - last > 0.6:
             break
         time.sleep(0.001)
-    # Store apps (and some others) activate and restore themselves a moment AFTER appearing: keep them minimized for a while, and if
-    # one took the focus, SW_MINIMIZE gives it back to the user's window
+    # Catch late restores without fighting a deliberate user activation.
     end = time.time() + (3.0 if found else 0)
     while time.time() < end:
         for h in list(found):
-            if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow":
+            if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow" and not focus_guard.user_selected(h):
                 honored = False
-                ctypes.windll.user32.ShowWindow(h, 6 if h == win32gui.GetForegroundWindow() else 7)
+                ctypes.windll.user32.ShowWindow(h, 7)
         time.sleep(0.05)
     own = {pid for pid in family if pid != p.pid or not via_shell}       # the app's OWN processes (never the shared shell ones)
     own = {pid for pid in own if _proc_name(pid) not in SHARED_PROCS}
@@ -1289,8 +1427,9 @@ class _BackOnCreate:
     never seen above them: it does not flash over what the user is doing and, sitting at the back, most apps do not take the focus either.
     Polling for the window and sending it back afterwards (the old way) left it drawn on top for 20-45 ms; this leaves 0 ms for most apps.
     Only windows that did not exist before are touched: the user's own windows of the same program are never sunk."""
-    def __init__(self, pids, exe, before):
+    def __init__(self, pids, exe, before, focus_guard=None):
         self.pids, self.exe, self.before, self.sent = pids, exe, set(before), []
+        self.focus_guard = focus_guard
         threading = __import__("threading")
         self.stop = threading.Event(); self.ready = threading.Event(); self.thread = None
 
@@ -1303,9 +1442,11 @@ class _BackOnCreate:
                 return
             pid = win32process.GetWindowThreadProcessId(hwnd)[1]
             if pid in self.pids or psutil_name(pid) == self.exe:
-                # at creation: to the back without activating. If the app has just activated ITSELF, sinking it WITHOUT "no activate" makes
-                # Windows hand the focus to the next window down, the user's: with it the window would stay at the back but keep the keyboard
-                u.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0003 if event == 0x0003 else 0x0013)       # HWND_BOTTOM | NOSIZE | NOMOVE (| NOACTIVATE)
+                if self.focus_guard and self.focus_guard.user_selected(hwnd):
+                    return  # a deliberate click/shell switch belongs to the user
+                # Z-order changes must never activate the window themselves.
+                # The native CBT guard rejects automatic activation BEFORE this event.
+                u.SetWindowPos(hwnd, 1, 0, 0, 0, 0, 0x0013)
                 self.sent.append(hwnd)
         except Exception:
             pass
@@ -1349,9 +1490,11 @@ def open_behind(command, exe, wait_s=15.0):
     before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 4   # SW_SHOWNOACTIVATE
     pids = set()
-    hook = _BackOnCreate(pids, exe, before).start()
+    from .focus import FocusGuard
+    focus_guard = FocusGuard(exe).start()
+    hook = _BackOnCreate(pids, exe, before, focus_guard).start()
     try:
-        p = subprocess.Popen(command, startupinfo=si, cwd=app_dir(command)); pids.add(p.pid)
+        p = focus_guard.launch(command, startupinfo=si, cwd=app_dir(command)); pids.add(p.pid)
         found, t0, last = {}, time.time(), 0.0
         while time.time() - t0 < wait_s:
             for h in top_windows():
@@ -1362,7 +1505,9 @@ def open_behind(command, exe, wait_s=15.0):
                 except Exception:
                     continue
                 if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
-                    ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)        # HWND_BOTTOM | NOSIZE | NOMOVE | NOACTIVATE (again, in case it moved)
+                    focus_guard.verify_window(h, timeout=3.0)
+                    if not focus_guard.user_selected(h):
+                        ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)
                     found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
             if any(found.values()) and time.time() - last > 0.3:
                 break
@@ -1372,6 +1517,7 @@ def open_behind(command, exe, wait_s=15.0):
     finally:
         threading = __import__("threading")
         t = threading.Timer(BACK_GRACE_S, hook.close); t.daemon = True; t.start()      # keep catching late windows, off the caller's time
+        f = threading.Timer(BACK_GRACE_S, focus_guard.close); f.daemon = True; f.start()
     wins = [{"hwnd": h, "title": win32gui.GetWindowText(h)[:50]} for h in found if win32gui.IsWindow(h)]
     return {"pid": p.pid, "windows": [w for w in wins if w["title"]], "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if wins else "no window with a title (it may have joined a browser that was already open)"}

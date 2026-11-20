@@ -43,6 +43,8 @@ sent.clear(); how = core._post_click(1, 10, 10)
 c["a native button (BM_CLICK) does not depend on the user's mouse"] = how == "button" and sent == [("send", 0x00F5)]
 
 # 6) keys: they do not mix with what the user is typing
+core._buttons_down = lambda: False
+core._keys_down = lambda: False
 idle = iter([40, 60, 120, 400, 900] + [900] * 50)
 core._idle_ms = lambda: next(idle)
 sent.clear(); t0 = time.time(); out = core.key("x", "enter"); dt = time.time() - t0

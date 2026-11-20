@@ -491,6 +491,8 @@ _LAST_NOTICE = {}                                        # hwnd -> seconds the u
 
 def verdict(result, delta):
     """One sentence saying whether the action did its job, checked against what actually changed in the window."""
+    if "typing UNCONFIRMED" in result:
+        return "UNCONFIRMED: do not retry automatically"
     if result.startswith(("did not press", "did not open", "did not drag", "did not type", "did not select", "did not scroll", "did not save", "at least 2 points are needed", "window minimized", "the element is no longer", "unknown id", "the window changed")):
         return "NOT EXECUTED"
     if "drag of" in result:
@@ -576,11 +578,17 @@ def _put_back(hwnd, z0):
         return
     z1 = _zinfo(hwnd)
     if z1 and z1[0] < z0[0]:
-        active = win32gui.GetForegroundWindow() == hwnd
-        # moving the ACTIVE window back (without "no activate") also hands the keyboard to the window now in front, the user's
-        ctypes.windll.user32.SetWindowPos(hwnd, z0[1], 0, 0, 0, 0, 0x0003 | (0 if active else 0x0010))
+        ctypes.windll.user32.SetWindowPos(hwnd, z0[1], 0, 0, 0, 0, 0x0013)
 
 def _act(hwnd, hidden, fn, note=""):
+    if hidden:
+        return _act_body(hwnd, hidden, fn, note)
+    from .focus import FocusGuard
+    with FocusGuard.for_window(hwnd) as focus_guard:
+        return _act_body(hwnd, hidden, fn, note, focus_guard)
+
+
+def _act_body(hwnd, hidden, fn, note="", focus_guard=None):
     """Run the action; reply with the result, only what changed and whether it did its job. On your desktop, any NEW
     windows that appear are sent behind the others (never if you are using them); on the hidden desktop this is not needed."""
     _tr("start")
@@ -589,7 +597,8 @@ def _act(hwnd, hidden, fn, note=""):
     result = fn(); _tr("action")
     time.sleep(0.05 if _FAST["skip"] else SETTLE_S); _tr("settle")
     if not hidden:
-        _put_back(hwnd, z0)                                 # an app that raised itself over the user's windows goes back where it was
+        if not focus_guard or not focus_guard.user_selected(hwnd):
+            _put_back(hwnd, z0)
         core.tuck_new(win32process.GetWindowThreadProcessId(hwnd)[1], before)
     if _FAST["skip"]:                       # middle step of steps(): re-reading the whole tree costs ~1 s; the last step reports the sum
         _tr("changes")
@@ -841,7 +850,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 @tool
 def key(window: str, name: str, confirm: bool = False) -> str:
-    """A key (enter, tab, esc, arrows, backspace, delete, home, end, pgup, pgdn, space, f1-f12) or a shortcut (ctrl+s, alt+f4). Shortcuts run the app's own command, never real keys; if missing, the answer lists the app's shortcuts. Word: only enter, space, backspace, at Claude's insertion point."""
+    """A key or shortcut (ctrl+s, alt+f4), never real keys. Shortcuts run the app's own command. Word: enter/space/backspace at Claude's point. RichEdit: enter/space by range; movement/deletion refuse to touch the user's caret. Other keys need a verified control in this window."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)
