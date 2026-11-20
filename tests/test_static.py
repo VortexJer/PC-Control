@@ -1,9 +1,10 @@
 """The package code must not contain calls that interfere with the user (AST analysis, not text matching)."""
-import ast, glob, os, sys
+import ast, glob, os, re, sys
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-FORBIDDEN = {"SetForegroundWindow", "keybd_event", "SendInput", "SetCursorPos", "mouse_event", "SetActiveWindow",
-             "BringWindowToTop", "SwitchToThisWindow", "AttachThreadInput", "pyautogui", "pynput"}
+FORBIDDEN = {"SetForegroundWindow", "SetFocus", "keybd_event", "SendInput", "SetCursorPos", "mouse_event", "SetActiveWindow",
+             "BringWindowToTop", "SwitchToThisWindow", "AttachThreadInput", "pyautogui", "pynput",
+             "InjectSyntheticPointerInput", "InjectTouchInput", "BlockInput", "ClipCursor"}
 
 def scan(src):
     hits = []
@@ -26,4 +27,14 @@ bad = {os.path.basename(f): scan(open(f, encoding="utf-8").read()) for f in file
 bad = {k: v for k, v in bad.items() if v}
 if bad:
     print("INTRUSIVE CALLS:", bad); sys.exit(1)
+def scan_native(src):
+    src = re.sub(r'/\*.*?\*/|//[^\n]*|"(?:\\.|[^"\\])*"', "", src, flags=re.S)
+    return [name for name in FORBIDDEN if re.search(r"\b" + re.escape(name) + r"\s*\(", src)]
+
+for name in FORBIDDEN:
+    assert name in scan_native(f"{name}(window);"), ("native positive control", name)
+assert not scan_native('/* SetFocus(window); */ const char *s = "SendInput(x)";'), "native comment/string false positive"
+for f in glob.glob(os.path.join(ROOT, "native", "*.c")):
+    hits = scan_native(open(f, encoding="utf-8").read())
+    assert not hits, (f, hits)
 print(f"static verification passed ({len(files)} files, {len(FORBIDDEN)} patterns, positive control ok)")

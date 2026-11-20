@@ -515,6 +515,8 @@ def shortcut(query, combo_text):
     """Run a keyboard shortcut WITHOUT pressing keys. Routes, in order: the classic text box command (copy, paste, select all, undo),
     the app's menu entry showing that shortcut (WM_COMMAND), the element declaring it (UI Automation), alt+f4 = close request."""
     hwnd = core.find_window(query); combo = norm_combo(combo_text)
+    if core.window_busy(hwnd):
+        return "did not press: you are using this window; the shortcut would interrupt your input"
     if not combo:
         return "did not press: write the shortcut like ctrl+s, ctrl+shift+n or alt+f4"
     if win32gui.GetClassName(hwnd) in ("XLMAIN", "OpusApp") and combo in (("ctrl", "s"), ("ctrl", "g")):
