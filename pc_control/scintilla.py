@@ -129,6 +129,26 @@ def write(h, text, replace=False):
             + ("" if replace or not moved else "; note: the editor moved its caret") + "; no keyboard, mouse or focus used)")
 
 
+SCI_POINTXFROMPOSITION, SCI_POINTYFROMPOSITION, SCI_LINEFROMPOSITION, SCI_TEXTHEIGHT = 2164, 2165, 2166, 2279
+
+
+def end_point(h):
+    """Screen (x, y-centre, line height) of the END of the document, where Claude appends: for the typing bar. None if out of view."""
+    n = send(h, SCI_GETLENGTH)
+    if n is None:
+        return None
+    sx, sy = send(h, SCI_POINTXFROMPOSITION, 0, n), send(h, SCI_POINTYFROMPOSITION, 0, n)
+    lh = send(h, SCI_TEXTHEIGHT, send(h, SCI_LINEFROMPOSITION, n) or 0) or 16
+    if sx is None or sy is None:
+        return None
+    x, y = ctypes.c_int(sx & 0xFFFFFFFF).value, ctypes.c_int(sy & 0xFFFFFFFF).value
+    l, t, r, b = win32gui.GetClientRect(h)
+    if not (0 <= x <= r and 0 <= y <= b):
+        return None                                               # scrolled out of view: the caller falls back to the element
+    X, Y = win32gui.ClientToScreen(h, (x, y))
+    return X + 2, Y + lh // 2, lh
+
+
 def scroll(h, direction, amount):
     """Scroll by lines/pages with SCI_LINESCROLL / SCI_SETFIRSTVISIBLELINE: the view moves, the caret does not. Returns (before, after)."""
     first, page = send(h, SCI_GETFIRSTVISIBLELINE), send(h, SCI_LINESONSCREEN) or 20
