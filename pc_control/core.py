@@ -1311,19 +1311,19 @@ def is_hidden(hwnd):
 
 
 # ---------- apps opened by PC-Control on your desktop: minimized, with their button in the taskbar ----------
-def open_minimized(command, wait_s=10.0, creationflags=0):
+def open_minimized(command, wait_s=10.0, creationflags=0, env=None):
     from .focus import FocusGuard
     exe = os.path.basename(_exe_of(command)).lower().removesuffix(".exe")
     with FocusGuard(exe).start() as focus_guard:
-        return _open_minimized(command, wait_s, creationflags, focus_guard)
+        return _open_minimized(command, wait_s, creationflags, focus_guard, env)
 
 
-def _open_minimized(command, wait_s, creationflags, focus_guard):
+def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
     """Launch an app MINIMIZED and without activating it: no window on screen, no focus stolen, and its button stays in the
     taskbar so you can open it with a click. If the app ignores the request and appears open, it is minimized immediately."""
     si = subprocess.STARTUPINFO(); si.dwFlags |= subprocess.STARTF_USESHOWWINDOW; si.wShowWindow = 7   # SW_SHOWMINNOACTIVE
     before = _all_windows(); fg0 = win32gui.GetForegroundWindow()
-    p = focus_guard.launch(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command))
+    p = focus_guard.launch(command, startupinfo=si, creationflags=creationflags, cwd=app_dir(command), env=env)
     found, honored, t0, last = {}, True, time.time(), 0.0
     family = {p.pid}
     via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")     # shell:AppsFolder\... (Store apps)
@@ -1483,7 +1483,7 @@ class _BackOnCreate:
 BACK_GRACE_S = 8.0           # the hook outlives open_behind by this long: apps open a second window (splash, then the main one) a bit later
 
 
-def open_behind(command, exe, wait_s=15.0):
+def open_behind(command, exe, wait_s=15.0, env=None):
     """Open an app NOT minimized but behind all the user's windows, without activating it and without drawing it above anything: its button
     is in the taskbar and its window can be read and used (browsers and some apps hide their content while minimized). The focus is never
     taken by us; the window is sent to the back the instant it is created (see _BackOnCreate). Returns as soon as the window is up."""
@@ -1494,7 +1494,7 @@ def open_behind(command, exe, wait_s=15.0):
     focus_guard = FocusGuard(exe).start()
     hook = _BackOnCreate(pids, exe, before, focus_guard).start()
     try:
-        p = focus_guard.launch(command, startupinfo=si, cwd=app_dir(command)); pids.add(p.pid)
+        p = focus_guard.launch(command, startupinfo=si, cwd=app_dir(command), env=env); pids.add(p.pid)
         found, t0, last = {}, time.time(), 0.0
         while time.time() - t0 < wait_s:
             for h in top_windows():

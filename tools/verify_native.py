@@ -13,8 +13,10 @@ def verify(wheel=None):
     base = ROOT / "pc_control" / "native"
     manifest = json.loads((base / "focus_guard_manifest.json").read_text(encoding="utf-8"))
     source_hash = hashlib.sha256((ROOT / "native" / "focus_guard.c").read_bytes()).hexdigest()
-    expected = {"focus_guard_x64.dll": 0x8664, "focus_guard_arm64.dll": 0xAA64}
+    expected = {"focus_guard_x64.dll": 0x8664, "focus_guard_arm64.dll": 0xAA64, "focus_guard_x86.dll": 0x014C, "focus_guard_host32.exe": 0x014C}
+    sources = {"focus_guard_host32.exe": "focus_guard_host32.c"}
     for name, machine in expected.items():
+        source_hash = hashlib.sha256((ROOT / "native" / sources.get(name, "focus_guard.c")).read_bytes()).hexdigest()
         data = (base / name).read_bytes()
         assert data[:2] == b"MZ", name
         offset = struct.unpack_from("<I", data, 60)[0]

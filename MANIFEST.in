@@ -1,3 +1,4 @@
 include native/focus_guard.c
 include tools/build_focus_guard.py
-recursive-include pc_control/native *.dll *.json
+recursive-include pc_control/native *.dll *.exe *.json
+include native/focus_guard_host32.c
