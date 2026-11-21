@@ -268,13 +268,37 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - **Word:** Claude has its own insertion point (a hidden bookmark that follows the text if you edit before it). It writes there through COM
   and the answer says in which paragraph and after which words. The formatting buttons (bold, italic, alignment...) apply to what Claude
   writes, never to your selection. The Styles gallery (Heading 1, Normal, Strong...) works the same way: a style is Claude's own and is applied only to the new paragraph it starts (never to a paragraph of yours; if the text lands in one of yours, the answer says so). In Word `key` only offers `enter`, `space` and `backspace`, acting at Claude's own insertion point.
-- **Your mouse:** if you are holding a mouse button (dragging, selecting), Claude waits for you to release it instead of breaking your gesture.
-- **Your keyboard:** message-based keys wait for a quiet interval and for held keys, modifiers and mouse buttons to be released. This is coordination, not a second independent keyboard.
+- **Independence:** Claude does not act as a keyboard or mouse. It asks the app to do things through its own interfaces (UI Automation
+  patterns, the Java Access Bridge, Scintilla's API, COM in Office), so your typing and your mouse elsewhere never wait for Claude and
+  never mix with it. While you type or drag in ANOTHER window, Claude's actions go out at once. One thing is shared by Windows itself and
+  was measured: the state of held modifiers. While you hold Shift/Ctrl/Alt/Win, a background app sees them held, so a message-based key
+  or click from Claude would become a Shift-click or a shortcut; only in that case Claude waits, the milliseconds until you let go.
+- **Your mouse:** a drag of yours inside the very window Claude is acting on is never broken: Claude waits for you to release it.
+- **Your keyboard:** in the window you are typing in, message-based keys wait for a quiet interval, so they do not land in your word.
 - **Text fields:** native edits append at the actual end of the document and restore the prior selection if no new real input arrived meanwhile. Accessible fields use `ValuePattern.SetValue` or `LegacyIAccessible.SetValue` without focusing them. An unsupported explicit target is refused; PC-Control never focuses it or redirects the text to another field. A field you are actively editing yields to your input.
 - **Modern RichEdit editors (including Notepad):** writes use the editor's Text Object Model when available, through a separate text range; no selection command is sent. EOF positions are resolved by the editor, including Unicode and line breaks. A COM write whose outcome cannot be confirmed is reported as unconfirmed and is not retried through a second backend.
 - **Keys in RichEdit documents:** Enter and Space append through ranges. Movement/deletion keys refuse to modify the user's caret; an open dialog/menu must be targeted explicitly. Other key routes verify that the focused control belongs to the requested window or its owned dialog, even when two windows share a GUI thread. Ambiguous Chromium input hosts are not guessed.
 - **Right click** opens the app's real context menu, which closes with any click of yours, so Claude only opens it when you have been idle
   for a few seconds and no menu is open. Menu entries are pressed through UI Automation patterns (by id, like any button).
+
+## Apps without a normal UI tree
+
+- **Java (Swing/AWT, Oracle Forms, SQL Developer, JMeter...):** read and operated through the Java Access Bridge: named buttons, fields,
+  check boxes, combos, menus (also closed ones), tabs and tables, without focus, mouse or keyboard. Apps that `open_app` starts get the
+  bridge for that process only; for apps you start yourself, `pc-control java enable` turns it on for your user (`status`, `disable`).
+  A Java window without the bridge is read from its pixels and the answer says how to turn the bridge on.
+- **Remote Desktop and virtual machines (mstsc, Windows App, Citrix, VMware, VirtualBox, Hyper-V, VNC...):** the window is a picture of
+  another computer, so it is read with OCR (also while covered) and operated with input messages to the client's own input window; the
+  client is only TOLD it is active (messages), Windows' real focus does not move. Typed text becomes key positions of your keyboard
+  layout, including AltGr and dead keys. Limit: inside the remote computer this IS keyboard/mouse input, because that is all a remote
+  session accepts; for full independence there, run PC-Control inside the remote machine.
+- **Scintilla editors (Notepad++, SciTE, Notepad2/3, Code::Blocks...):** invisible to UI Automation; read, written and scrolled through
+  Scintilla's own message API. Text is appended at Claude's own point (the end of the document), your caret and selection stay put.
+- **32-bit apps:** guarded like 64-bit ones through a small 32-bit helper (`focus_guard_host32.exe`).
+- **Pixel verification:** on canvases, OCR targets, Java without the bridge and remote screens, a click or key is checked against the
+  pixels at the target: a real change is reported as seen, an action that changed nothing is reported as `NO VISIBLE EFFECT`, never `ok`.
+- **No loops:** the same call failing the same way twice gets an explanation of what to do instead; a third identical attempt is refused
+  without acting until the window changes.
 
 ## Tools
 
