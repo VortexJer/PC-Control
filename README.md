@@ -10,18 +10,29 @@ An MCP server for Claude Code and Codex (and any MCP client). Early version: it 
 You need **Windows 10 or 11**, **64-bit Python 3.10+** and **Claude Code** (or the Codex CLI). In PowerShell:
 
 ```powershell
-pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip
+pip install claude-pc-control
 pc-control install                      # for Codex: pc-control install --client codex
 ```
 
 Then open a **new** Claude Code (or Codex) session and ask, for example, *"what do I have open in Word?"*.
 
-> The PyPI package (`pip install claude-pc-control`) is behind (0.7.7): install from GitHub as above to get the current version.
-
 ## Update
+
+From **any** version you have, to the latest release:
 
 ```powershell
 pc-control update
+```
+
+It keeps your settings, removes what older versions left behind and updates Claude Code and Codex if both are installed. Close the
+Claude Code / Codex sessions first (or add `--stop-servers`), then open a new one.
+
+If your version is so old that it has no `update` command, this works from any of them:
+
+```powershell
+pip uninstall -y pc-control pcsight
+pip install --upgrade claude-pc-control
+pc-control reinstall
 ```
 
 ## Uninstall
@@ -38,7 +49,8 @@ pip uninstall -y claude-pc-control
 - **Sees a window without focusing it.** `look` picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks.
   It never sends empty text, text that costs more than the image, or text that does not cover the window.
 - **Acts on a window without focusing it.** Clicks and typing go straight to the control (`BM_CLICK`, `EM_REPLACESEL`, UI Automation patterns...).
-  Nothing in the package calls `SetFocus`, `SetForegroundWindow`, `SendInput`, `keybd_event` or `SetCursorPos` (a test scans the code for them).
+  Nothing in the package calls `SetFocus`, `SendInput`, `keybd_event` or `SetCursorPos`, and `SetForegroundWindow` only to give the
+  foreground BACK to your own window when an app took it without you asking (a test scans the code for them).
 - **Answers with only what changed** after each action, not the whole screen again, and says whether the action had a visible effect.
 - **Does what people ask for, still without focus.** Scroll, read a whole document or page, keyboard shortcuts, drop-downs, find an element (even scrolled out of view) and wait for something to appear.
 - **Opens apps out of your way, but where you can watch.** `open_app` starts the app minimized with its button in the taskbar (no focus taken):
