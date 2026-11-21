@@ -1040,8 +1040,50 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
             return f"did not type: {bad}: look again | NOT EXECUTED"
         policy.check_type(policy.mode(), _live_name(it), core.is_secret_field(it), it.aid)
         out = _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress), roi=it.rect)
+        if progress is None and out.startswith("ok") and _cursor_wanted(hwnd, hidden):
+            end = _typed_end(it)                           # the bar ends right after the last character written, like a real caret
+            if end:
+                s = cursor.scale_for(hwnd)
+                cursor.CURSOR.caret(end[0], end[1], h=cursor.caret_height(end[2], s), scale=s, owner=hwnd)
         return (f"(typed into the only text field «{it.name[:30]}») " if target_id is not None else "") + out
     return _on(window, run)
+
+
+def _typed_end(it):
+    """Screen (x, y-centre, line height) right after the LAST character of the field, where a real caret would be after typing.
+    Scintilla asks the editor; a classic edit box uses EM_POSFROMCHAR. None when it cannot be known (the bar stays at the field)."""
+    try:
+        if getattr(it, "src", "") == "sci":
+            from . import scintilla
+            return scintilla.end_point(it.hwnd)
+        nh, cls = core._native(it.ctrl) if it.ctrl is not None else (0, "")
+        if nh and cls == "edit":
+            n = win32gui.SendMessage(nh, win32con.WM_GETTEXTLENGTH, 0, 0)
+            if n <= 0:
+                return None
+            r = win32gui.SendMessage(nh, 0x00D6, n - 1, 0)                 # EM_POSFROMCHAR: top-left of the last character
+            if r == -1:
+                return None
+            x, y = ctypes.c_short(r & 0xFFFF).value, ctypes.c_short((r >> 16) & 0xFFFF).value
+            l, t, rr, b = win32gui.GetClientRect(nh)
+            if not (0 <= x <= rr and 0 <= y <= b):
+                return None
+            hdc = win32gui.GetDC(nh)
+            try:
+                tm = ctypes.wintypes.SIZE()
+                font = win32gui.SendMessage(nh, win32con.WM_GETFONT, 0, 0)
+                old = ctypes.windll.gdi32.SelectObject(hdc, font) if font else None
+                ch = win32gui.GetWindowText(nh)[-1:] if False else "M"
+                ctypes.windll.gdi32.GetTextExtentPoint32W(hdc, ch, 1, ctypes.byref(tm))
+                if old:
+                    ctypes.windll.gdi32.SelectObject(hdc, old)
+            finally:
+                win32gui.ReleaseDC(nh, hdc)
+            X, Y = win32gui.ClientToScreen(nh, (x, y))
+            return X + max(4, tm.cx // 2), Y + max(8, tm.cy) // 2, max(12, tm.cy)
+    except Exception:
+        return None
+    return None
 
 
 TEXTKINDS_ALL = ("edit", "document")

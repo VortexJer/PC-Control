@@ -60,6 +60,14 @@ def run_case(name, calls):
     return fg0, ms, user, recs
 
 
+def topmost_user_windows():
+    out = []
+    win32gui.EnumWindows(lambda h, _: out.append(h) if win32gui.IsWindowVisible(h) and win32gui.GetWindowLong(h, -20) & 8
+                         and win32gui.GetWindowText(h) else None, None)
+    return set(out)
+
+
+top0 = topmost_user_windows()
 kill("CalculatorApp.exe")
 fg0, ms, user, recs = run_case("calculator", [["open_app", {"command": "Calculadora"}], ["sleep", {"s": 2}]])
 c["Calculator: the foreground is back with the user within 150 ms (or never taken)"] = ms <= 150
@@ -88,6 +96,10 @@ c["the user used the app earlier and went elsewhere: the app coming up again is 
 g.last_switch_key = time.monotonic()
 c["Alt/Win (the user's switcher) a moment ago: the switch is theirs"] = g.user_recent(222)
 
+new_top = topmost_user_windows() - top0
+c["no window of the user was left 'always on top' (seen once in a session; never again)"] = not new_top
+if new_top:
+    print("   became topmost:", [(h, win32gui.GetClassName(h)) for h in new_top])
 bad = [k for k, v in c.items() if not v]
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)

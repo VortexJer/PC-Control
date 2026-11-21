@@ -10,6 +10,9 @@ import asyncio, os, re, subprocess, sys, tempfile, threading, time
 sys.stdout.reconfigure(encoding="utf-8")
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT); sys.path.insert(0, os.path.join(ROOT, "tools"))
+import ctypes
+ctypes.windll.shcore.SetProcessDpiAwareness(2)        # real pixels: window rectangles and screen grabs must use the SAME coordinates
+import cv2, numpy as np
 import win32con, win32gui, win32process
 from PIL import ImageGrab
 from mcp import ClientSession, StdioServerParameters
@@ -100,10 +103,18 @@ def main(argv):
             t0 = time.time()
             res = asyncio.run(demo(hw, sp, pointer_only))
             stop.set(); th.join(2)
-            path = os.path.join(outdir, f"pc-control-{'pointer' if pointer_only else 'cursor'}-{sp:g}x.gif")
-            imgs = [f.convert("P", palette=1, colors=96) for _, f in frames]
-            durs = [max(20, int((frames[i + 1][0] - frames[i][0]) * 1000)) for i in range(len(frames) - 1)] + [800]
-            imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=durs, loop=0)
+            path = os.path.join(outdir, f"pc-control-{'pointer' if pointer_only else 'cursor'}-{sp:g}x.mp4")
+            w0, h0 = frames[0][1].size
+            fps = 25
+            vw = cv2.VideoWriter(path, cv2.VideoWriter_fourcc(*"mp4v"), fps, (w0 - w0 % 2, h0 - h0 % 2))
+            t_start, k = frames[0][0], 0
+            for i in range(int((frames[-1][0] - t_start) * fps) + 1):      # constant frame rate: real timing preserved
+                t = t_start + i / fps
+                while k + 1 < len(frames) and frames[k + 1][0] <= t:
+                    k += 1
+                vw.write(cv2.cvtColor(np.asarray(frames[k][1])[: h0 - h0 % 2, : w0 - w0 % 2], cv2.COLOR_RGB2BGR))
+            vw.release()
+            imgs = frames
             bad = [r for r in res if r[1]]
             print(f"speed {sp:g}x: {time.time() - t0:.1f} s, {len(imgs)} frames -> {path}" + (f" | errors: {bad}" if bad else ""))
     finally:
