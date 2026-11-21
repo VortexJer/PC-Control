@@ -23,10 +23,15 @@ __declspec(dllexport) LONG pc_focus_blocked(int focus) {
 }
 
 /* Separate pure decision so the same binary's policy can be tested without
- * synthesizing real user input. A real click or shell keyboard switch wins. */
+ * synthesizing real user input. A real click or shell keyboard switch wins.
+ * An EMPTY foreground is not a reason to allow: an app that calls
+ * SetForegroundWindow while starting (Java does) first empties the foreground
+ * and then activates itself; allowing that second step handed it the user's
+ * keyboard. no_foreground is kept in the signature for the policy tests. */
 __declspec(dllexport) int pc_focus_allow(int foreground_tree, int mouse_activation,
                                         int shell_switch, int no_foreground) {
-    return foreground_tree || mouse_activation || shell_switch || no_foreground;
+    (void)no_foreground;
+    return foreground_tree || mouse_activation || shell_switch;
 }
 
 __declspec(dllexport) int pc_focus_owned(HWND target, HWND foreground) {
@@ -52,6 +57,30 @@ static int user_switching(void) {
            (GetAsyncKeyState(VK_RWIN) & 0x8000);
 }
 
+/* The window the user had when PC-Control started acting, published by PC-Control in a named shared section.
+ * Only read here. */
+static HWND restore_target(void) {
+    HANDLE map = OpenFileMappingW(FILE_MAP_READ, FALSE, L"Local\\PC-Control.FocusRestore");
+    if (!map) return NULL;
+    HWND target = NULL;
+    HWND *view = (HWND *)MapViewOfFile(map, FILE_MAP_READ, 0, 0, sizeof(HWND));
+    if (view) { target = *view; UnmapViewOfFile(view); }
+    CloseHandle(map);
+    return target;
+}
+
+/* The ONE place that may set the foreground: an app that called SetForegroundWindow while starting has
+ * already EMPTIED the foreground when its activation is refused here. While it is empty, and only then,
+ * the user's own window gets it back. This runs inside the app, which Windows lets set the foreground;
+ * PC-Control's process often may not. Never another window, never while someone owns the foreground. */
+static void hand_back(HWND refused) {
+    if (GetForegroundWindow()) return;
+    HWND target = restore_target();
+    if (!target || !IsWindow(target) || !IsWindowVisible(target)) return;
+    if (GetAncestor(target, GA_ROOT) == GetAncestor(refused, GA_ROOT)) return;
+    SetForegroundWindow(target);
+}
+
 static LRESULT CALLBACK guard_proc(int code, WPARAM w, LPARAM l) {
     if (code == HCBT_ACTIVATE || code == HCBT_SETFOCUS) {
         if (!w) return CallNextHookEx(NULL, code, w, l); /* releasing focus is not acquiring it */
@@ -63,6 +92,9 @@ static LRESULT CALLBACK guard_proc(int code, WPARAM w, LPARAM l) {
         if (!pc_focus_allow(owned, mouse,
                             user_switching(), fg == NULL)) {
             InterlockedIncrement(code == HCBT_ACTIVATE ? &blocked_activation : &blocked_focus);
+            /* Tell PC-Control (it reads window properties) that this app tried. */
+            SetPropW(GetAncestor((HWND)w, GA_ROOT), L"PC-Control.Denied", (HANDLE)(ULONG_PTR)GetTickCount());
+            if (code == HCBT_ACTIVATE) hand_back((HWND)w);
             return 1; /* Deny before the foreground or keyboard focus changes. */
         }
     }

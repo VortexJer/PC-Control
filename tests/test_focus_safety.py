@@ -21,7 +21,7 @@ class FocusSafetyTests(unittest.TestCase):
             guard = focus.FocusGuard("test")
         user32 = MagicMock()
         user32.GetPropW.return_value = None
-        with patch.object(focus, "compatible_process", return_value=True), \
+        with patch.object(focus, "process_arch", return_value="native"), \
              patch.object(guard, "attach", return_value=True), \
              patch("win32process.GetWindowThreadProcessId", return_value=(10, 20)), \
              patch("win32gui.PostMessage") as posted, patch.object(focus.ctypes, "WinDLL", return_value=user32):
@@ -32,7 +32,7 @@ class FocusSafetyTests(unittest.TestCase):
 
     def test_failed_window_verification_removes_cbt_hook(self):
         with patch.object(focus, "library", return_value=MagicMock()), \
-             patch.object(focus, "compatible_process", return_value=True), \
+             patch.object(focus, "process_arch", return_value="native"), \
              patch("win32process.GetWindowThreadProcessId", return_value=(10, 20)), \
              patch.object(focus.FocusGuard, "attach", return_value=True), \
              patch.object(focus.FocusGuard, "verify_window", side_effect=RuntimeError("no ack")), \

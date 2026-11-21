@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "claude-pc-control"
-version = "0.8.0"
+version = "0.8.1"
 description = "Let an AI see and operate Windows apps cheaply, without stealing focus or moving your mouse."
 readme = "README.md"
 license = {text = "MIT"}
@@ -36,4 +36,4 @@ pc-control-mcp = "pc_control.server:main"
 packages = ["pc_control"]
 
 [tool.setuptools.package-data]
-pc_control = ["native/*.dll", "native/*.json"]
+pc_control = ["native/*.dll", "native/*.exe", "native/*.json"]

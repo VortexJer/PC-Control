@@ -17,7 +17,7 @@ from input_watch import InputWatch
 
 dll = library()
 for same, mouse, switching, empty in itertools.product((0, 1), repeat=4):
-    assert bool(dll.pc_focus_allow(same, mouse, switching, empty)) == bool(same or mouse or switching or empty)
+    assert bool(dll.pc_focus_allow(same, mouse, switching, empty)) == bool(same or mouse or switching)  # an empty foreground is NOT permission
 assert not dll.pc_focus_install(0), "global hooks must be rejected"
 
 with tempfile.TemporaryDirectory(prefix="pc-control-focus-") as tmp, InputWatch() as watch:
