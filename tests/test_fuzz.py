@@ -107,7 +107,7 @@ async def run(s):
 
 
 params = StdioServerParameters(command=sys.executable, args=["-m", "pc_control.server"], cwd=ROOT,
-                               env={**os.environ, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PYTHONUTF8": "1"})
+                               env={**os.environ, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PC_CONTROL_HIDDEN": "1", "PYTHONUTF8": "1"})
 
 
 async def main():

@@ -598,6 +598,24 @@ def set_pause(on):
         os.remove(f)
 
 
+def java_command(action, path=None):
+    """pc-control java status|enable|disable: the Java Access Bridge for the user's Java apps (what `jabswitch -enable` does: one line in
+    ~/.accessibility.properties). Apps that PC-Control opens get the bridge by themselves; this is for apps the user starts."""
+    from . import java
+    out = []
+    if action == "enable":
+        f = java.enable(path)
+        out += [f"Java Access Bridge ON for your user ({f}).", "Restart your Java apps (Oracle Forms, SQL Developer...) so they load it."]
+    elif action == "disable":
+        f = java.disable(path)
+        out.append(f"Java Access Bridge OFF ({f})." if f else "It was not on.")
+    state = java.props_state(path)
+    dlls = java.find_dlls()
+    out += [f"bridge for your Java apps: {state} ({path or java.PROPS})",
+            f"client DLL: {dlls[0] if dlls else 'none found (it comes with every Java 8+ runtime; install one, or it is taken from the app own Java)'}"]
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(prog="pc-control", description="PC-Control: let an AI see and operate Windows apps. Install, uninstall and control.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -614,6 +632,9 @@ def main(argv=None):
     up = sub.add_parser("update", help="update from any earlier version and reinstall with the same settings")
     up.add_argument("--stop-servers", action="store_true", help="stop the PC-Control servers of open Claude Code sessions (Windows cannot replace a running one)")
     up.add_argument("--after-exit", default="", help=argparse.SUPPRESS)
+    jv = sub.add_parser("java", help="Java apps (Oracle Forms, Swing): turn the Java Access Bridge on/off for your user, or show its state")
+    jv.add_argument("action", choices=["status", "enable", "disable"])
+    jv.add_argument("--file", default=None, help=argparse.SUPPRESS)
     ri = sub.add_parser("reinstall", help="install again with the recorded settings (what update runs after getting the new code)")
     ri.add_argument("--client", choices=["claude", "codex"], default=None)
     for parser in (i, u, sub.choices["status"]):
@@ -661,6 +682,8 @@ def main(argv=None):
                 print("\n".join(update(a.stop_servers)))
         elif a.cmd == "reinstall":
             print("\n".join(reinstall(client=a.client)))
+        elif a.cmd == "java":
+            print("\n".join(java_command(a.action, a.file)))
         elif a.cmd == "serve":
             from .server import main as serve
             serve()

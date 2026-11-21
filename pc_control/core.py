@@ -30,13 +30,14 @@ _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
 
 class Item:
-    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value", "aid", "parent")
+    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value", "aid", "parent", "hwnd")
     def __init__(self, kind, name, rect, ctrl=None, src="uia", clickable=False):
         self.id = 0; self.kind = kind; self.name = name; self.rect = rect
         self.ctrl = ctrl; self.src = src; self.clickable = clickable
         self.value = ""                                      # what a text field currently contains (never for password fields)
         self.aid = ""                                        # its AutomationId when it was looked at (identity check before acting)
         self.parent = None                                   # (kind, name) of the container it was in (a namesake elsewhere is not it)
+        self.hwnd = 0                                        # native control behind an element that UI Automation does not see (Scintilla)
 
 
 def line_key(it):
@@ -135,33 +136,131 @@ def txt_cost(s):
 
 
 # ---------- windows ----------
-def find_window(query):
-    q = str(query).lower().strip()
+TERMINAL_PROCS = {"windowsterminal", "cmd", "powershell", "pwsh", "conhost", "openconsole", "wezterm-gui", "alacritty", "mintty",
+                  "wt", "tabby", "hyper", "kitty", "conemu64", "cmder"}
+STATUS_ICONS = "✳◑◐◒◓●•⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏*· "
+_KNOWN = {}          # hwnd -> (pid, process, title): what a handle was, to find the window that REPLACED it after it closed
+
+
+def _clean_title(t):
+    return t.lstrip(STATUS_ICONS).strip()
+
+
+def _score(q, title, proc, cls):
+    """How well a window matches what the model wrote. The app's own process beats a window that only MENTIONS the app in its title
+    (a terminal tab called "Word con PC control" is not Word); a console window of an app is not the app."""
+    t = _clean_title(title).casefold()
+    score = 0
+    if t == q:
+        score = 100
+    elif proc and (proc == q or proc == q.removesuffix(".exe")):
+        score = 80 + (10 if q in t else 0)
+    elif q in t:
+        score = 40 + (30 if proc and q in proc else 0)
+    elif proc and q in proc:
+        score = 30
+    if not score:
+        return 0
+    if proc in TERMINAL_PROCS and q not in proc and t != q:
+        score -= 35                                                  # a terminal whose title mentions the app (Claude's own session title)
+    if cls == "ConsoleWindowClass" and t != q:
+        score -= 30                                                  # an app's console (Blender's) is not the app
+    return max(score, 1)
+
+
+def _replacement(old):
+    """The window that took the place of a closed handle: same program, the only window of its process with a title (a start-up window
+    that became the main one, a document reopened). None if it cannot be told for sure."""
+    known = _KNOWN.get(old)
+    if not known:
+        st = _state.get(old)
+        known = (st.get("pid"), "", st.get("title", "")) if st else None
+    if not known:
+        return None
+    pid, proc, title = known
+    same_pid, same_proc = [], []
+    for h in top_windows():
+        try:
+            if not win32gui.GetWindowText(h) or win32gui.GetClassName(h) == "PC-Control-Overlay":
+                continue
+            p = window_pid(h)
+        except Exception:
+            continue
+        if pid and p == pid:
+            same_pid.append(h)
+        elif proc and psutil_name(p) == proc:
+            same_proc.append(h)
+    for group in (same_pid, same_proc):
+        exact = [h for h in group if title and win32gui.GetWindowText(h) == title]
+        if len(exact) == 1:
+            return exact[0]
+        if len(group) == 1:
+            return group[0]
+    return None
+
+
+def _remember(h):
+    try:
+        pid = window_pid(h)
+        _KNOWN[h] = (pid, psutil_name(pid), win32gui.GetWindowText(h))
+        if len(_KNOWN) > 400:
+            _KNOWN.pop(next(iter(_KNOWN)))
+    except Exception:
+        pass
+
+
+class WindowReplaced(LookupError):
+    """The hwnd is gone but its program shows ONE window that took its place: callers that only read may follow it."""
+    def __init__(self, old, new):
+        self.old, self.new = old, new
+        super().__init__(f"no window with hwnd {old}: it closed and its program now shows {new} «{win32gui.GetWindowText(new)[:40]}» "
+                         f"(the same app): use {new}")
+
+
+def find_window(query, follow=False):
+    """The window the model means: an hwnd, an exact title, the app's process name (winword, mspaint) or a title substring.
+    follow=True: a closed hwnd whose app replaced it with ONE new window resolves to that window (for reading)."""
+    q = str(query).casefold().strip()
     if not q:
-        raise LookupError("no window given: use a title substring or an hwnd from windows()")
+        raise LookupError("no window given: use a title substring, a program name or an hwnd from windows()")
     if q.isdigit():
-        if not win32gui.IsWindow(int(q)):
-            raise LookupError(f"no window with hwnd {q} : it was closed, or the app replaced it (a start-up window often becomes the main one): call windows() to find it again")
-        return int(q)
+        h = int(q)
+        if not win32gui.IsWindow(h):
+            new = _replacement(h)
+            if new:
+                if follow:
+                    return new
+                raise WindowReplaced(h, new)
+            raise LookupError(f"no window with hwnd {q}: it was closed: call windows() to find it again")
+        _remember(h)
+        return h
+    q = _clean_title(q).casefold() or q
     hits = []
     def cb(h, _):
         if win32gui.IsWindowVisible(h):
             t = win32gui.GetWindowText(h)
-            if t and q in t.lower() and win32gui.GetClassName(h) != "PC-Control-Overlay":
-                hits.append((h, t))
+            if not t:
+                return
+            cls = win32gui.GetClassName(h)
+            if cls == "PC-Control-Overlay":
+                return
+            proc = psutil_name(window_pid(h))
+            sc = _score(q, t, proc, cls)
+            if sc:
+                hits.append((sc, h, t, cls))
     win32gui.EnumWindows(cb, None)
     if not hits:
-        raise LookupError(f"no window with '{query}' in its title: call windows()")
-
-    hits = [(h, t) for h, t in hits if not (win32gui.GetClassName(h) == "ApplicationFrameWindow"       # a Store app's frame and its
-                                            and sum(1 for _, t2 in hits if t2 == t) > 1)] or hits       # content: one app, same title
-    if len(hits) == 1:
-        return hits[0][0]
-    exact = [h for h, t in hits if t.lower().strip() == q]
-    if len(exact) == 1:
-        return exact[0]
-    # several windows match (two File Explorer windows, two terminals of the same app...): guessing would act on the wrong one
-    raise AmbiguousWindow(f"{len(hits)} windows match '{query}': " + "; ".join(f"{h} «{t[:40]}»" for h, t in hits[:6])
+        raise LookupError(f"no window with '{query}' in its title or program name: call windows()")
+    hits = [x for x in hits if not (x[3] == "ApplicationFrameWindow"                                    # a Store app's frame and its
+                                    and sum(1 for y in hits if y[2] == x[2]) > 1)] or hits            # content: one app, same title
+    hits.sort(key=lambda x: -x[0])
+    best = hits[0][0]
+    top = [x for x in hits if x[0] >= best - 14]
+    if len(top) == 1:
+        _remember(top[0][1])
+        return top[0][1]
+    # several windows of the same quality (two documents of the same app...): guessing would act on the wrong one
+    raise AmbiguousWindow(f"{len(top)} windows match '{query}': " + "; ".join(f"{h} «{_clean_title(t)[:40]}»" for _, h, t, _ in top[:6])
                           + " - use the hwnd (the number) of the one you mean")
 
 
@@ -180,6 +279,41 @@ def list_windows():
 
 
 # ---------- capture without focusing ----------
+def dpi_factor(hwnd):
+    """How much Windows scales this window up on its monitor: 1.0 for apps that handle DPI themselves; 1.5 for a DPI-UNAWARE app (old
+    Win32, WinForms, VB6, Java 8 / Oracle Forms...) on a 150 % monitor. Such an app lives in smaller "logical" pixels: its capture comes
+    out at the logical size and the coordinates in its mouse messages are logical too."""
+    try:
+        u = ctypes.windll.user32
+        wdpi = u.GetDpiForWindow(hwnd)
+        mon = u.MonitorFromWindow(hwnd, 2)
+        x, y = ctypes.c_uint(), ctypes.c_uint()
+        if wdpi and ctypes.windll.shcore.GetDpiForMonitor(mon, 0, ctypes.byref(x), ctypes.byref(y)) == 0 and x.value and abs(x.value - wdpi) > 1:
+            return x.value / wdpi
+    except Exception:
+        pass
+    return 1.0
+
+
+def to_app_client(hwnd, cx, cy):
+    """Client coordinates in OUR (real) pixels -> the ones the app reads in its mouse messages (its logical pixels if Windows scales it)."""
+    f = dpi_factor(hwnd)
+    return (round(cx / f), round(cy / f)) if f > 1.01 else (cx, cy)
+
+
+def to_app_screen(hwnd, sx, sy):
+    """A screen point in real pixels -> the app's own screen coordinates (WM_MOUSEWHEEL carries screen coordinates)."""
+    if dpi_factor(hwnd) <= 1.01:
+        return sx, sy
+    pt = ctypes.wintypes.POINT(sx, sy)
+    try:
+        if ctypes.windll.user32.PhysicalToLogicalPointForPerMonitorDPI(hwnd, ctypes.byref(pt)):
+            return pt.x, pt.y
+    except Exception:
+        pass
+    return sx, sy
+
+
 def grab(hwnd, rect):
     import win32ui
     l, t, r, b = rect; w, h = r - l, b - t
@@ -191,7 +325,46 @@ def grab(hwnd, rect):
     ok = ctypes.windll.user32.PrintWindow(hwnd, mem.GetSafeHdc(), 2)
     img = np.frombuffer(bmp.GetBitmapBits(True), dtype=np.uint8).reshape(h, w, 4)[:, :, :3].copy()
     win32gui.DeleteObject(bmp.GetHandle()); mem.DeleteDC(); src.DeleteDC(); win32gui.ReleaseDC(hwnd, hdc)
+    f = dpi_factor(hwnd)
+    if ok and f > 1.01:                       # a DPI-unaware app is printed at its logical size in the top-left corner: scale it to the
+        lw, lh = max(1, round(w / f)), max(1, round(h / f))       # window's real pixels, so pixels, OCR and the UI tree share coordinates
+        img = cv2.resize(img[:lh, :lw], (w, h), interpolation=cv2.INTER_LINEAR)
     return img if ok and img.max() >= 8 else None
+
+
+def snap(hwnd):
+    """A grey picture of the window, to tell afterwards whether an action changed anything on screen (None if it cannot be captured)."""
+    try:
+        if win32gui.IsIconic(hwnd):
+            return None
+        rect = win32gui.GetWindowRect(hwnd)
+        img = grab(hwnd, rect)
+        return None if img is None else (cv2.cvtColor(img, cv2.COLOR_BGR2GRAY), rect)
+    except Exception:
+        return None
+
+
+def pixel_change(before, after, roi=None):
+    """None if it cannot be measured; '' if nothing meaningful changed on screen; else a short phrase saying where it changed.
+    A blinking text caret (a thin vertical line) and a few stray pixels are not a change. roi: window pixels of what was acted on."""
+    if before is None or after is None:
+        return None
+    (a, _), (b, _) = before, after
+    if a.shape != b.shape:
+        return "the window changed size"
+    d = cv2.absdiff(a, b) > 24
+    n = int(d.sum())
+    if n < 25:
+        return ""
+    ys, xs = np.nonzero(d)
+    if xs.max() - xs.min() <= 3 and ys.max() - ys.min() <= 60:
+        return ""                                                    # the text caret blinking
+    where = "in the window"
+    if roi:
+        x0, y0, x1, y1 = [int(v) for v in roi]
+        inside = int(d[max(0, y0 - 16):max(0, y1 + 16), max(0, x0 - 16):max(0, x1 + 16)].sum())
+        where = "at the element and around it" if inside >= 25 else "elsewhere in the window (not where it acted)"
+    return f"pixels changed {where} ({100 * n / d.size:.1f}% of the window)"
 
 
 # ---------- text extraction ----------
@@ -316,15 +489,73 @@ def popup_windows(hwnd):
     return out
 
 
+_SURF = {}           # hwnd -> (pid, surface, time)
+
+
+def surface(hwnd):
+    """Which reader understands this window: 'java' (Java Access Bridge on), 'java-off' (a Java window whose app did not load the
+    bridge: only pixels), 'remote' (a remote desktop / virtual machine screen: only pixels) or 'uia' (UI Automation)."""
+    pid = window_pid(hwnd)
+    hit = _SURF.get(hwnd)
+    if hit and hit[0] == pid and (hit[1] != "java-off" or time.time() - hit[2] < 10):
+        return hit[1]
+    from . import java, remote
+    s = "uia"
+    if remote.kind(hwnd):
+        s = "remote"
+    elif java.is_java_window(hwnd):
+        try:
+            s = {"on": "java", "off": "java-off", "missing": "java-off"}[java.bridge_state(hwnd)]
+        except Exception:
+            s = "java-off"
+    _SURF[hwnd] = (pid, s, time.time())
+    return s
+
+
+def tree(hwnd, rect, offscreen_ok=False, budget_s=6.0, popups=True):
+    """The elements of a window from the reader that understands it (see surface)."""
+    s = surface(hwnd)
+    if s == "java":
+        from . import java
+        try:
+            return java.walk(hwnd, rect, budget_s=budget_s, offscreen_ok=offscreen_ok)
+        except Exception:
+            _SURF.pop(hwnd, None)
+            return []
+    if s == "remote":
+        return []                                                    # the frame of a remote screen has nothing to read: pixels only
+    if popups:
+        return walk_all(hwnd, rect, offscreen_ok=offscreen_ok, budget_s=budget_s)
+    return walk_uia(hwnd, rect, budget_s=budget_s, offscreen_ok=offscreen_ok) + native_editors(hwnd, rect)
+
+
 def walk_all(hwnd, rect, **kw):
     """The window tree plus the entries of open menus that are another window (the Windows context menu, drop-downs...)."""
     items = walk_uia(hwnd, rect, **kw)
+    items += native_editors(hwnd, rect)
     for h in popup_windows(hwnd):
         try:
             items += [i for i in walk_uia(h, rect, offscreen_ok=True) if i.kind in ("menuitem", "menu")]
         except Exception:
             pass
     return items
+
+
+def native_editors(hwnd, rect):
+    """Editor controls that UI Automation cannot see but that have their own message API (Scintilla), as document elements."""
+    from . import scintilla
+    out = []
+    for h in scintilla.editors(hwnd):
+        try:
+            l, t, r, b = win32gui.GetWindowRect(h)
+            lines = scintilla.send(h, scintilla.SCI_GETLINECOUNT, timeout=800)
+            it = Item("document", f"editor ({lines} lines)" if lines else "editor", (l - rect[0], t - rect[1], r - rect[0], b - rect[1]),
+                      None, "sci", True)
+            it.hwnd = h
+            out.append(it)
+        except Exception:
+            pass
+    return out
 
 
 async def _ocr(png):
@@ -459,7 +690,7 @@ def _look_minimized(hwnd, mode, edge):
     edge = edge or auto_edge(screen_long_for(hwnd))
     rc = win32gui.GetWindowPlacement(hwnd)[4]; w, h = rc[2] - rc[0], rc[3] - rc[1]
     if mode != "image":
-        items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True)
+        items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True) + native_editors(hwnd, win32gui.GetWindowRect(hwnd))
         if sum(len(i.name) for i in items) >= 40:            # a minimized window has no image alternative: any tree with real text is worth sending
             assign_ids(hwnd, items)
             text = list_format(items); tok = txt_cost(text)
@@ -497,11 +728,22 @@ def _look(hwnd, mode, edge):
     rect = win32gui.GetWindowRect(hwnd); w, h = rect[2] - rect[0], rect[3] - rect[1]
     mini = bool(win32gui.IsIconic(hwnd))
     res = {"window": win32gui.GetWindowText(hwnd)[:50], "hwnd": hwnd, "size": f"{w}x{h}"}
+    if w <= 0 or h <= 0:                                             # a window with no size yet (being created or destroyed)
+        res.update(mode="none", why="the window has no size right now (it is opening or closing): look again in a moment", tokens=0)
+        return res
+    surf = surface(hwnd)
+    if surf == "java-off":
+        from . import java
+        res["note"] = java.GUIDE_OFF
+    elif surf == "remote":
+        from . import remote
+        res["note"] = (f"{remote.kind(hwnd)} screen: read from its pixels; click/type/key/scroll go INTO the remote session as input "
+                       "messages to the client (your mouse and keyboard are not used)")
     if mini:
         rect = (0, 0, 0, 0)
     img = None if mini else grab(hwnd, rect)
     if img is None and not mini:
-        res["note"] = "capture not available (black/protected window)"
+        res["note"] = (res["note"] + " | " if res.get("note") else "") + "capture not available (black/protected window)"
     iw, ih = fit(w, h, edge); img_tok = img_cost(iw, ih)
     res["image_cost"] = img_tok
 
@@ -520,7 +762,7 @@ def _look(hwnd, mode, edge):
             res.update(image=path, image_size=f"{iw}x{ih}", tokens=img_tok)
         else:
             res.update(text=text, tokens=tokens)
-        _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items if it.src == "uia"},
+        _state[hwnd] = {"items": {it.id: it for it in items}, "lines": {line_key(it) for it in items if it.src in ("uia", "jab")},
                         "rect": rect, "scale": scale, "mode": kind, "pid": window_pid(hwnd), "title": win32gui.GetWindowText(hwnd)}
         return res
 
@@ -531,10 +773,10 @@ def _look(hwnd, mode, edge):
     if mode == "image":
         if img is None:
             res.update(mode="none", why="could not capture", tokens=0); return res
-        known[:] = walk_all(hwnd, rect)            # ids for the numbered marks on the image
+        known[:] = tree(hwnd, rect)                # ids for the numbered marks on the image
         return finish("image", "image requested")
     # 1) Windows tree (free and exact)
-    uia = walk_all(hwnd, rect); known = uia
+    uia = tree(hwnd, rect); known = uia
     adequate = sum(1 for i in uia if i.clickable) >= 4 and sum(len(i.name) for i in uia) >= 40
     items, kind = (uia if adequate else []), "uia"
     blind = content = 0; zones = []
@@ -588,7 +830,14 @@ def changes(query):
     if st.get("mode") not in ("uia", "uia+ocr") and not st.get("lines"):
         return "change not measurable in this mode (the window exposes no text): call look()"
     rect = win32gui.GetWindowRect(hwnd)
-    now = {line_key(i) for i in walk_uia(hwnd, rect, offscreen_ok=bool(win32gui.IsIconic(hwnd)))}
+    if surface(hwnd) == "java":
+        from . import java
+        try:
+            now = {line_key(i) for i in java.walk(hwnd, rect, keep=False)}
+        except Exception:
+            return "change not measurable right now (the Java app did not answer): call look()"
+    else:
+        now = {line_key(i) for i in walk_uia(hwnd, rect, offscreen_ok=bool(win32gui.IsIconic(hwnd)))}
     before = st["lines"]; st["lines"] = now
     add, rem = sorted(now - before), sorted(before - now)
     if not add and not rem:
@@ -628,6 +877,15 @@ def live_rel(hwnd, it):
     resized = bool(st) and _size(win32gui.GetWindowRect(hwnd)) != _size(st["rect"])
     if it.ctrl is None:
         return None if resized else it.rect
+    if getattr(it, "src", "") == "jab":                              # Java tells where its element is NOW, also after a resize
+        try:
+            info = it.ctrl.info()
+            if "showing" not in info.states_en_US:
+                return None
+            r = it.ctrl.screen_rect(info)
+            return (r.left - wl, r.top - wtop, r.right - wl, r.bottom - wtop) if r.width() > 0 and r.height() > 0 else None
+        except Exception:
+            return None
     nh, _ = _native(it.ctrl)
     if nh and not win32gui.IsWindowVisible(nh):                      # control with its own window that is already hidden
         return None
@@ -785,6 +1043,74 @@ def wait_user_quiet(quiet=0.25, timeout=None):
     return True
 
 
+# ---------- independence: Claude works while the user works ELSEWHERE ----------
+# Measured (tests/input_probe_app.py, 2026-11-21): a message posted to a BACKGROUND app is not mixed with the user's typing - their keys go
+# to their own foreground thread - but the key STATE is shared: while the user holds Shift/Ctrl/Alt/Win (or a mouse button), the target's
+# GetKeyState sees it held, so a posted Home becomes Shift+Home and a click becomes Shift+click. So for any other window Claude waits only
+# for a held modifier to be released (milliseconds), never for the user to stop typing; only the window the user is in keeps the quiet rule.
+MODIFIERS = (0x10, 0x11, 0x12, 0x5B, 0x5C)
+HELD_WAIT = 3.0
+
+
+def _mods_down():
+    return any(win32api.GetAsyncKeyState(vk) & 0x8000 for vk in MODIFIERS)
+
+
+def user_in(hwnd):
+    """True if the user's keyboard is in this window or in its input thread (same app window, its dialogs): there input can mix."""
+    try:
+        fg = win32gui.GetForegroundWindow()
+        if not fg or not hwnd:
+            return False
+        root = lambda h: ctypes.windll.user32.GetAncestor(h, 3) or h      # GA_ROOTOWNER
+        return root(fg) == root(hwnd) or win32process.GetWindowThreadProcessId(fg)[0] == win32process.GetWindowThreadProcessId(hwnd)[0]
+    except Exception:
+        return True                                                     # unknown: be careful
+
+
+def _mouse_in(hwnd):
+    """The user's pointer is over this window, or this window's thread has captured their mouse (a drag of theirs inside it)."""
+    try:
+        x, y = win32api.GetCursorPos()
+        under = win32gui.WindowFromPoint((x, y))
+        root = lambda h: ctypes.windll.user32.GetAncestor(h, 2) or h      # GA_ROOT
+        if under and root(under) == root(hwnd):
+            return True
+        tid = win32process.GetWindowThreadProcessId(hwnd)[0]
+        class GTI(ctypes.Structure):
+            _fields_ = [("cbSize", ctypes.c_uint), ("flags", ctypes.c_uint), ("act", ctypes.c_void_p), ("foc", ctypes.c_void_p),
+                        ("cap", ctypes.c_void_p), ("menu", ctypes.c_void_p), ("move", ctypes.c_void_p), ("caret", ctypes.c_void_p),
+                        ("rc", ctypes.c_long * 4)]
+        g = GTI(); g.cbSize = ctypes.sizeof(GTI)
+        return bool(ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(g)) and g.cap)
+    except Exception:
+        return False
+
+
+def wait_free_keys(hwnd, timeout=None):
+    """Before keys/characters to `hwnd`: in the user's own window, wait for them to stop typing (their word is not split);
+    anywhere else, only wait while a modifier is held (it would turn Claude's key into a shortcut). False = still busy."""
+    if user_in(hwnd):
+        return wait_user_quiet(timeout=timeout)
+    end = time.time() + (HELD_WAIT if timeout is None else timeout)
+    while _mods_down():
+        if time.time() > end:
+            return False
+        time.sleep(0.01)
+    return True
+
+
+def wait_free_mouse(hwnd, timeout=None):
+    """Before a synthetic click/drag/wheel on `hwnd`: a held modifier would make it a Shift/Ctrl-click, so wait for it; a held mouse
+    button only matters when the user's gesture is IN this window (their drag would break). A drag elsewhere does not wait."""
+    end = time.time() + (MOUSE_WAIT if timeout is None else timeout)
+    while _mods_down() or (_buttons_down() and (user_in(hwnd) or _mouse_in(hwnd))):
+        if time.time() > end:
+            return False
+        time.sleep(0.01)
+    return True
+
+
 RIGHT_CLICK_QUIET = 3.0          # a right click opens a REAL menu: only if the user has not touched anything for this long
 
 
@@ -816,11 +1142,11 @@ def _child_at(hwnd, sx, sy):
 
 def _post_click(hwnd, x, y, right=False, double=False):
     rect = win32gui.GetWindowRect(hwnd); sx, sy = rect[0] + x, rect[1] + y
-    tgt, (cx, cy) = _child_at(hwnd, sx, sy); lp = win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
+    tgt, (cx, cy) = _child_at(hwnd, sx, sy); cx, cy = to_app_client(tgt, cx, cy); lp = win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
     if not right and not double and "button" in win32gui.GetClassName(tgt).lower():
         win32gui.SendMessage(tgt, 0x00F5, 0, 0)          # BM_CLICK: standard button, no focus
         return "button"
-    if not wait_user_mouse_idle():
+    if not wait_free_mouse(hwnd):
         return "busy"                                    # the user is dragging or pressing: a synthetic click would break it
     d, u, mk = (win32con.WM_RBUTTONDOWN, win32con.WM_RBUTTONUP, win32con.MK_RBUTTON) if right else (win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON)
     win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, lp)
@@ -877,11 +1203,13 @@ def drag(query, points, shape="path", right=False, step=6, delay=0.006):
         return "did not drag: a point is outside the window; look again and use points inside the image"
     path = _densify(pts, step)
     l, t = win32gui.GetWindowRect(hwnd)[:2]
-    if not wait_user_mouse_idle():
+    if not wait_free_mouse(hwnd):
         return "did not drag: you are pressing or dragging with the mouse and a drag of mine would break your gesture; retry when you let go"
     tgt, _ = _child_at(hwnd, l + path[0][0], t + path[0][1])
     mk, d, u = (win32con.MK_RBUTTON, win32con.WM_RBUTTONDOWN, win32con.WM_RBUTTONUP) if right else (win32con.MK_LBUTTON, win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP)
-    lp = lambda p: win32api.MAKELONG(win32gui.ScreenToClient(tgt, (l + p[0], t + p[1]))[0] & 0xFFFF, win32gui.ScreenToClient(tgt, (l + p[0], t + p[1]))[1] & 0xFFFF)
+    def lp(p):
+        cx, cy = to_app_client(tgt, *win32gui.ScreenToClient(tgt, (l + p[0], t + p[1])))
+        return win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
     down, last = False, path[0]
     try:
         win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, lp(path[0]))
@@ -968,7 +1296,19 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if not st or target not in st["items"]:
             return "unknown id: call look() first"
         it = st["items"][target]
-        if it.ctrl is not None:
+        if getattr(it, "src", "") == "jab" and it.ctrl is not None and not right:
+            from . import java
+            try:
+                if it.kind == "dataitem" and isinstance(it.ctrl, java.JCell) and java.select_cell(it.ctrl):
+                    return f"ok (Java table cell «{it.name[:40]}» selected through the accessibility bridge)"
+                if it.kind in ("tabitem", "listitem") and java.select_in_parent(it.ctrl):
+                    return f"ok (Java selection of «{it.name[:40]}» through the accessibility bridge)"
+                done = java.do_action(it.ctrl)
+                if done:
+                    return done
+            except Exception:
+                pass                                                 # no action: pressed by position below (mouse message)
+        if it.ctrl is not None and getattr(it, "src", "") != "jab":
             from . import actions
             if actions.scroll_into_view(it.ctrl):                         # out of view (found with look(find=...)): bring it in first
                 rel = None
@@ -1032,6 +1372,12 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         why = right_click_blocked()
         if why:
             return f"did not open the context menu: {why}. Retry when the user stops working in that app."
+    if surface(hwnd) == "remote":
+        from . import remote
+        how = remote.click(hwnd, x, y, right, double)
+        if how == "busy":
+            return "did not press: you are pressing or dragging with the mouse and a click of mine would break your gesture; retry when you let go"
+        return how
     how = _post_click(hwnd, x, y, right, double)
     if how == "busy":
         return "did not press: you are pressing or dragging with the mouse and a click of mine would break your gesture; retry when you let go"
@@ -1153,6 +1499,40 @@ def type_text(query, text, target=None, replace=False, progress=None):
         if out:
             return out
     dest = None
+    if surface(hwnd) == "remote":
+        from . import remote
+        where = ""
+        if target is not None:                                       # first click the field (an id from look, or x,y of the last image)
+            if isinstance(target, tuple):
+                k = st.get("scale", 1.0) if st else 1.0
+                x, y = int(target[0] * k), int(target[1] * k)
+            elif st and target in st["items"]:
+                r = st["items"][target].rect; x, y = (r[0] + r[2]) // 2, (r[1] + r[3]) // 2
+            else:
+                return "did not type: unknown id: look at the remote screen again"
+            if remote.click(hwnd, x, y) == "busy":
+                return "did not type: you are pressing the mouse; retry when you let go"
+            time.sleep(0.25); where = f" after clicking at {x},{y}"
+        if replace:
+            remote.key(hwnd, "ctrl+a"); time.sleep(0.05)
+        out = remote.type_text(hwnd, text)
+        return out.replace("ok (", f"ok (clicked the field{where}; " if where else "ok (", 1) if out.startswith("ok") else out
+    if target is not None and st and target in st["items"] and getattr(st["items"][target], "src", "") == "sci":
+        from . import scintilla
+        return scintilla.write(st["items"][target].hwnd, text, replace)
+    if target is not None and st and target in st["items"] and getattr(st["items"][target], "src", "") == "jab":
+        it = st["items"][target]
+        from . import java
+        if _typing_busy(hwnd, it.ctrl):
+            return "did not type: you are editing this field; your keyboard and selection were left untouched"
+        if it.kind in ("combobox", "list"):
+            return java.select_option(it.ctrl, text) or "did not select: this Java list exposes no entries through the accessibility bridge"
+        out = java.set_text(it.ctrl, text, replace)
+        if out:
+            LAST_TYPED[hwnd] = it
+            return out
+        return ("did not type: this Java element is not an editable text through the accessibility bridge; "
+                "look again and use the id of the text field")
     if target is not None and st and target in st["items"] and st["items"][target].ctrl is not None:
         ctrl = st["items"][target].ctrl
         nh, cls = _native(ctrl)
@@ -1201,8 +1581,8 @@ def type_text(query, text, target=None, replace=False, progress=None):
     page = dest == chromium_input(hwnd) and dest != 0
     if target is not None:
         return "did not type: the target has no live control; look again instead of typing at the user's caret"
-    if not wait_user_quiet():
-        return "did not type: you are using the keyboard or mouse; your input was left untouched"
+    if not wait_free_keys(dest):
+        return "did not type: you are holding a modifier key or typing in this same window; your input was left untouched"
     for ch in text.replace("\r\n", "\n").replace("\n", "\r"):                  # a line break is Enter (CR), not LF
         win32gui.PostMessage(dest, win32con.WM_CHAR, ord(ch), 0)
     where = "to the page of this Chromium/Electron app" if page else "to the window"
@@ -1212,9 +1592,55 @@ _VK = {"enter": 0x0D, "tab": 0x09, "esc": 0x1B, "up": 0x26, "down": 0x28, "left"
        "backspace": 0x08, "delete": 0x2E, "home": 0x24, "end": 0x23, "pgup": 0x21, "pgdn": 0x22, "space": 0x20,
        **{f"f{i}": 0x6F + i for i in range(1, 13)}}
 
+LAST_TYPED = {}       # hwnd -> the Java field Claude typed into last (where enter/backspace apply)
+JAVA_KEYS = {"enter": ("notify-field-accept", "insert-break"), "backspace": ("delete-previous",), "delete": ("delete-next",),
+             "home": ("caret-begin-line", "caret-begin"), "end": ("caret-end-line", "caret-end"), "ctrl+a": ("select-all",),
+             "tab": ("insert-tab",)}
+
+
+def _java_key(hwnd, name):
+    """A key on a Java text field = the field's own editor action (what the key would trigger), through the bridge. None if not one."""
+    acts = JAVA_KEYS.get(name.lower().replace(" ", ""))
+    if not acts:
+        return None
+    from . import java
+    field = LAST_TYPED.get(hwnd)
+    if field is None:
+        focused = [it for it in _state.get(hwnd, {}).get("items", {}).values() if getattr(it, "src", "") == "jab" and it.kind == "edit"
+                   and it.ctrl is not None and it.ctrl.HasKeyboardFocus]
+        field = focused[0] if len(focused) == 1 else None
+    if field is None:
+        return None
+    try:
+        return java.do_named(field.ctrl, acts, f"key '{name}' on «{field.name[:30]}»")
+    except Exception:
+        return None
+
+
+def key_lparam(vk, up=False):
+    """The lParam a real key press carries: repeat count 1, its scancode and the extended bit (arrows, home/end, insert/delete...).
+    Apps that read the scancode (games, Java, Chromium, remote clients) ignore a key whose lParam is 0."""
+    sc = ctypes.windll.user32.MapVirtualKeyW(vk, 0)
+    ext = vk in (0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27, 0x28, 0x2D, 0x2E)
+    return 1 | (sc << 16) | ((1 << 24) if ext else 0) | (0xC0000000 if up else 0)
+
+
 def key(query, name):
     """Single keys by message, no focus. Shortcuts (ctrl+s...) go through actions.shortcut: the app's own command, never real keys."""
     hwnd = find_window(query); parts = name.lower().split("+")
+    surf = surface(hwnd)
+    if surf == "remote":
+        from . import remote
+        return remote.key(hwnd, name)
+    if surf == "java":
+        done = _java_key(hwnd, name)
+        if done:
+            return done
+    if len(parts) == 1 and parts[0] in ("enter", "space", "tab"):              # Scintilla: the key's character at Claude's point
+        from . import scintilla
+        eds = scintilla.editors(hwnd)
+        if len(eds) == 1:
+            return scintilla.write(eds[0], {"enter": "\n", "space": " ", "tab": "\t"}[parts[0]])
     if len(parts) == 1 and parts[0] in _VK and win32gui.GetClassName(hwnd) == "OpusApp":
         from . import word                                       # Word: the key would go to the USER's caret; it is done at Claude's point instead
         if parts[0] == "enter":
@@ -1240,14 +1666,16 @@ def key(query, name):
             if parts[0] in ("enter", "space"):
                 return type_text(query, "\r" if parts[0] == "enter" else " ", documents[0].id)
             return f"did not press '{parts[0]}': RichEdit movement/deletion keys would affect the user's caret; use type by id, or enter/space at the document end"
-        if not wait_user_quiet():
-            return "did not press the key: you are typing and it would mix with your text; retry when you stop"
+        if not wait_free_keys(hwnd):
+            return "did not press the key: you are holding a modifier key, or typing in this same window, and it would mix with your input; retry in a moment"
         tgt = _focus_hwnd(hwnd); vk = _VK[parts[0]]
+        if not tgt and not _thread_focus(hwnd) and win32gui.IsWindow(hwnd):
+            tgt = hwnd                                           # nothing in the app has the focus: the window itself takes the key (F5...)
         if not tgt:
             return "did not press: no unambiguous input control belongs to this window; another window's caret was not used"
         if "richedit" in win32gui.GetClassName(tgt).lower():
             return "did not press: look at this RichEdit document first; raw keys would affect the user's caret"
-        win32gui.PostMessage(tgt, win32con.WM_KEYDOWN, vk, 0); win32gui.PostMessage(tgt, win32con.WM_KEYUP, vk, 0xC0000001)
+        win32gui.PostMessage(tgt, win32con.WM_KEYDOWN, vk, key_lparam(vk)); win32gui.PostMessage(tgt, win32con.WM_KEYUP, vk, key_lparam(vk, True))
         return "ok (key sent by message to the app, at its focus point)"
     from . import actions
     return actions.shortcut(query, name)

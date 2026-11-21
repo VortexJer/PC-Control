@@ -88,14 +88,14 @@ try:
         out["denied"] = await call(s, "open_app", command="cmd.exe /c exit")
         out["img_min"] = await call(s, "look", window=h1, mode="image") if h1 else None
         return out
-    out = asyncio.run(session({"PC_CONTROL_MODE": "strict", "PC_CONTROL_ALLOW": "pc_control_host"}, b))
+    out = asyncio.run(session({"PC_CONTROL_MODE": "strict", "PC_CONTROL_ALLOW": "pc_control_host", "PC_CONTROL_HIDDEN": "1"}, b))   # the user turned the hidden desktop on
     checks["open_app minimized"] = (not out["o1"][0]) and "minimized" in out["o1"][1]
     checks["open_app hidden"] = (not out["o2"][0]) and "hidden desktop" in out["o2"][1]
     checks["windows lists the hidden one"] = "(hidden)" in out["windows"][1]
     for tag in ("min", "hidden"):
         v = out.get(tag)
-        checks[f"look+click+type ({tag})"] = bool(v) and (not v[1][0]) and "changes: + Clicks: 1" in v[1][1] and v[4]["clicks"] == 1 and v[4]["text"] == "hello"
-        checks[f"type without an id rejected ({tag})"] = bool(v) and v[3][0]
+        checks[f"look+click+type ({tag})"] = bool(v) and (not v[1][0]) and "changes: + Clicks: 1" in v[1][1] and v[4]["clicks"] == 1 and v[4]["text"] == "hellono id"
+        checks[f"type without an id goes ONLY to the window's single text field ({tag})"] = bool(v) and not v[3][0] and "only text field" in v[3][1]
         if v and not checks[f"look+click+type ({tag})"]: print("DEBUG", tag, "| look:", v[0][1][:200].replace(chr(10), " / "), "| click:", v[1], "| type:", v[2], "| state:", v[4])
     checks["protected without question support: NOT executed and it explains why"] = out["denied"][0] and "same call" in out["denied"][1]
     # Claude Code does not support questions from the server: the hook makes CLAUDE CODE ask (the model cannot answer)

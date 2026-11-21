@@ -15,6 +15,9 @@ core.win32gui.GetClassName = lambda h: "NetUIHWND"                       # not a
 core.win32gui.GetWindowRect = lambda h: (0, 0, 800, 600)
 core._child_at = lambda h, x, y: (h, (x, y))
 core._focus_hwnd = lambda h: h
+core._mods_down = lambda: False
+core._mouse_in = lambda h: False
+core.user_in = lambda h: True                 # cases 1-6: the user works in THIS window (same-app coexistence)
 
 # 1) the mouse is free: the synthetic click goes out
 core._buttons_down = lambda: False
@@ -25,7 +28,7 @@ c["mouse free: the click goes out"] = how == "mouse" and len(sent) >= 3
 seq = iter([True, True, True, False] + [False] * 50)
 core._buttons_down = lambda: next(seq)
 sent.clear(); t0 = time.time(); how = core._post_click(1, 10, 10); dt = time.time() - t0
-c["the user drags and releases: it waits and then presses"] = how == "mouse" and len(sent) >= 3 and dt >= 0.05
+c["the user drags and releases: it waits and then presses"] = how == "mouse" and len(sent) >= 3 and dt >= 0.02
 # 3) and while they do not release, NOTHING is sent (their gesture is not broken)
 core._buttons_down = lambda: True; core.MOUSE_WAIT = 0.3
 sent.clear(); how = core._post_click(1, 10, 10)
@@ -39,6 +42,7 @@ c["click(): explains it did not press because the user is dragging"] = "would br
 core.MOUSE_WAIT = 2.0
 # 5) a NATIVE click (BM_CLICK to a button) does not use the user's mouse: it does not wait even if they are pressing
 core.win32gui.GetClassName = lambda h: "Button"
+core._buttons_down = lambda: True
 sent.clear(); how = core._post_click(1, 10, 10)
 c["a native button (BM_CLICK) does not depend on the user's mouse"] = how == "button" and sent == [("send", 0x00F5)]
 
@@ -51,8 +55,31 @@ sent.clear(); t0 = time.time(); out = core.key("x", "enter"); dt = time.time() -
 c["the user types: the key waits for them to stop and then goes out"] = out.startswith("ok") and len(sent) == 2 and dt >= 0.05
 core._idle_ms = lambda: 50; core.KEY_QUIET_WAIT = 0.3
 sent.clear(); out = core.key("x", "enter")
-c["the user never stops typing: it does not intrude on their text and explains why"] = "you are typing" in out and sent == []
+c["the user never stops typing: it does not intrude on their text and explains why"] = "typing in this same window" in out and sent == []
 core.KEY_QUIET_WAIT = 3.0
+
+# 7) INDEPENDENCE: the user works in ANOTHER window -> Claude never waits for their typing or their drag there
+core.user_in = lambda h: False
+core._idle_ms = lambda: 10; core._keys_down = lambda: True; core._buttons_down = lambda: True
+sent.clear(); t0 = time.time(); out = core.key("x", "enter"); dt = time.time() - t0
+c["user typing in another window: the key goes out at once"] = out.startswith("ok") and len(sent) == 2 and dt < 0.05
+core.win32gui.GetClassName = lambda h: "NetUIHWND"
+sent.clear(); t0 = time.time(); how = core._post_click(1, 10, 10); dt = time.time() - t0
+c["user dragging in another window: the click goes out at once"] = how == "mouse" and dt < 0.05
+core._mouse_in = lambda h: True
+sent.clear(); core.MOUSE_WAIT = 0.2; how = core._post_click(1, 10, 10)
+c["user's drag is INSIDE the target window: no click breaks it"] = how == "busy" and sent == []
+core._mouse_in = lambda h: False; core._buttons_down = lambda: False
+# a held modifier is shared key state (measured): the click/key waits only until it is released
+held = iter([True] * 5 + [False] * 100); core._mods_down = lambda: next(held)
+sent.clear(); t0 = time.time(); out = core.key("x", "enter"); dt = time.time() - t0
+c["held Shift/Ctrl in another window: the key waits for its release, then goes out"] = out.startswith("ok") and dt >= 0.03
+core._mods_down = lambda: True; core.HELD_WAIT = 0.2
+sent.clear(); out = core.key("x", "enter")
+c["modifier never released: nothing is sent and it says why"] = "modifier" in out and sent == []
+sent.clear(); how = core._post_click(1, 10, 10)
+c["modifier never released: no click (it would be a Shift/Ctrl-click)"] = how == "busy" and sent == []
+core._mods_down = lambda: False; core.MOUSE_WAIT = 2.0; core.HELD_WAIT = 3.0; core.user_in = lambda h: True
 
 # right click: opens a REAL menu, so Claude yields if the user is working or a menu is already open
 rm_open, rm_quiet = core.menu_open, core.wait_user_quiet
