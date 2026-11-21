@@ -362,8 +362,12 @@ def _running_servers():
     replace `pc-control-mcp.exe` while they run, and the launcher cannot even be renamed: its child python keeps the file open."""
     if os.name != "nt":
         return []
-    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*pc-control-mcp.ex[e]*' } "
-          "| ForEach-Object { $_.ProcessId }")                                  # `ex[e]`: this very command line does not match itself
+    exe = pip_launcher()
+    if not exe:
+        return []
+    # only servers running PIP's launcher block an update; since 0.8.4.6 sessions run a copy (see server_exe) and never block it
+    pat = exe.replace("[", "`[").replace("]", "`]")[:-1] + "[" + exe[-1] + "]"     # `ex[e]`: this very command line does not match itself
+    ps = ("Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*" + pat + "*' } | ForEach-Object { $_.ProcessId }")
     p = subprocess.run(["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", ps], capture_output=True, text=True)
     return sorted({int(x) for x in p.stdout.split() if x.isdigit() and int(x) != os.getpid()})
 
@@ -418,13 +422,10 @@ def update(stop_servers=False):
     """Bring the installed PC-Control up to date from ANY earlier version, then reinstall it with the same settings."""
     log = []
     pids = _running_servers()
-    if pids:                                                          # before touching anything: a half update is worse than a clear message
-        if not stop_servers:
-            raise RuntimeError(f"PC-Control's server is running (processes {", ".join(map(str, pids))}; each open Claude Code session that uses it has one) "
-                               f"and Windows will not let it be replaced meanwhile. Close those sessions and run `pc-control update` again, "
-                               f"or run `pc-control update --stop-servers` (their PC-Control tools stop until you open a new session).")
-        _stop_servers(pids)
-        log.append(f"stopped {len(pids)} running PC-Control server process(es): {", ".join(map(str, pids))}")
+    if pids:                                                          # sessions of a version before 0.8.4.6 run pip's own launcher, which
+        _stop_servers(pids)                                           # Windows will not let pip replace: stopped (they reconnect when used)
+        log.append(f"stopped {len(pids)} PC-Control server(s) of open sessions that ran the old launcher (process {", ".join(map(str, pids))}); "
+                   f"their tools reconnect on next use. From this version on, open sessions never block an update.")
     before = _code_version()
     _, src = _installed()
     if src and os.path.isdir(os.path.join(src, ".git")):              # installed from a checkout (pip install -e): pull it
@@ -486,13 +487,40 @@ def run_claude(args):
     return p.returncode, (p.stdout + p.stderr).strip()
 
 
-def server_exe():
+def pip_launcher():
     """Full path of the `pc-control-mcp` launcher pip put next to this Python (its own folder, or the per-user one), or None."""
     for d in _script_dirs():
         f = os.path.join(d, "pc-control-mcp.exe")
         if os.path.exists(f):
             return f
     return None
+
+
+def server_exe():
+    """The launcher Claude Code / Codex run: a COPY of pip's, in ~/.pc-control/bin/<version>/pc-control-mcp.exe (same program name, so
+    tools that police agents still recognize it). Windows cannot replace an .exe that is running, and every open session runs one: with
+    the copy, `pip` can always replace the package (an update works with sessions open; they keep their version until restarted).
+    Copies of older versions are removed when nothing runs them. None if pip installed no launcher."""
+    src = pip_launcher()
+    if not src:
+        return None
+    from . import __version__
+    import hashlib
+    base = os.path.join(os.path.expanduser("~"), ".pc-control", "bin")
+    try:
+        data = open(src, "rb").read()                                  # the launcher embeds its Python's path: one copy per launcher
+        tag = f"{__version__}-{hashlib.sha256(data).hexdigest()[:10]}"
+        dst = os.path.join(base, tag, "pc-control-mcp.exe")
+        if not os.path.exists(dst):
+            os.makedirs(os.path.dirname(dst), exist_ok=True)
+            tmp = dst + ".new"
+            open(tmp, "wb").write(data); os.replace(tmp, dst)
+        for d in os.listdir(base):
+            if d != tag:
+                shutil.rmtree(os.path.join(base, d), ignore_errors=True)   # an old version still running stays (Windows refuses)
+        return dst
+    except OSError:
+        return src
 
 
 def server_command(python=None):
