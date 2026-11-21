@@ -14,7 +14,7 @@ Permission modes (env PC_CONTROL_MODE, see policy.py)
   * Nothing here ever focuses a window, moves your mouse or injects keystrokes.
   * Dialogs that an action opens in YOUR apps are only sent behind other windows, and never if you are using them.
 """
-import asyncio, ctypes, ctypes.wintypes as wt, functools, inspect, os, re, shlex, subprocess, time, traceback
+import asyncio, ctypes, ctypes.wintypes as wt, functools, hashlib, inspect, json, os, re, shlex, subprocess, time, traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pydantic import BaseModel, Field
 import uiautomation as auto
@@ -109,6 +109,81 @@ async def _ask_user(ctx, e, tool_name, args):
 
 
 RAW = {}                                                        # tool name -> the plain function (no MCP wrapper)
+NOTES = []                                                      # short notes a tool adds to its answer (a followed window...)
+
+# ---- loop guard: the same call failing the same way again and again is a loop, not a strategy ----
+LOOP_LIMIT = 2                                                  # identical failures before a further identical call is refused unseen
+LOOP_WINDOW_S = 600
+_FAILS = {}                                                     # call signature -> [count, first line of the failure, window fingerprint, time]
+_FAIL_MARKS = ("NOT EXECUTED", "NO VISIBLE EFFECT", "NOT CONFIRMED", "did not press", "did not type", "did not open", "did not drag",
+               "did not select", "did not scroll", "STOPPED")
+
+
+def _sig(name, k):
+    return name + " " + json.dumps({a: v for a, v in k.items() if a != "confirm"}, sort_keys=True, default=str, ensure_ascii=False)
+
+
+def _fingerprint(window):
+    """What would make retrying meaningful: the window (which one, its title and size) and a coarse picture of it."""
+    if not window:
+        return "-"
+    try:
+        h = core.find_window(window)
+        sn = core.snap(h)
+        pic = "" if sn is None else hashlib.md5((core.cv2.resize(sn[0], (24, 16)) // 24).tobytes()).hexdigest()[:10]
+        return f"{h}|{win32gui.GetWindowText(h)}|{core._size(win32gui.GetWindowRect(h))}|{pic}"
+    except Exception as e:
+        return "gone:" + e.__class__.__name__
+
+
+def _hint(name, text):
+    t = text
+    if "windows match" in t:
+        return "use the hwnd number of the window you mean (listed above)"
+    if "elements match" in t:
+        return "use one of the ids listed above"
+    if "unknown id" in t or "look again" in t or "no longer where it was" in t:
+        return "call look() on the window first and use an id from THAT answer"
+    if "no window" in t:
+        return "call windows() to see what is open (the app may have closed or changed its title)"
+    if "NO VISIBLE EFFECT" in t or "NOT CONFIRMED" in t:
+        return ("the app did not react to that route: look at it (mode=image if needed), then aim differently - another id, the element's "
+                "name, or x,y on the image; for a canvas/remote screen check the exact spot")
+    if "you are using" in t or "you are pressing" in t or "you are editing" in t or "you are typing" in t:
+        return "the user is working there right now: wait for them, or ask them"
+    return "change something before retrying (look again, another target or tool), or ask the user"
+
+
+def _loop_check(name, k):
+    """Refuse a call that already failed LOOP_LIMIT times identically while nothing in the window changed (no action is taken)."""
+    rec = _FAILS.get(_sig(name, k))
+    if not rec or rec[0] < LOOP_LIMIT or time.time() - rec[3] > LOOP_WINDOW_S:
+        return
+    if _fingerprint(k.get("window")) != rec[2]:
+        return                                                  # the window changed: a retry can now give another result
+    raise ToolError(f"REPEATED FAILURE, not executed again: this exact call already failed {rec[0]} times the same way "
+                    f"(«{rec[1][:120]}») and the window has not changed since. Repeating it cannot work: {_hint(name, rec[1])}")
+
+
+def _loop_record(name, k, text, failed):
+    sig = _sig(name, k)
+    if not failed:
+        _FAILS.pop(sig, None)
+        return text
+    head = text.split("\n")[0][:200]
+    rec = _FAILS.get(sig)
+    if rec and rec[1] == head and time.time() - rec[3] <= LOOP_WINDOW_S:
+        rec[0] += 1; rec[2] = _fingerprint(k.get("window")); rec[3] = time.time()
+        return f"SAME FAILURE AS BEFORE ({rec[0]} times): {_hint(name, head)} | {text}"
+    _FAILS[sig] = [1, head, _fingerprint(k.get("window")), time.time()]
+    if len(_FAILS) > 200:
+        _FAILS.pop(next(iter(_FAILS)))
+    return text
+
+
+def _failed(result):
+    text = result if isinstance(result, str) else " ".join(x for x in result if isinstance(x, str))
+    return text, any(m in text for m in _FAIL_MARKS)
 SETTLE_S = 0.12                                                 # wait after an action before reading what changed (it was 0.25: the next call also reports what came late)
 _FAST = {"skip": False}                                         # True while a middle step of steps() runs (actions all run on the MAIN thread, one at a time)
 
@@ -116,17 +191,42 @@ _FAST = {"skip": False}                                         # True while a m
 def tool(fn):
     """Register the tool. Returns the REAL error to the model (and saves ONLY the last one in ~/.pc-control/last_error.log; it is overwritten and deleted after a day).
     Permissions are NOT a parameter the model can set: if the user's permission is needed, the server asks them."""
+    fsig = inspect.signature(fn)
+
     @functools.wraps(fn)
     def inner(*a, **k):
+        name = fn.__name__
+        guarded = name not in ("windows", "steps")
         try:
-            return fn(*a, **k)
-        except (ToolError, policy.NeedsPermission):
+            bound = dict(fsig.bind_partial(*a, **k).arguments)      # positional (steps) and keyword (MCP) calls give the same signature
+        except TypeError:
+            bound = dict(k)
+        if guarded and not bound.get("confirm"):
+            _loop_check(name, bound)
+        NOTES.clear()
+        try:
+            r = fn(*a, **k)
+            if NOTES and isinstance(r, str):
+                r = " | ".join(NOTES) + " | " + r
+            if guarded:
+                text, bad = _failed(r)
+                if bad:
+                    out = _loop_record(name, bound, text, True)
+                    return out if isinstance(r, str) else [out] + [x for x in r if not isinstance(x, str)]
+                _loop_record(name, bound, text, False)
+            return r
+        except policy.NeedsPermission:
+            raise
+        except ToolError as e:
+            if guarded:
+                raise ToolError(_loop_record(name, bound, str(e), True))
             raise
         except Exception as e:
             os.makedirs(HOME, exist_ok=True)
             with open(os.path.join(HOME, "last_error.log"), "w", encoding="utf-8") as f:        # only the LAST error: it is overwritten, never grows
                 f.write(f"{time.strftime('%F %T')} {fn.__name__}\n{traceback.format_exc()}\n")
-            raise ToolError(f"{e.__class__.__name__}: {e}")      # note: the `type` tool shadows the builtin type()
+            msg = _clean_error(e)
+            raise ToolError(_loop_record(name, bound, msg, True) if guarded else msg)      # note: the `type` tool shadows the builtin type()
         finally:
             _FAST["skip"] = False                                   # never leaks from steps() into the next call
 
@@ -146,6 +246,23 @@ def tool(fn):
     wrapper.__signature__ = sig.replace(parameters=ps)
     wrapper.__annotations__ = {k: v for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
     return mcp.tool()(wrapper)
+
+
+def _clean_error(e):
+    """A clear sentence instead of a raw Windows error code (seen in real sessions: 1400 invalid handle, 1447 no scroll bars, 740 elevation)."""
+    code = getattr(e, "winerror", None) or (e.args[0] if getattr(e, "args", None) and isinstance(e.args[0], int) else None)
+    if code == 1400:
+        return "the window closed (or was replaced) during the call: call windows() and use its new hwnd"
+    if code == 1447:
+        return "this window has no scroll bars to move: use scroll without a target, or look to see what scrolls"
+    if code == 740:
+        return ("that program needs administrator rights: PC-Control runs as a normal user and Windows does not let it open or read "
+                "elevated apps. Ask the user to open it themselves if they want to")
+    if code == 5:
+        return "Windows denied access (the app runs as administrator or is protected): ask the user"
+    if isinstance(e, core.AmbiguousWindow) or isinstance(e, LookupError):
+        return str(e)
+    return f"{e.__class__.__name__}: {e}"
 
 
 def _target(target, allow_point=True, hwnd=None):
@@ -189,7 +306,35 @@ def _by_name(hwnd, name):
         return hits[0][0]
     if not hits:
         raise ToolError(f"no element named '{name}' in this window: use look() (or look with find=\"...\") and an id")
-    raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(f"[{i}:{it.name[:30]}] ({it.kind})" for i, it in hits[:8]) + " - use the id")
+    one = _same_thing(hits)
+    if one is not None:
+        return one
+    def where(it):
+        r = it.rect; ctx = f" in «{it.parent[1][:24]}»" if it.parent and it.parent[1] else ""
+        return f"[{it.id}:{it.name[:30]}] ({it.kind}{ctx}, at {(r[0] + r[2]) // 2},{(r[1] + r[3]) // 2})"
+    raise ToolError(f"{len(hits)} elements match '{name}': " + " ".join(where(it) for _, it in hits[:8]) + " - use the id")
+
+
+RANK = {"button": 0, "splitbutton": 0, "menuitem": 1, "checkbox": 1, "radiobutton": 1, "tabitem": 1, "hyperlink": 2, "edit": 2,
+        "combobox": 2, "listitem": 3, "treeitem": 3, "dataitem": 4}
+
+
+def _same_thing(hits):
+    """Several elements with one name that are really ONE control (a list entry and the button inside it, a cell and its row: one sits
+    inside the other) -> the most precise one to press. Otherwise None (they are different controls: the model must choose)."""
+    its = [it for _, it in hits]
+    def inside(a, b):
+        return a.rect[0] >= b.rect[0] - 2 and a.rect[1] >= b.rect[1] - 2 and a.rect[2] <= b.rect[2] + 2 and a.rect[3] <= b.rect[3] + 2
+    area = lambda it: max(1, (it.rect[2] - it.rect[0]) * (it.rect[3] - it.rect[1]))
+    smallest = min(its, key=area)
+    if all(inside(smallest, o) for o in its):
+        best = min(its, key=lambda it: (RANK.get(it.kind, 5), area(it)))
+        if all(inside(best, o) or inside(o, best) for o in its):
+            return best.id
+    visible = [it for it in its if not actions._off(it)]
+    if len(visible) == 1 and len(its) > 1:
+        return visible[0].id                                    # one on screen, the rest scrolled away: the one the user sees
+    return None
 
 
 OPENED_PIDS = set()                                       # the app's OWN processes (never shared ones): their later windows count too
@@ -226,7 +371,13 @@ def _paused():
 
 def _gate(window, act, confirm=False):
     _paused()
-    hwnd = core.find_window(window)
+    try:
+        hwnd = core.find_window(window)
+    except core.WindowReplaced as e:
+        if act:
+            raise ToolError(str(e) + " (its ids from the old window are gone: look at it first)")
+        hwnd = e.new
+        NOTES.append(f"window {e.old} closed: reading {e.new}, the window its app shows now")
     policy.check_window(policy.mode(), _proc(hwnd), win32gui.GetWindowText(hwnd), act, _allowed(), confirm, hwnd)
     return hwnd
 
@@ -511,6 +662,10 @@ def verdict(result, delta):
     if "Claude format" in result:
         return "format noted for what Claude types"
     if "through WM_CHAR" in result and "unconfirmed" in result:          # keys sent to a window that gave no way to read them back
+        if delta.startswith(("change not measurable", "no change in the UI tree", "no previous reading")):
+            return "typing sent; its effect is not measurable in this window (its text comes from pixels): check with look"
+        if delta.startswith("pixels changed"):
+            return "typing probably arrived: the screen changed where it typed; it was not read back"
         if delta.startswith("+") or delta.startswith("the view changed a lot"):
             return "typing probably arrived: the window changed the way typing changes it (a cursor position, a counter, text); it was not read back"
         return "WARNING: typing NOT CONFIRMED: it may not have arrived; check with look (mode=image)"
@@ -527,15 +682,23 @@ def verdict(result, delta):
     m = re.search(r"(\d+)%? -> (\d+)%?", result)
     if result.startswith("ok") and "scroll" in result and m:                # a scroll reports its own position: that IS the measure
         return "scrolled" if m.group(1) != m.group(2) else "did not move: already at the edge"
+    if "read back and confirmed" in result:
+        return "typing confirmed by reading the document back"
     if "Excel through COM" in result and "now shows" in result:
         return "cell written, confirmed by reading it back"
     if any(k in result for k in ("words", "EM_REPLACESEL", "WM_SETTEXT")):
         return "typing confirmed by the application itself"
     if delta.startswith("the window is gone"):
         return "the window closed"
-    if delta == "no changes" and "BM_CLICK" in result:
+    if delta.startswith("pixels changed"):
+        return "effect observed on screen (pixels)" + ("" if "at the element" in delta else ": check with look that it is what you wanted")
+    if delta.startswith("nothing changed on screen"):
+        return "WARNING: NO VISIBLE EFFECT (nothing changed on screen); check with look"
+    if delta.startswith("no changes") and "BM_CLICK" in result:
+        if "on screen either" in delta:                                   # the pixels confirm it: say it as a warning, not as a success
+            return "WARNING: NO VISIBLE EFFECT: the button got the click but nothing changed on screen (some buttons act invisibly); check with look"
         return "clicked; nothing changed on screen"
-    if delta == "no changes":
+    if delta.startswith("no changes"):
         return "WARNING: NO VISIBLE EFFECT; check with look"
     if delta.startswith(("change not measurable", "no previous reading", "no change in the UI tree")):
         return "effect not measurable; check with look"
@@ -583,22 +746,30 @@ def _put_back(hwnd, z0):
     if z1 and z1[0] < z0[0]:
         ctypes.windll.user32.SetWindowPos(hwnd, z0[1], 0, 0, 0, 0, 0x0013)
 
-def _act(hwnd, hidden, fn, note=""):
+def _act(hwnd, hidden, fn, note="", roi=None):
     if hidden:
-        return _act_body(hwnd, hidden, fn, note)
+        return _act_body(hwnd, hidden, fn, note, roi=roi)
     from .focus import FocusGuard
     with FocusGuard.for_window(hwnd) as focus_guard:
-        return _act_body(hwnd, hidden, fn, note, focus_guard)
+        out = _act_body(hwnd, hidden, fn, note, focus_guard, roi)
+        if focus_guard.handed_back:
+            out += " | the app tried to take the keyboard focus: it was refused and your window got it back"
+        return out
 
 
-def _act_body(hwnd, hidden, fn, note="", focus_guard=None):
+PIXEL_SURFACES = ("remote", "java-off")                       # surfaces whose effect can only be seen in pixels (and react later)
+
+
+def _act_body(hwnd, hidden, fn, note="", focus_guard=None, roi=None):
     """Run the action; reply with the result, only what changed and whether it did its job. On your desktop, any NEW
     windows that appear are sent behind the others (never if you are using them); on the hidden desktop this is not needed."""
     _tr("start")
     before = set(core.top_windows())
     z0 = None if hidden else _zinfo(hwnd)
+    surf = core.surface(hwnd) if not hidden else "uia"
+    pic0 = None if (hidden or _FAST["skip"]) else core.snap(hwnd)
     result = fn(); _tr("action")
-    time.sleep(0.05 if _FAST["skip"] else SETTLE_S); _tr("settle")
+    time.sleep(0.05 if _FAST["skip"] else (0.45 if surf in PIXEL_SURFACES else SETTLE_S)); _tr("settle")
     if not hidden:
         if not focus_guard or not focus_guard.user_selected(hwnd):
             _put_back(hwnd, z0)
@@ -609,13 +780,38 @@ def _act_body(hwnd, hidden, fn, note="", focus_guard=None):
     if "through COM" in result and ("now shows" in result or "saved" in result):
         delta = "read back by the app itself"             # the grid/file is not in the UI tree: comparing it would say nothing
     else:
-        delta = core.changes(str(hwnd))
+        delta = core.changes(str(hwnd)) if surf not in PIXEL_SURFACES else "change not measurable in the tree"
     _tr("changes")
+    if pic0 is not None and win32gui.IsWindow(hwnd) and not result.startswith(("did not", "unknown id", "window minimized")):
+        pix = core.pixel_change(pic0, core.snap(hwnd), roi)
+        if pix == "" and surf in PIXEL_SURFACES:              # a remote session answers over the network: give it a moment more
+            time.sleep(0.6); pix = core.pixel_change(pic0, core.snap(hwnd), roi)
+        if pix and (delta == "no changes" or delta.startswith(("change not measurable", "no change in the UI tree", "no previous reading"))):
+            delta = pix
+        elif pix == "" and delta.startswith(("change not measurable", "no change in the UI tree", "no previous reading")):
+            delta = "nothing changed on screen (pixels compared before and after)"
+        elif pix == "" and delta == "no changes":
+            delta = "no changes (nothing changed on screen either)"
+    _tr("pixels")
     extra = []
     if note: extra.append(note)
     if hwnd in _LAST_NOTICE:
         extra.append(f"the user took {_LAST_NOTICE.pop(hwnd)} s to put the window back as it was after the notice, and I carried on by myself")
     return f"{result} | changes: {delta} | {verdict(result, delta)}" + "".join(f" | {e}" for e in extra) + _tr_report()
+
+
+def _surface_tag(h):
+    """' [java]' / ' [java: bridge off]' / ' [remote: Remote Desktop]': how the window will be read (cheap: class and process only)."""
+    try:
+        from . import java, remote
+        k = remote.kind(h)
+        if k:
+            return f" [remote: {k}]"
+        if java.is_java_window(h):
+            return " [java]" if core.surface(h) == "java" else " [java: bridge off]"
+    except Exception:
+        pass
+    return ""
 
 
 @tool
@@ -650,7 +846,8 @@ def windows(filter: str = "") -> str:
         tag = " [IN USE]" if using else (" [LAST USED]" if first else "")
         first = first and using                          # the last used is the first one that is NOT the one in use
         mine = _mine(h) or _mine(fr)
-        out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else " (cloaked)" if _cloaked(fr) else "") + (" [mine]" if mine else "") + tag
+        surf = _surface_tag(h)
+        out.append(f"{h} | {p} | {t[:44]}" + (" (minimized)" if win32gui.IsIconic(fr) else " (cloaked)" if _cloaked(fr) else "") + surf + (" [mine]" if mine else "") + tag
                    + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
     if DESK.h:
         for h, p, t in DESK.run(lambda: [(h, _proc(h), t) for h, t, _ in DESK._enum()]):      # everything there was opened by Claude
@@ -677,6 +874,10 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
             return actions.find(str(hwnd), find, wait)
         r = core.look(str(hwnd), mode)
         advice = ""
+        if r["mode"] == "none" and _mine(hwnd):
+            _NORMAL_FAILED.add(_proc(hwnd))
+        if r.get("note"):
+            advice += " | " + r["note"]
         if r["mode"] == "none" and r.get("minimized") and not hidden:
             if _fresh(hwnd):                                   # an app we opened a moment ago cannot be read minimized: reopen it behind, and remember the program
                 _learn_behind(_proc(hwnd))
@@ -719,9 +920,10 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
             raise ToolError(warn)
         rel = core.live_rel(hwnd, it) if (it and not hidden) else None        # a SINGLE resolution: pointer, warning and click all use the same one
         _tr("layout+rel")
-        if it is not None and not hidden and rel is None and it.ctrl is not None:
+        bridged = it is not None and getattr(it, "src", "") == "jab"     # a Java element is pressed through the bridge: no position needed
+        if it is not None and not hidden and rel is None and it.ctrl is not None and not bridged:
             return "did not press: the element is no longer where it was (or there are several like it now): look again | NOT EXECUTED"
-        if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None):   # an id that was never seen: nothing to travel to, core answers it
+        if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None) and not (bridged and rel is None):   # nothing to travel to
             # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
             cursor.CURSOR.pointer(x, y, click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.17)
@@ -736,13 +938,17 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
             bad = _guard_element(hwnd, it, confirm)
             if bad:
                 return f"did not press: {bad} | NOT EXECUTED"
-            if not hidden and it.ctrl is not None and rel is None:
+            if not hidden and it.ctrl is not None and rel is None and not bridged:
                 return "did not press: the element is no longer where it was: look again | NOT EXECUTED"
         note = core.moved_note(old, rel) if rel else ""
         direct = it is not None and it.ctrl is not None and not right and not hidden and _press_directly(hwnd)
         act = (lambda: core.invoke(str(hwnd), t, double=double) or core.click(str(hwnd), t, right, double, rel=rel)) if direct else \
               (lambda: core.click(str(hwnd), t, right, double, rel=rel))              # a Store app: straight to UI Automation, no wasted mouse message
-        res = _act(hwnd, hidden, act, note)
+        roi = rel or (it.rect if it is not None else None)
+        if roi is None and not isinstance(t, int):
+            k = core._state.get(hwnd, {}).get("scale", 1.0)
+            roi = (int(t[0] * k) - 10, int(t[1] * k) - 10, int(t[0] * k) + 10, int(t[1] * k) + 10)
+        res = _act(hwnd, hidden, act, note, roi)
         # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
         # Not if the click already changed what the element is (a toggle): pressing it again would do the opposite.
@@ -760,9 +966,15 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
     return _on(window, run)
 
 
+TEXT_KINDS = ("edit", "document", "combobox")
+
+
 @tool
-def type(window: str, target: str, text: str, replace: bool = False, confirm: bool = False) -> str:
-    """Type into an element (id from look(), or its name; appends, replace=true replaces). No blind typing. On a drop-down or list it selects the entry with that text. Excel: target can be a cell (B3, Sheet2!A1; '=...' = formula). Word: writes at Claude's OWN insertion point, not the user's caret, and says where. Answers with what changed."""
+def type(window: str, target: str = "", text: str = "", replace: bool = False, confirm: bool = False) -> str:
+    """Type into an element (id or name from look(); appends, replace=true replaces). target optional with ONE text field, in terminals and remote screens (x,y clicks first). Drop-down/list: selects the entry. Excel: a cell (B3). Word: at Claude's own point."""
+    if not text and not replace:
+        raise ToolError("nothing to type: give text (an empty text only with replace=true, to clear a field)")
+
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         if _term(hwnd, hidden):                                  # a terminal: into its console (the answer shows what the console says afterwards)
@@ -770,8 +982,27 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
         if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
             policy.check_type(policy.mode(), str(target), False)
             return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
+        if not hidden and core.surface(hwnd) == "remote":       # a remote screen: at its caret, or click x,y / an OCR id first
+            cat0 = _category(hwnd)
+            tid = _target(target, True, hwnd) if str(target).strip() else None
+            policy.check_type(policy.mode(), "", False)
+            _recheck_window(hwnd, cat0)
+            st = core._state.get(hwnd, {})
+            roi = (st.get("items", {}).get(tid).rect if isinstance(tid, int) and st.get("items", {}).get(tid) else None)
+            return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, tid, replace), roi=roi)
+        if not str(target).strip():
+            fields = [it for it in core._state.get(hwnd, {}).get("items", {}).values()
+                      if it.kind in TEXTKINDS_ALL and not core.is_secret_field(it)] if core._state.get(hwnd) else None
+            if fields is None:
+                raise ToolError("say where to type: call look() on this window and give the id of the field (target)")
+            if len(fields) != 1:
+                raise ToolError("say where to type (target): this window has " + (f"{len(fields)} text fields: " + " ".join(
+                    f"[{f.id}:{f.name[:24]}]" for f in fields[:10]) if fields else "no text field in the last look") + "")
+            target_id = fields[0].id
+        else:
+            target_id = None
         try:
-            tid = _target(target, False, hwnd)                                  # first: resolving a NAME may read the window and fill the table below
+            tid = target_id if target_id is not None else _target(target, False, hwnd)   # resolving a NAME may read the window and fill the table below
             it = core._state.get(hwnd, {}).get("items", {}).get(tid)
         except ToolError as e:
             if "elements match" in str(e):
@@ -806,8 +1037,25 @@ def type(window: str, target: str, text: str, replace: bool = False, confirm: bo
         if bad:
             return f"did not type: {bad}: look again | NOT EXECUTED"
         policy.check_type(policy.mode(), _live_name(it), core.is_secret_field(it), it.aid)
-        return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress))
+        out = _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, it.id, replace, progress), roi=it.rect)
+        return (f"(typed into the only text field «{it.name[:30]}») " if target_id is not None else "") + out
     return _on(window, run)
+
+
+TEXTKINDS_ALL = ("edit", "document")
+
+
+def parse_points(points):
+    """'x1,y1;x2,y2', also written as JSON [[x1,y1],[x2,y2]] or 'x1,y1 x2,y2' (real calls used those) -> 'x1,y1;x2,y2'."""
+    raw = str(points).strip()
+    if raw.startswith("["):
+        try:
+            return ";".join(f"{int(a)},{int(b)}" for a, b in json.loads(raw))
+        except Exception:
+            raise ToolError(f"bad points '{raw[:40]}': write x1,y1;x2,y2;... in pixels of the last image")
+    if ";" not in raw and re.fullmatch(r"\s*-?\d+\s*,\s*-?\d+(\s+-?\d+\s*,\s*-?\d+)+\s*", raw):
+        return ";".join(p.replace(" ", "") for p in re.findall(r"-?\d+\s*,\s*-?\d+", raw))
+    return raw
 
 
 def _drag_point(hwnd, token):
@@ -831,8 +1079,9 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)
+        raw = parse_points(points)
         try:
-            pts = [_drag_point(hwnd, p) for p in points.split(";") if p.strip()]
+            pts = [_drag_point(hwnd, p) for p in raw.split(";") if p.strip()]
         except ValueError:
             raise ToolError(f"bad points '{points[:40]}': write x1,y1;x2,y2;... in pixels of the last image")
         if any(len(p) != 2 for p in pts):
@@ -881,6 +1130,15 @@ def scroll(window: str, direction: str = "down", target: str = "", amount: int =
                 lines = [ln for ln in view.split("\n") if ln.strip()]
                 return (f"ok (scrolled the terminal view {direction}) | the view now shows from «{lines[0][:60] if lines else ""}» to «{lines[-1][:60] if lines else ""}»"
                         " | scrolled: confirmed from the terminal; look shows the view, read the whole history")
+        if not hidden and core.surface(hwnd) == "remote":
+            from . import remote
+            d = (direction or "down").lower()
+            if d not in ("up", "down"):
+                return "did not scroll: on a remote screen only up/down (wheel) are sent | NOT EXECUTED"
+            def wheel():
+                r = remote.scroll(hwnd, d, amount)
+                return "did not scroll: you are pressing the mouse; retry when you let go" if r == "busy" else r
+            return _act(hwnd, hidden, wheel)
         return _act(hwnd, hidden, lambda: actions.scroll(str(hwnd), _target(target, False, hwnd) if str(target).strip() else None, direction, amount))
     return _on(window, run)
 
@@ -1148,34 +1406,70 @@ def wait_for(window: str, target: str, label: str = "", timeout: int = 60, confi
     return _on(window, run)
 
 
+_NORMAL_FAILED = set()                                   # programs that could not be read when opened normally (this session)
+
+
+def _remote_clients():
+    """Remote desktop / VM clients: their screen is only pixels, and a minimized window is not drawn: they open behind, not minimized."""
+    from . import remote
+    return set(remote.CLIENTS)
+
+
+def _hidden_allowed(exe):
+    """The hidden desktop is a LAST resort (the user asked to avoid it): only for a program that already failed the normal ways in this
+    session, or when the user turned it on (PC_CONTROL_HIDDEN=1)."""
+    return (envvars.get("HIDDEN") or "").strip().lower() in ("1", "on", "allow", "true") or exe in _NORMAL_FAILED
+
+
 @tool
-def open_app(command: str, hidden: bool = False, behind: bool = False, confirm: bool = False) -> str:
-    """Launch an app minimized, unfocused (taskbar button). behind=true: not minimized, behind all windows, for apps that fail minimized. hidden=true (invisible desktop) ONLY if the user asks."""
+def open_app(command: str, behind: bool = False, hidden: bool = False, confirm: bool = False) -> str:
+    """Launch an app (path or name: winword, Calculadora) minimized, unfocused. behind=true: behind all windows, for apps unreadable minimized. hidden=true: last resort, only after those failed."""
     _paused()
+    from . import apps, java
+    resolved, how, exe = apps.resolve(command)
+    if exe is None:
+        exe, _ = apps.split(command)
+        exe = os.path.splitext(os.path.basename(exe))[0].lower()
+        if not exe:
+            raise ToolError("bad command: give the program (quoted if it has spaces) and its arguments, e.g. notepad.exe \"my notes.txt\"")
+    policy.check_launch(policy.mode(), exe, _allowed(), confirm, apps.split(resolved)[1])
+    if hidden and not _hidden_allowed(exe):
+        raise ToolError("not opened on the hidden desktop: it is a last resort the user asked to avoid. Open it normally (minimized, or "
+                        "behind=true for apps that cannot be read minimized); hidden=true is accepted only after that failed in this "
+                        "session, or if the user asks for it explicitly (PC_CONTROL_HIDDEN=1)")
+    env = java.launch_env(resolved)                          # a Java program gets the accessibility bridge (only that process)
     try:
-        exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
-    except (ValueError, IndexError):
-        raise ToolError("bad command: give the program (quoted if it has spaces) and its arguments, e.g. notepad.exe \"my notes.txt\"")
-    policy.check_launch(policy.mode(), exe, _allowed(), confirm, " ".join(shlex.split(command, posix=False)[1:]))
-    if hidden:
-        r = DESK.open(command); where = "hidden desktop (no taskbar button)"
-    elif exe in ("cmd", "powershell", "pwsh"):
-        r = _open_console(command); where = "its own console window, minimized, with its button in the taskbar"
-    else:
-        if behind or exe in core.CHROMIUM or exe in _learned_behind():      # browsers, apps asked for and apps that proved unreadable minimized: behind the user's windows
-            tok = shlex.split(command, posix=False)[0]
-            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in command] if exe in core.CHROMIUM else []
-            r = core.open_behind(command.replace(tok, tok + " " + " ".join(extra), 1) if extra else command, exe)       # Chromium switches ONLY for browsers
+        if hidden:
+            r = DESK.open(resolved); where = "hidden desktop (no taskbar button) - last resort"
+        elif exe in ("cmd", "powershell", "pwsh"):
+            r = _open_console(resolved); where = "its own console window, minimized, with its button in the taskbar"
+        elif behind or exe in core.CHROMIUM or exe in _learned_behind() or env is not None or exe in _remote_clients():
+            # browsers, Java apps (minimized they show the bridge nothing), apps asked for and apps that proved unreadable minimized
+            tok = apps.split(resolved)[0]
+            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in resolved] if exe in core.CHROMIUM else []
+            cmd = resolved
+            if extra:
+                q = f'"{tok}"' if resolved.startswith('"') else tok
+                cmd = resolved.replace(q, q + " " + " ".join(extra), 1)
+            r = core.open_behind(cmd, exe, env=env)
             where = "behind the user's windows, not minimized (a minimized app may hide its content), with its button in the taskbar"
         else:
-            r = core.open_minimized(command); where = "minimized, with its button in the taskbar"
+            r = core.open_minimized(resolved, env=env); where = "minimized, with its button in the taskbar"
+    except FileNotFoundError:
+        near = apps.suggestions(command)
+        raise ToolError(f"no program '{apps.split(command)[0]}' found (not on PATH, in App Paths, the Start menu or the Store apps)"
+                        + (f". Installed programs with a similar name: {', '.join(near)}" if near else ""))
+    if not r["windows"]:
+        _NORMAL_FAILED.add(exe)
     ws = "; ".join(f"{w['hwnd']} {w['title']}" for w in r["windows"]) or r["note"]
     OPENED.update(w["hwnd"] for w in r["windows"]); OPENED_PIDS.update(r.get("pids", []))
     for w in r["windows"]:
         OPENED_AT[w["hwnd"]] = time.time()
     kept = r.get("foco_intacto", True)
     note = "" if kept else " | NOTE: the app took the keyboard focus although it is behind the other windows: it receives keys until the user clicks another window, so do not assume their typing goes to their own app"
-    return f"pid {r['pid']} | {ws} | {where}{note}"
+    found = f" | started as {resolved[:80]} ({how})" if how not in ("", "as written") else ""
+    jnote = " | Java app: started with the accessibility bridge" if env is not None else ""
+    return f"pid {r['pid']} | {ws} | {where}{found}{jnote}{note}"
 
 
 def _clean_old_log():
@@ -1235,6 +1529,39 @@ def _slim_schemas():
         strip(t.parameters)
 
 
+ALIASES = {"key": {"keys": "name", "key": "name", "shortcut": "name", "combo": "name"},
+           "click": {"id": "target", "element": "target", "point": "target"},
+           "type": {"id": "target", "element": "target", "value": "text", "field": "target"},
+           "show": {"id": "target", "element": "target"}, "wait_for": {"id": "target", "element": "target"},
+           "open_app": {"app": "command", "program": "command", "name": "command", "path": "command"},
+           "drag": {"path": "points"}, "scroll": {"id": "target", "pages": "amount"}, "read": {"id": "target"},
+           "*": {"hwnd": "window", "title": "window", "app": "window"}}
+
+
+def _install_aliases():
+    tm = mcp._tool_manager
+    original = tm.call_tool
+
+    async def call_tool(name, arguments, *a, **k):
+        return await original(name, remap(name, arguments), *a, **k)
+    tm.call_tool = call_tool
+
+
+def remap(name, arguments):
+    """Parameter names the model wrote that mean a real one (keys -> name, id -> target, app -> command). Real names always win."""
+    if not isinstance(arguments, dict):
+        return arguments
+    amap = dict(ALIASES.get("*", {}), **ALIASES.get(name, {}))
+    real_names = RAW_PARAMS.get(name, ())
+    fixed = {k: v for k, v in arguments.items() if k in real_names}
+    for key_, v in arguments.items():
+        if key_ not in real_names:
+            fixed.setdefault(amap.get(key_, key_), v)
+    return fixed
+
+
+RAW_PARAMS = {n: tuple(inspect.signature(f).parameters) for n, f in ((n, getattr(t, "fn", None)) for n, t in mcp._tool_manager._tools.items()) if f}
+_install_aliases()
 _slim_schemas()
 
 

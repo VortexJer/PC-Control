@@ -199,7 +199,7 @@ async def real():
     shutil.copy(os.path.join(os.environ["SystemRoot"], "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), host)
     S = lambda: json.load(open(st, encoding="utf-8-sig"))
     params = StdioServerParameters(command=sys.executable, args=["-m", "pc_control.server"], cwd=ROOT,
-                                   env={**os.environ, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PYTHONUTF8": "1"})   # bypass: the host copy of powershell is a
+                                   env={**os.environ, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PC_CONTROL_HIDDEN": "1", "PYTHONUTF8": "1"})   # bypass: the host copy of powershell is a
     txt = lambda res: "\n".join(x.text for x in res.content if getattr(x, "type", "") == "text")
     try:
         async with stdio_client(params) as (r, w):

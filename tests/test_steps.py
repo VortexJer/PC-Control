@@ -55,11 +55,17 @@ try:
     core.win32gui.GetClassName = lambda h: "Notepad"
     core._state[1] = {"items": {7: SimpleNamespace(ctrl=object())}}
     core.type_text("w", "uno\ndos\r\ntres\rcuatro", target=7)
-    c["LF, CR LF and CR all arrive as CR LF in an edit box"] = sent[-1][1] == "uno\r\ndos\r\ntres\r\ncuatro"
+    text_msgs = lambda: [l for m, l in sent if m in (0x00C2, 0x000C)]      # EM_REPLACESEL / WM_SETTEXT (the selection is restored after them)
+    c["LF, CR LF and CR all arrive as CR LF in an edit box"] = text_msgs()[-1] == "uno\r\ndos\r\ntres\r\ncuatro"
     core.type_text("w", "a\nb", target=7, replace=True)
-    c["same with replace"] = sent[-1][1] == "a\r\nb"
+    c["same with replace"] = text_msgs()[-1] == "a\r\nb"
     core._native = lambda ctrl: (0, "")
-    core.type_text("w", "a\nb")
+    saved_focus, saved_quiet = core._focus_hwnd, core.wait_user_quiet
+    core._focus_hwnd = lambda h: 4321; core.wait_user_quiet = lambda *a, **k: True     # one unambiguous input control; the user idle
+    try:
+        core.type_text("w", "a\nb")
+    finally:
+        core._focus_hwnd, core.wait_user_quiet = saved_focus, saved_quiet
     c["WM_CHAR path sends Enter (CR) for a line break"] = [w for m, w in posted] == [97, 13, 98]
 finally:
     core.win32gui.SendMessage, core.win32gui.PostMessage, core._native, core._read_back, core.find_window = saved[:5]

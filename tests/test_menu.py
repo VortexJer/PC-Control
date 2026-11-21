@@ -87,6 +87,7 @@ c["in_title_bar: true only for a title-bar child"] = core.in_title_bar(CtrlTB())
 
 
 # ---- fields that are not native edit windows (web pages, WPF, XAML): filled through the UI Automation value ----
+core.win32gui.GetClassName = lambda h: "Chrome_WidgetWin_1" if h == H else ""     # a browser window, not Word (Word types through COM)
 class ValPat:
     def __init__(self, value="", ro=False): self.Value, self.IsReadOnly = value, ro
     def SetValue(self, v): self.Value = v
@@ -105,7 +106,7 @@ real_pm = core.win32gui.PostMessage; core.win32gui.PostMessage = lambda *a: post
 core._focus_hwnd = lambda h: 1234
 r_ro = core.type_text(str(H), "x", target=1)
 core.win32gui.PostMessage = real_pm
-c["a read-only field is not overwritten (falls back, and says it is unconfirmed)"] = ro.pat.Value == "fijo" and "unconfirmed" in r_ro
+c["a read-only field is not overwritten and no blind keys are sent anywhere (0.8 rule)"] = ro.pat.Value == "fijo" and r_ro.startswith("did not type") and not posted_chars
 
 
 # ---- field values in look(): only EDITABLE fields (read-only cells repeat what is already listed and cost tokens) ----

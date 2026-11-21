@@ -10,7 +10,11 @@ PERSONAL = GENERIC + ([l.strip() for l in open(LOCAL, encoding="utf-8") if l.str
 
 # the project's own public repository URL is intended to be published (its owner is the repo owner, by design)
 ALLOWED = ["github.com/VortexJer/PC-Control",
-           "github.com/hashgraph-online/hol-guard"]          # the project PC-Control is listed in (a public project, not a person)
+           "github.com/hashgraph-online/hol-guard",          # the project PC-Control is listed in (a public project, not a person)
+           "github.com/nvaccess/nvda", "github.com/skelsec/aardwolf",   # public projects cited as research sources
+           "github.com/notepad-plus-plus/notepad-plus-plus",         # a real test app's official download (tools/realapps.py)
+           "github.com/microsoft/OmniParser",                        # public project cited as a research source
+           'os.environ.get("APPDATA"', 'os.environ.get("LOCALAPPDATA"']   # the variable NAME, not anyone's path
 
 def scan(text, patterns):
     for a in ALLOWED:
@@ -25,9 +29,15 @@ for sample in ["C:" + chr(92) + "Users" + chr(92) + "Example", "C:/Users/Example
 assert not scan("neutral text about windows and tokens", GENERIC), "false positive"
 
 files = []
-for dp, dn, fn in os.walk(ROOT):
-    dn[:] = [d for d in dn if d not in SKIP_DIRS]
-    files += [os.path.join(dp, f) for f in fn if f not in SKIP_FILES and not f.endswith((".jpg", ".png", ".pyc"))]
+import subprocess
+try:                                            # what can be published: tracked files plus new ones git does not ignore
+    listed = subprocess.run(["git", "ls-files", "-co", "--exclude-standard"], cwd=ROOT, capture_output=True, text=True, check=True).stdout.splitlines()
+    files = [os.path.join(ROOT, f) for f in listed if os.path.basename(f) not in SKIP_FILES and not f.endswith((".jpg", ".png", ".pyc"))
+             and not set(f.split("/")[:-1]) & set(SKIP_DIRS) and os.path.isfile(os.path.join(ROOT, f))]
+except (OSError, subprocess.CalledProcessError):
+    for dp, dn, fn in os.walk(ROOT):
+        dn[:] = [d for d in dn if d not in SKIP_DIRS and d not in (".goldentokens", ".unlazy")]
+        files += [os.path.join(dp, f) for f in fn if f not in SKIP_FILES and not f.endswith((".jpg", ".png", ".pyc"))]
 problems = {}
 for f in files:
     hits = scan(open(f, encoding="utf-8", errors="ignore").read(), PERSONAL)

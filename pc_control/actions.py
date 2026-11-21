@@ -104,6 +104,7 @@ def _wheel(nh, x, y, direction, amount):
     msg = 0x020A if direction in ("up", "down") else 0x020E                 # WM_MOUSEWHEEL / WM_MOUSEHWHEEL (positive = right)
     if msg == 0x020E:
         delta = -delta
+    x, y = core.to_app_screen(nh, x, y)                                    # a DPI-unaware app reads its own (logical) screen coordinates
     wp = win32api.MAKELONG(0, delta & 0xFFFF); lp = win32api.MAKELONG(x & 0xFFFF, y & 0xFFFF)
     try:
         win32gui.PostMessage(nh, msg, wp, lp)
@@ -125,6 +126,15 @@ def scroll(query, target=None, direction="down", amount=1):
         it = st["items"].get(int(target)) if st else None
         if it is None:
             return "unknown id: call look() on this window first"
+    sci = it.hwnd if (it is not None and getattr(it, "src", "") == "sci") else (_sci_one(hwnd) if it is None else 0)
+    if sci:                                                                 # Scintilla: its own scroll command, the caret stays
+        from . import scintilla
+        res = scintilla.scroll(sci, direction, amount)
+        if res is None:
+            return "did not scroll: the editor did not answer"
+        if res[0] == res[1]:
+            return "ok (already at the edge: nothing more to scroll that way)" if direction != "left" and direction != "right" else "ok (horizontal scroll sent; the first visible line did not change)"
+        return f"ok (scrolled with Scintilla's SCI_LINESCROLL: first visible line {res[0] + 1} -> {res[1] + 1}; no mouse, keyboard or focus)"
     ctrl, pat = _scrollable_from(it.ctrl, vertical) if (it and it.ctrl is not None) else _biggest_scrollable(hwnd, vertical)
     if pat is not None:                                                     # 1) UI Automation: what a screen reader does
         b = _pct(pat, vertical)
@@ -169,7 +179,7 @@ def scroll(query, target=None, direction="down", amount=1):
             return "did not scroll: this window offers no scroll bar or scroll pattern to jump to the top/bottom; use up/down with an amount"
         if cx is None:
             l, t, r, bt = win32gui.GetWindowRect(hwnd); cx, cy = (l + r) // 2, (t + bt) // 2
-        if not core.wait_user_mouse_idle():
+        if not core.wait_free_mouse(hwnd):
             return "did not scroll: you are pressing or dragging with the mouse; retry when you let go"
         if not _wheel(nh, cx, cy, direction, amount):                     # 3) wheel messages (web pages, custom-drawn apps)
             return "did not scroll: this window accepts no scrolling from outside (no scroll pattern, no scroll bars, no wheel messages)"
@@ -285,6 +295,13 @@ def select_text(query, target, needle):
         return f"selected «{needle[:60]}» (EM_SETSEL)"
     return "this element does not allow selecting text by its content | NOT EXECUTED"
 
+def _sci_one(hwnd):
+    """The one visible Scintilla editor of a window (0 if none or several)."""
+    from . import scintilla
+    eds = scintilla.editors(hwnd)
+    return eds[0] if len(eds) == 1 else 0
+
+
 def read_text(query, target=None, start=0, length=6000):
     """The whole text of the window's document/page/field (or of the element `target`), in pieces of `length` characters."""
     hwnd = core.find_window(query); st = core._state.get(hwnd); src = None; text = None
@@ -292,10 +309,32 @@ def read_text(query, target=None, start=0, length=6000):
         it = st["items"].get(int(target)) if st else None
         if it is None:
             return "unknown id: call look() on this window first"
-        if it.ctrl is not None:
+        if getattr(it, "src", "") == "sci":
+            from . import scintilla
+            text = scintilla.get_text(it.hwnd); src = "Scintilla editor (its own message API, also what is out of view)"
+        elif getattr(it, "src", "") == "jab" and it.ctrl is not None:
+            from . import java
+            try:
+                text = java.text_of(it.ctrl) if not it.ctrl.IsPassword else None
+            except Exception:
+                text = None
+            src = f"Java element «{it.name[:40]}»"
+        elif it.ctrl is not None:
             text = _ctrl_text(it.ctrl); src = f"element «{it.name[:40]}»"
         if text is None:
             text = it.name; src = "element name only (it exposes no text)"
+    elif core.surface(hwnd) == "java":                                      # Java: every text of the window through the bridge
+        from . import java
+        try:
+            text = java.read_all(hwnd); src = "Java window (accessibility bridge, also what is scrolled out of view)"
+        except Exception:
+            text = None
+    elif core.surface(hwnd) in ("remote", "java-off"):                      # only pixels: the lines the screen shows now
+        lines = sorted(_ocr_now(hwnd), key=lambda i: (i.rect[1] // 12, i.rect[0]))
+        text = "\n".join(i.name for i in lines); src = "text read from the screen (OCR: only what is visible now)"
+    elif _sci_one(hwnd):                                                    # Scintilla (Notepad++...): its own API, not UIA
+        from . import scintilla
+        text = scintilla.get_text(_sci_one(hwnd)); src = "Scintilla editor (its own message API, also what is out of view)"
     elif office.is_excel(hwnd):                                             # Excel: the cells of the sheet through COM
         try:
             out = office.read(hwnd, int(start or 0), max(200, min(int(length or 6000), 40000)))
@@ -696,7 +735,7 @@ def find(query, terms, wait=0.0):
         return "nothing to find: write the text to look for, e.g. find=\"Save|Cancel\" (or \"!Loading\" to wait until it is gone)"
     t0 = time.time(); deadline = t0 + max(0.0, min(float(wait or 0), 120.0))
     while True:
-        items = core.walk_uia(hwnd, win32gui.GetWindowRect(hwnd), offscreen_ok=True)
+        items = core.tree(hwnd, win32gui.GetWindowRect(hwnd), offscreen_ok=True, popups=False)
         text_of = lambda i: (i.name + " " + (i.value or "")).lower()
         hits = [i for i in items if any(p in text_of(i) for p in present)]
         if present and not hits and not win32gui.IsIconic(hwnd):
@@ -721,8 +760,9 @@ def find(query, terms, wait=0.0):
         else:
             it.id = nxt; nxt += 1
         known[it.id] = it
-    visible = {core.line_key(i) for i in items                              # the same rule changes() uses: on screen and with a size
-               if not _off(i) and i.rect[2] > i.rect[0] and i.rect[3] > i.rect[1]}
+    visible = {core.line_key(i) for i in items                              # the same rule changes() uses: on screen and with a size,
+               if getattr(i, "src", "uia") in ("uia", "jab")                 # and only what changes() re-reads (an OCR line it cannot see
+               and not _off(i) and i.rect[2] > i.rect[0] and i.rect[3] > i.rect[1]}   # again would look "removed": a false effect)
     core._state[hwnd] = {"items": known, "lines": visible, "rect": old.get("rect") or rect,
                          "scale": old.get("scale", 1.0), "mode": old.get("mode", "uia"), "pid": core.window_pid(hwnd)}
     lines = []

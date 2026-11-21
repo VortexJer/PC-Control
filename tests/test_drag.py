@@ -48,6 +48,7 @@ try:
         r = core.drag(str(hw), [(ox + 30, oy + 20), (ox + 330, oy + 70)], "line"); time.sleep(0.8)
         s = S()
         c["line: reply ok"] = r.startswith("ok (drag")
+        print("   line reply:", r[:200])
         c["line: the canvas received ONE press, many moves with the button and ONE release"] = s["down"] == 1 and s["up"] == 1 and s["moves"] >= 40 and s["held"] == 0
         c["line: the path covers end to end (30..330 in x, 20..70 in y)"] = s["minx"] <= 40 and s["maxx"] >= 326 and s["miny"] <= 26 and s["maxy"] >= 66
         user_moved = last_input() != in0                                 # the user touched something during the drag: this check proves nothing
@@ -58,9 +59,9 @@ try:
         s2 = S()
         c["rectangle: another full drag (4 sides) on the same canvas"] = r2.startswith("ok") and s2["down"] == 2 and s2["up"] == 2 and s2["moves"] - before >= 40
         # the user is pressing the mouse: Claude yields and sends NOTHING
-        real = core.wait_user_mouse_idle; core.wait_user_mouse_idle = lambda timeout=None: False
+        real = core.wait_free_mouse; core.wait_free_mouse = lambda hwnd, timeout=None: False
         r3 = core.drag(str(hw), [(ox + 10, oy + 10), (ox + 100, oy + 50)], "line"); time.sleep(0.4)
-        core.wait_user_mouse_idle = real
+        core.wait_free_mouse = real
         c["if the user is dragging/pressing: it yields and sends nothing"] = r3.startswith("did not drag") and S()["down"] == 2
         r4 = core.drag(str(hw), [(1, 1)], "path")
         c["with a single point: it warns instead of failing"] = "at least 2 points" in r4
