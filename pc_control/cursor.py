@@ -28,12 +28,17 @@ ARROW_K = 1.0                                         # somewhat larger than bef
 RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22
 
 
-def speed():
-    """PC_CONTROL_CURSOR_SPEED: how much faster than the base animation (1 = base, 2 = twice as fast). Read on every move."""
+def speed(name="CURSOR_SPEED", default="1"):
+    """PC_CONTROL_CURSOR_SPEED (the pointer) / PC_CONTROL_CARET_SPEED (the typing bar): how much faster than the base animation
+    (1 = base, 2 = twice as fast). Read on every move. The typing bar defaults to 3x: the user chose it from the demos (2026-11-21)."""
     try:
-        return max(0.25, min(8.0, float(envvars.get("CURSOR_SPEED", "1") or 1)))
+        return max(0.25, min(8.0, float(envvars.get(name, default) or default)))
     except ValueError:
-        return 1.0
+        return float(default)
+
+
+def caret_speed():
+    return speed("CARET_SPEED", "3")
 LINGER = 1.6            # an indicator (pointer or bar) is shown for AT LEAST this long before yielding to the other: typing is very fast
 # RING_S, FADE_IN, FADE_OUT: duration of the click ring and of the fades (s)
 ORANGE, WHITE, DARK = (255, 122, 26), (255, 255, 255), (24, 24, 28)
@@ -410,15 +415,27 @@ class ClaudeCursor:
                                       ctypes.byref(_BLEND(0, 0, max(0, min(255, int(alpha))), 1)), 2)             # ULW_ALPHA
                 if not self.shown:
                     win32gui.ShowWindow(self.h, 4); self.shown = True                                               # SW_SHOWNOACTIVATE: does not activate
-                    self.above_owner()
+                    self.above_owner(); self.z_t = time.time()
+                elif self.owner and time.time() - getattr(self, "z_t", 0) > 0.2:
+                    self.z_t = time.time()                                       # something re-stacked the windows: back right above its app
+                    if u.GetWindow(self.owner, 3) != self.h:
+                        self.above_owner()
 
             def above_owner(self):
                 """Right above its window in the stacking order (not above the user's other windows), never activated."""
                 if not self.owner:
                     return
+                # An always-on-top app (mini Calculator, Sticky Notes, a call window): a normal overlay can never be above it, so the
+                # overlay joins the topmost band too; for a normal app it leaves that band (it must not float over the user's windows).
+                top = bool(win32gui.GetWindowLong(self.owner, -20) & 0x8)                                          # WS_EX_TOPMOST
+                mine = bool(win32gui.GetWindowLong(self.h, -20) & 0x8)
+                if top != mine:
+                    u.SetWindowPos(self.h, -1 if top else -2, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)               # HWND_TOPMOST / NOTOPMOST
                 prev = u.GetWindow(self.owner, 3)                                                                  # GW_HWNDPREV: the window just above it
                 while prev and prev == self.h:
                     prev = u.GetWindow(prev, 3)
+                if top and prev and not (win32gui.GetWindowLong(prev, -20) & 0x8):
+                    prev = 0                                                                                       # nothing topmost above it: the very top
                 u.SetWindowPos(self.h, prev or 0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)                          # NOSIZE | NOMOVE | NOACTIVATE
 
             def hide(self):
@@ -551,7 +568,7 @@ class ClaudeCursor:
                 if hide_now and L.get("arrived") is not None:              # nobody can see it: the action does not wait for it
                     L["arrived"].set(); L["arrived"] = None
                 want = 0.0 if (hide_now or L["closing"]) else 255.0
-                step = 255.0 * dt * speed() / (FADE_IN if want > L["a"] else FADE_OUT)
+                step = 255.0 * dt * (caret_speed() if name == "caret" else speed()) / (FADE_IN if want > L["a"] else FADE_OUT)
                 a2 = min(want, L["a"] + step) if want > L["a"] else max(want, L["a"] - step)
                 if a2 != L["a"]:
                     L["a"] = a2; L["dirty"] = True
@@ -596,7 +613,7 @@ class ClaudeCursor:
                 elif name == "caret":
                     (cx, cy), (tx, ty) = C["pos"], C["to"]
                     if abs(tx - cx) + abs(ty - cy) > 0.4:                                                  # slides to its place (no jumping)
-                        f = 1 - (0.62 ** (dt * speed() / 0.012)); C["pos"] = (cx + (tx - cx) * f, cy + (ty - cy) * f); C["dirty"] = True
+                        f = 1 - (0.62 ** (dt * caret_speed() / 0.012)); C["pos"] = (cx + (tx - cx) * f, cy + (ty - cy) * f); C["dirty"] = True
                     elif C["pos"] != C["to"]:
                         C["pos"] = C["to"]; C["dirty"] = True
                     if abs(tx - C["pos"][0]) + abs(ty - C["pos"][1]) <= 3 and C.get("arrived") is not None:
