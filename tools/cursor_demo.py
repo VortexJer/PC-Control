@@ -21,11 +21,11 @@ from pc_control import scintilla
 def record(rect, stop, frames):
     while not stop.is_set():
         t = time.time()
-        frames.append((t, ImageGrab.grab(bbox=rect, all_screens=True)))
+        frames.append((t, ImageGrab.grab(bbox=rect, all_screens=True, include_layered_windows=True)))
         time.sleep(max(0, 1 / 25 - (time.time() - t)))
 
 
-async def demo(hw, sp):
+async def demo(hw, sp, pointer_only=False):
     env = {**os.environ, "PC_CONTROL_HOME": tempfile.mkdtemp(), "PC_CONTROL_MODE": "bypass", "PYTHONUTF8": "1",
            "PC_CONTROL_CURSOR": "always", "PC_CONTROL_CURSOR_SPEED": str(sp)}
     out = []
@@ -36,9 +36,11 @@ async def demo(hw, sp):
                 res = await s.call_tool(tool, a)
                 txt = "\n".join(x.text for x in res.content if getattr(x, "type", "") == "text")
                 out.append((tool, bool(getattr(res, "isError", False)), txt[:120])); return txt
-            await call("show", window=str(hw), target="editor", label=f"velocidad {sp:g}x", seconds=2)
+            await call("show", window=str(hw), target="editor", label=f"{'puntero' if pointer_only else 'velocidad'} {sp:g}x", seconds=2)
             await asyncio.sleep(1.0)
-            await call("type", window=str(hw), target="editor", text=f"Demo a velocidad {sp:g}x: el texto sale cuando la barra llega.\n")
+            text = ("linea uno para seleccionar con el arrastre\nlinea dos\nlinea tres\n" if pointer_only
+                    else f"Demo a velocidad {sp:g}x: el texto sale cuando la barra llega.\n")
+            await call("type", window=str(hw), target="editor", text=text)
             img = await call("look", window=str(hw), mode="image")
             m = re.search(r"image (\d+)x(\d+)", img)
             wl, wt, wr, wb = win32gui.GetWindowRect(hw)
@@ -46,11 +48,18 @@ async def demo(hw, sp):
             el, et, er, eb = win32gui.GetWindowRect(scintilla.editors(hw)[0])
             def pt(fx, fy):                                     # a point INSIDE the editor, as image pixels of the last look
                 return f"{int((el - wl + (er - el) * fx) / k)},{int((et - wt + (eb - et) * fy) / k)}"
-            await call("click", window=str(hw), target=pt(0.6, 0.55))
-            await call("click", window=str(hw), target=pt(0.15, 0.08))
-            a, b = pt(0.05, 0.04), pt(0.45, 0.04)
-            await call("drag", window=str(hw), points=f"{a};{b}", shape="line")
-            await call("click", window=str(hw), target=pt(0.8, 0.8))
+            if pointer_only:                                    # long trips corner to corner, a pause at rest between them
+                for fx, fy in ((0.9, 0.85), (0.1, 0.85), (0.9, 0.2), (0.5, 0.5)):
+                    await call("click", window=str(hw), target=pt(fx, fy)); await asyncio.sleep(0.5)
+                a, b = pt(0.02, 0.03), pt(0.4, 0.13)
+                await call("drag", window=str(hw), points=f"{a};{b}", shape="line"); await asyncio.sleep(0.6)
+                await call("click", window=str(hw), target=pt(0.85, 0.9))
+            else:
+                await call("click", window=str(hw), target=pt(0.6, 0.55))
+                await call("click", window=str(hw), target=pt(0.15, 0.08))
+                a, b = pt(0.05, 0.04), pt(0.45, 0.04)
+                await call("drag", window=str(hw), points=f"{a};{b}", shape="line")
+                await call("click", window=str(hw), target=pt(0.8, 0.8))
             await asyncio.sleep(0.8)
     return out
 
@@ -59,6 +68,8 @@ def main(argv):
     outdir = tempfile.gettempdir()
     if "--out" in argv:
         i = argv.index("--out"); outdir = argv[i + 1]; del argv[i:i + 2]
+    pointer_only = "--pointer" in argv
+    argv = [a for a in argv if a != "--pointer"]
     speeds = [float(a) for a in argv] or [1, 1.5, 2, 3]
     exe = realapps.load().get("notepadpp", {}).get("exe")
     if not exe:
@@ -87,9 +98,9 @@ def main(argv):
             frames, stop = [], threading.Event()
             th = threading.Thread(target=record, args=(rect, stop, frames), daemon=True); th.start()
             t0 = time.time()
-            res = asyncio.run(demo(hw, sp))
+            res = asyncio.run(demo(hw, sp, pointer_only))
             stop.set(); th.join(2)
-            path = os.path.join(outdir, f"pc-control-cursor-{sp:g}x.gif")
+            path = os.path.join(outdir, f"pc-control-{'pointer' if pointer_only else 'cursor'}-{sp:g}x.gif")
             imgs = [f.convert("P", palette=1, colors=96) for _, f in frames]
             durs = [max(20, int((frames[i + 1][0] - frames[i][0]) * 1000)) for i in range(len(frames) - 1)] + [800]
             imgs[0].save(path, save_all=True, append_images=imgs[1:], duration=durs, loop=0)
