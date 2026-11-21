@@ -25,7 +25,7 @@ try:                                              # mcp >= 2
 except ImportError:                               # mcp 1.x
     from mcp.server.fastmcp import FastMCP, Image, Context
     from mcp.server.fastmcp.exceptions import ToolError
-from . import actions, core, cursor, envvars, office, perm, policy, terminal
+from . import actions, brand, core, cursor, envvars, office, perm, policy, terminal
 from .hidden import DESK, reap_orphans
 
 NOTICE_SECONDS = 10.0                 # how long the notice banner lasts, and how long to wait for the user to put the window back as it was
@@ -232,20 +232,34 @@ def tool(fn):
 
     RAW[fn.__name__] = inner                                   # the `steps` tool runs several of these in one call
 
+    def _branded(r):                                           # what the client shows says Codex/cyan under Codex (brand.py)
+        if isinstance(r, str):
+            return brand.text(r)
+        if isinstance(r, list):
+            return [brand.text(x) if isinstance(x, str) else x for x in r]
+        return r
+
     @functools.wraps(fn)
     async def wrapper(*a, ctx: Context, **k):
         try:
-            return await asyncio.to_thread(inner, *a, **k)
-        except policy.NeedsPermission as e:
-            if not await _ask_user(ctx, e, fn.__name__, k):
-                raise ToolError("The user did NOT give permission: it is not executed. Do not insist or try to work around it.")
-            return await asyncio.to_thread(inner, *a, **k, confirm=True)
+            try:
+                return _branded(await asyncio.to_thread(inner, *a, **k))
+            except policy.NeedsPermission as e:
+                e.question = brand.text(e.question)
+                if not await _ask_user(ctx, e, fn.__name__, k):
+                    raise ToolError("The user did NOT give permission: it is not executed. Do not insist or try to work around it.")
+                return _branded(await asyncio.to_thread(inner, *a, **k, confirm=True))
+        except ToolError as e:
+            if brand.client() == "codex":
+                raise ToolError(brand.text(str(e))) from None
+            raise
     sig = inspect.signature(fn)
     ps = [p for p in sig.parameters.values() if p.name != "confirm"]
     ps.append(inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, annotation=Context))
     wrapper.__signature__ = sig.replace(parameters=ps)
     wrapper.__annotations__ = {k: v for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
-    return mcp.tool()(wrapper)
+    wrapper.__doc__ = brand.text(fn.__doc__)                    # the tool description, too
+    return mcp.tool(description=brand.text(fn.__doc__))(wrapper)
 
 
 def _clean_error(e):
@@ -1384,7 +1398,7 @@ def _do_show(hidden, window, target, label, seconds, confirm):
 
 
 @tool
-def show(window: str, target: str, label: str = "", seconds: int = 10, confirm: bool = False) -> str:
+def show(window: str, target: str, label: str = "", seconds: float = 10, confirm: bool = False) -> str:
     """Show the USER where something is ("where do I click?"): an orange outline around the element `target` (its id, name or x,y), optional label. Nothing is clicked; it goes when they click or it changes."""
     return _on(window, lambda hidden: _do_show(hidden, window, target, label, seconds, confirm)[0])
 

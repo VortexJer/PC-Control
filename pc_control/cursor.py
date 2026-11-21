@@ -98,19 +98,42 @@ def caret_height(element_h, s):
     return int(round(max(15 * s, min(40 * s, h))))
 
 
+# The accent follows the client: Claude's orange, Codex's cyan (PC_CONTROL_CLIENT is set by each client's registration);
+# PC_CONTROL_ACCENT=orange|cyan forces one. Each has the same adaptation to the background, and a contrasting colour for a background
+# that is already that colour (so the cursor never gets lost in it).
+ACCENTS = {
+    "orange": {"base": (255, 122, 26), "dark": (255, 140, 44), "mid": (255, 106, 0), "light": (238, 90, 0), "alt": (0, 132, 255),
+               "clash": lambda r, g, b: r > 190 and 60 < g < 190 and b < 110},
+    "cyan": {"base": (0, 229, 255), "dark": (40, 235, 255), "mid": (0, 200, 235), "light": (0, 150, 190), "alt": (255, 106, 0),
+             "clash": lambda r, g, b: r < 120 and g > 160 and b > 170},
+}
+
+
+def accent():
+    forced = envvars.get("ACCENT", "").strip().lower()
+    if forced in ACCENTS:
+        return ACCENTS[forced]
+    return ACCENTS["cyan" if envvars.get("CLIENT", "").strip().lower() == "codex" else "orange"]
+
+
+def accent_base():
+    return accent()["base"]
+
+
 def palette_for(bg):
     """(fill, edge) that looks good over a mean background (r, g, b), or None if unknown. Adapts to the background."""
+    a = accent()
     if not bg:
-        return ORANGE, WHITE
+        return a["base"], WHITE
     r, g, b = bg
     lum = 0.2126 * r + 0.7152 * g + 0.0722 * b
-    if r > 190 and 60 < g < 190 and b < 110:          # the background is already orange: the hue is changed so it does not get lost
-        return (0, 132, 255), WHITE
+    if a["clash"](r, g, b):                            # the background is already the accent colour: the hue is changed so it does not get lost
+        return a["alt"], WHITE
     if lum < 100:
-        return (255, 140, 44), WHITE                   # dark background: vivid orange with a light edge
+        return a["dark"], WHITE                        # dark background: vivid accent with a light edge
     if lum < 185:
-        return (255, 106, 0), WHITE
-    return (238, 90, 0), DARK                          # light background: intense orange with a dark edge
+        return a["mid"], WHITE
+    return a["light"], DARK                            # light background: intense accent with a dark edge
 
 
 # ---------- drawing ----------
@@ -129,7 +152,7 @@ def _canvas():
 
 def render_arrow(s=1.0, ring=0, pal=None):
     """Orange pointer. ring = 0 (no ring) or 1..12: the click ring, which expands and fades."""
-    fill, edge = pal or (ORANGE, WHITE)
+    fill, edge = pal or (accent_base(), WHITE)
     im, d = _canvas()
     k = ARROW_K * s
     if ring:
@@ -143,7 +166,7 @@ def render_arrow(s=1.0, ring=0, pal=None):
 
 def render_caret(h, s=1.0, pal=None):
     """I-beam bar: one line high, with serifs, STEADY (does not blink)."""
-    fill, edge = pal or (ORANGE, WHITE)
+    fill, edge = pal or (accent_base(), WHITE)
     im, d = _canvas()
     x, top, bot = HOT * SS, (HOT - h / 2) * SS, (HOT + h / 2) * SS
     half = max(1.4, 1.5 * s) * SS                     # ~3 px thick at 96 dpi
@@ -179,8 +202,8 @@ def render_note(text, s=1.0, max_w=470):
     w = int(max(meas.textlength(l, font=font) for l in lines) + 2 * pad + bar)
     h = int(len(lines) * lh + 2 * pad)
     im = Image.new("RGBA", (w, h), (0, 0, 0, 0)); d = ImageDraw.Draw(im)
-    d.rounded_rectangle([0, 0, w - 1, h - 1], radius=10 * K * s, fill=(28, 28, 32, 240), outline=ORANGE + (255,), width=max(2, int(2 * K * s)))
-    d.rounded_rectangle([0, 0, bar + 6 * K * s, h - 1], radius=10 * K * s, fill=ORANGE + (255,))
+    d.rounded_rectangle([0, 0, w - 1, h - 1], radius=10 * K * s, fill=(28, 28, 32, 240), outline=accent_base() + (255,), width=max(2, int(2 * K * s)))
+    d.rounded_rectangle([0, 0, bar + 6 * K * s, h - 1], radius=10 * K * s, fill=accent_base() + (255,))
     d.rectangle([bar, 2 * K, bar + 6 * K * s, h - 2 * K], fill=(28, 28, 32, 240))
     for i, line in enumerate(lines):
         d.text((pad + bar, pad + i * lh), line, fill=WHITE + (255,), font=font)
@@ -217,20 +240,20 @@ def render_mark(w, h, label="", s=1.0):
     shape = (lambda bb, **kw: d.ellipse(bb, **kw)) if circle else (lambda bb, **kw: d.rounded_rectangle(bb, radius=rad * K, **kw))
     g = 1.5 * K * s
     shape([box[0] - g, box[1] - g, box[2] + g, box[3] + g], outline=WHITE + (230,), width=int((th + 3 * s) * K))
-    shape(box, outline=ORANGE + (255,), width=int(th * K))
+    shape(box, outline=accent_base() + (255,), width=int(th * K))
     # a small "x" badge on the outline: it tells the user a click there makes it go away (any click inside the outline does)
     if circle:
         bx, by = box[2] - 0.15 * (box[2] - box[0]), box[1] + 0.15 * (box[3] - box[1])
     else:
         bx, by = box[2] - 6 * s * K, box[1] + 6 * s * K
     br = 9 * s * K
-    d.ellipse([bx - br, by - br, bx + br, by + br], fill=ORANGE + (255,), outline=WHITE + (255,), width=int(1.6 * s * K))
+    d.ellipse([bx - br, by - br, bx + br, by + br], fill=accent_base() + (255,), outline=WHITE + (255,), width=int(1.6 * s * K))
     q = br * 0.42
     d.line([bx - q, by - q, bx + q, by + q], fill=WHITE + (255,), width=int(2.2 * s * K))
     d.line([bx - q, by + q, bx + q, by - q], fill=WHITE + (255,), width=int(2.2 * s * K))
     if label:
         lx, ly = (W - lw) / 2, oy + m + h + pad + 6.5 * s
-        d.rounded_rectangle([lx * K, ly * K, (lx + lw) * K, (ly + lh) * K], radius=int(lh * K / 2), fill=ORANGE + (255,))
+        d.rounded_rectangle([lx * K, ly * K, (lx + lw) * K, (ly + lh) * K], radius=int(lh * K / 2), fill=accent_base() + (255,))
         d.text(((lx + 10 * s) * K, (ly + 5 * s) * K), label, fill=(20, 20, 24, 255), font=font)
     im = im.resize((W, H), Image.LANCZOS)
     a = np.asarray(im).astype(np.uint16); alpha = a[..., 3:4]
@@ -344,7 +367,8 @@ class ClaudeCursor:
 
     def note(self, text, x, y, hold=10.0, scale=1.0, owner=0):
         """Notice banner for the user, centred on x with its top edge at y. Lasts `hold` seconds."""
-        self._ensure(); self.q.put(("note", str(text), int(x), int(y), float(hold), float(scale), int(owner)))
+        from . import brand
+        self._ensure(); self.q.put(("note", brand.text(str(text)), int(x), int(y), float(hold), float(scale), int(owner)))
 
     def mark(self, rect, label="", hold=10.0, scale=1.0, owner=0):
         """Draw an orange outline (circle or rounded rectangle) around rect = (left, top, right, bottom) on screen, with an optional label, for `hold` seconds: to SHOW the
@@ -352,7 +376,8 @@ class ClaudeCursor:
         self._ensure()
         self._mark_seq = getattr(self, "_mark_seq", 0) + 1
         self.mark_result = None                                   # (token, "clicked" | "changed" | "timeout"): set when the circle goes away
-        self.q.put(("mark", tuple(int(v) for v in rect), str(label), float(hold), float(scale), int(owner), self._mark_seq))
+        from . import brand
+        self.q.put(("mark", tuple(int(v) for v in rect), brand.text(str(label)), float(hold), float(scale), int(owner), self._mark_seq))
         return self._mark_seq
 
     def hide_note(self):

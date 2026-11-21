@@ -65,14 +65,16 @@ def snapshot(exe):
 
 
 def stable_copy(path):
-    """A copy of a native file in the user's local app-data folder (pc-control/native/<hash>/): a loaded DLL (or a running .exe) cannot be replaced, so the
+    """A copy of a native file in ~/.pc-control/native/<hash>/: a loaded DLL (or a running .exe) cannot be replaced, so the
     server never loads the package's own file; `pip` can then update the package while sessions run (they keep their copy).
     Same content = same folder, so it is copied once. Falls back to the original path if the copy cannot be made."""
     import hashlib
     path = Path(path)
     try:
         data = path.read_bytes()
-        d = Path(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")) / "pc-control" / "native" / hashlib.sha256(data).hexdigest()[:16]
+        from . import envvars
+        home = envvars.get("HOME") or os.path.join(os.path.expanduser("~"), ".pc-control")
+        d = Path(home) / "native" / hashlib.sha256(data).hexdigest()[:16]
         dst = d / path.name
         if not dst.exists():
             d.mkdir(parents=True, exist_ok=True)
