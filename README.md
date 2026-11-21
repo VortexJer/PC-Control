@@ -24,8 +24,10 @@ From **any** version you have, to the latest release:
 pc-control update
 ```
 
-It keeps your settings, removes what older versions left behind and updates Claude Code and Codex if both are installed. Close the
-Claude Code / Codex sessions first (or add `--stop-servers`), then open a new one.
+It keeps your settings, removes what older versions left behind and updates Claude Code and Codex if both are installed. It works with
+sessions open: they keep their version until you open a new session. (Sessions of a version older than 0.8.4.6 are stopped once,
+because Windows cannot replace the launcher they run; they reconnect when used.) The update itself never needs changing: it only
+installs the new release and lets the NEW code configure itself.
 
 If your version is so old that it has no `update` command, this works from any of them:
 
