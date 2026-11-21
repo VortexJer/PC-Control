@@ -7,7 +7,9 @@ FORBIDDEN = {"SetForegroundWindow", "SetFocus", "keybd_event", "SendInput", "Set
              "InjectSyntheticPointerInput", "InjectTouchInput", "BlockInput", "ClipCursor"}
 
 # The ONE allowed exception: giving the foreground BACK to the user's own window while an app left it EMPTY (focus.FocusGuard.hand_back).
-ALLOWED = {("hand_back", "SetForegroundWindow")}
+ALLOWED = {("hand_back", "SetForegroundWindow"),
+           # give-back: a window took the foreground without the user asking; it goes BACK to the user's window (AutoHotkey technique)
+           ("_give_back_attached", "SetForegroundWindow"), ("_give_back_attached", "AttachThreadInput")}
 
 
 def _allowed_nodes(tree):
@@ -45,7 +47,7 @@ bad = {os.path.basename(f): scan(open(f, encoding="utf-8").read()) for f in file
 bad = {k: v for k, v in bad.items() if v}
 if bad:
     print("INTRUSIVE CALLS:", bad); sys.exit(1)
-NATIVE_ALLOWED = {("hand_back", "SetForegroundWindow")}       # the native twin of focus.FocusGuard.hand_back (gives the foreground BACK)
+NATIVE_ALLOWED = {("hand_back", "SetForegroundWindow"), ("probe_proc", "SetForegroundWindow")}   # probe_proc: the give-back message       # the native twin of focus.FocusGuard.hand_back (gives the foreground BACK)
 
 
 def _strip_allowed_native(src):

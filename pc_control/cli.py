@@ -67,7 +67,16 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
   used) and the answer shows what the console says right after; a text that ends in a line break RUNS it, one that does not stays on the prompt. `key` takes
   enter, tab, esc, arrows, home, end, pgup, pgdn, backspace, delete and ctrl+c. `read` and `look` return the exact console text. The user is asked before each
   action and the question shows the full command: what you type there runs as them, so type what they asked for and nothing else. It never types into the
-  terminal Claude Code itself runs in; if several tabs could be the one, the answer lists them: ask the user which. `open_app` starts cmd or PowerShell in a console of its own.- Word: Claude has its OWN insertion point (a hidden bookmark). `type` writes there through COM, without touching the user's selection or
+  terminal Claude Code itself runs in; if several tabs could be the one, the answer lists them: ask the user which. `open_app` starts cmd or PowerShell in a console of its own.
+- Java apps (Swing/AWT, Oracle Forms, SQL Developer): read and operated through the Java Access Bridge, element by element like any app.
+  If `look` says the bridge is off, tell the user to run `pc-control java enable` and restart that app (apps you open get it by themselves).
+- Remote Desktop / virtual machines: the window is a picture of another PC. `look` reads it by OCR; click by the OCR id or x,y; `type` and
+  `key` go into the remote session. Check every step with `look`: there are no element names to confirm with.
+- Editors such as Notepad++ (Scintilla) are read, written and scrolled through their own API, also while minimized.
+- File dialogs (Open / Save As) are the app's pop-up: `look` the dialog, `type` the file name into its name box, click the Save/Open button.
+- The same call failing the same way is refused after the second time: change something (look again, another target or tool) instead of
+  repeating it.
+- Word: Claude has its OWN insertion point (a hidden bookmark). `type` writes there through COM, without touching the user's selection or
   caret, and the answer says in which paragraph and after which words the text landed (check that it is what you expected). The formatting
   buttons (bold, italic, alignment...) apply to what Claude writes, not to the user's selection, so the user can click anywhere without
   diverting anything. Press the button BEFORE typing the text that takes that format; press it again to turn it off.
@@ -425,9 +434,15 @@ def update(stop_servers=False):
         log.append(f"source updated ({src}): {(p.stdout.strip().splitlines() or ['ok'])[-1]}")
         log += drop_legacy_dist()
         q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "-e", src], capture_output=True, text=True)
-    else:                                                             # a normal install: the latest version from GitHub (no git needed)
+    else:                                                             # a normal install: the latest RELEASE from PyPI; GitHub if PyPI fails
         log += drop_legacy_dist()
-        q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
+        q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", "--no-cache-dir", DIST],
+                           capture_output=True, text=True)
+        if q.returncode == 0:
+            log.append("latest release installed from PyPI")
+        else:
+            q = subprocess.run([sys.executable, "-m", "pip", "install", "-q", "--upgrade", REPO_ZIP], capture_output=True, text=True)
+            log.append("PyPI unavailable: latest code installed from GitHub")
     if q.returncode != 0:
         raise RuntimeError(f"pip failed: {(q.stdout + q.stderr).strip()[-300:]}")
     r = subprocess.run([sys.executable, "-m", "pc_control.cli", "reinstall"], capture_output=True, text=True,

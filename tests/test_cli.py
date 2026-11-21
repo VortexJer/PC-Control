@@ -169,7 +169,7 @@ try:
         # update() of a normal install: uninstall old -> install new (uninstalling AFTER would delete the new files)
         ran.clear(); present.clear(); present.add("pc-control"); cli._installed = lambda: ("0.5.3", None)
         cli.update()
-        iu = next((i for i, x in enumerate(ran) if pip_u(x)), -1); ii = next((i for i, x in enumerate(ran) if pip_i(x) and cli.REPO_ZIP in x), -1)
+        iu = next((i for i, x in enumerate(ran) if pip_u(x)), -1); ii = next((i for i, x in enumerate(ran) if pip_i(x) and (cli.DIST in x or cli.REPO_ZIP in x)), -1)
         c["update (normal install): the old package is removed BEFORE the new one is installed"] = 0 <= iu < ii
         # update() of a git checkout: pull -> uninstall old -> pip install -e
         ran.clear(); present.clear(); present.add("pc-control"); cli._installed = lambda: ("0.5.3", ROOT_DIR)
