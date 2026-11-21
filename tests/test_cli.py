@@ -205,29 +205,37 @@ for ps1 in ("install.ps1", "update.ps1"):                    # PowerShell 5.1: a
     c[f"{ps1}: the 'is the old package there?' probe cannot abort the script when it is not there"] = (
         "$ErrorActionPreference = 'Continue'" in s and "sys.exit(0 if 'pc-control' in" in s and "m.distribution('pc-control')" not in s)
 c["uninstall.ps1: removes the package under either name"] = "pip uninstall -y claude-pc-control pc-control" in rd_ps("uninstall.ps1")
-# Windows cannot replace pc-control-mcp.exe while a Claude Code session runs it (and cannot even rename it): update must say so BEFORE touching anything
+# Windows cannot replace pip's pc-control-mcp.exe while an OLD session runs it: update stops those servers FIRST (they reconnect when
+# used); sessions of 0.8.4.6+ run a copy of the launcher and never block an update
 calls = []
 real = (cli._running_servers, cli._stop_servers, cli.subprocess.run)
 try:
     cli._running_servers = lambda: [111, 222]
     cli._stop_servers = lambda pids: calls.append(("stop", list(pids)))
-    cli.subprocess.run = lambda *a, **k: calls.append(("run", a[0][:3] if a else None)) or (_ for _ in ()).throw(AssertionError("must not run anything"))
-    try:
-        cli.update()
-        msg = ""
-    except RuntimeError as e:
-        msg = str(e)
-    c["update with servers running stops first, explains and touches nothing"] = ("111" in msg and "222" in msg and "--stop-servers" in msg and calls == [])
     def _stop_then_halt(*a, **k):
         raise StopIteration                                            # the first real command after the stop: enough to know the order
     cli.subprocess.run = _stop_then_halt
     try:
-        cli.update(stop_servers=True)
+        cli.update()
     except StopIteration:
         pass
-    c["with --stop-servers it stops exactly those servers before anything else"] = calls == [("stop", [111, 222])]
+    c["update with old-launcher servers running stops exactly those, before anything else (no refusal)"] = calls == [("stop", [111, 222])]
 finally:
     cli._running_servers, cli._stop_servers, cli.subprocess.run = real
+import tempfile as _tf
+_home = _tf.mkdtemp(); _old = os.environ.get("USERPROFILE")
+try:
+    os.environ["USERPROFILE"] = _home
+    src = os.path.join(_home, "pip-launcher.exe"); open(src, "wb").write(b"MZ launcher")
+    real_pl = cli.pip_launcher; cli.pip_launcher = lambda: src
+    exe = cli.server_exe()
+    c["sessions run a COPY of the launcher (pip can replace its own), named pc-control-mcp.exe, per version"] = (
+        exe and exe != src and os.path.basename(exe) == "pc-control-mcp.exe" and open(exe, "rb").read() == b"MZ launcher"
+        and os.path.normcase(os.path.join(_home, ".pc-control", "bin")) in os.path.normcase(exe))
+    cli.pip_launcher = real_pl
+finally:
+    if _old is not None:
+        os.environ["USERPROFILE"] = _old
 c["the command line exposes --stop-servers"] = "--stop-servers" in open(cli.__file__, encoding="utf-8").read()
 c["update.ps1: checks for running servers first and stops them only with -StopServers"] = (
     "param([switch]$StopServers)" in rd_ps("update.ps1") and "-StopServers" in rd_ps("update.ps1") and "Move-RunningLaunchers" not in rd_ps("update.ps1"))

@@ -64,6 +64,25 @@ def snapshot(exe):
     return pids, threads
 
 
+def stable_copy(path):
+    """A copy of a native file in the user's local app-data folder (pc-control/native/<hash>/): a loaded DLL (or a running .exe) cannot be replaced, so the
+    server never loads the package's own file; `pip` can then update the package while sessions run (they keep their copy).
+    Same content = same folder, so it is copied once. Falls back to the original path if the copy cannot be made."""
+    import hashlib
+    path = Path(path)
+    try:
+        data = path.read_bytes()
+        d = Path(os.environ.get("LOCALAPPDATA") or os.path.expanduser("~")) / "pc-control" / "native" / hashlib.sha256(data).hexdigest()[:16]
+        dst = d / path.name
+        if not dst.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            tmp = d / (path.name + ".new")
+            tmp.write_bytes(data); os.replace(tmp, dst)
+        return dst
+    except OSError:
+        return path
+
+
 @lru_cache(maxsize=1)
 def library():
     if ctypes.sizeof(ctypes.c_void_p) != 8:
@@ -73,7 +92,7 @@ def library():
     path = Path(__file__).with_name("native") / f"focus_guard_{arch}.dll"
     if not path.exists():
         raise RuntimeError("the native focus guard is missing; build/package it before launching apps")
-    dll = ctypes.WinDLL(str(path), use_last_error=True)
+    dll = ctypes.WinDLL(str(stable_copy(path)), use_last_error=True)
     dll.pc_focus_install.argtypes = [W.DWORD]
     dll.pc_focus_install.restype = W.HANDLE
     dll.pc_focus_remove.argtypes = [W.HANDLE]
@@ -129,7 +148,7 @@ class Host32:
                 exe, dll = native / "focus_guard_host32.exe", native / "focus_guard_x86.dll"
                 if not exe.exists() or not dll.exists():
                     raise RuntimeError("the 32-bit focus guard is missing; this 32-bit app cannot be protected")
-                p = subprocess.Popen([str(exe), str(dll)], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
+                p = subprocess.Popen([str(stable_copy(exe)), str(stable_copy(dll))], stdin=subprocess.PIPE, stdout=subprocess.PIPE, text=True,
                                      creationflags=0x08000000, bufsize=1)
                 if not p.stdout.readline().startswith("ready"):
                     p.kill()
