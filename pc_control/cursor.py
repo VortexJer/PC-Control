@@ -26,6 +26,14 @@ SS = 4                                                # supersampling to smooth 
 ARROW = [(0, 0), (0, 19), (5, 15), (8, 22), (12, 20), (9, 14), (15, 14)]   # classic pointer, in pixels at 96 dpi
 ARROW_K = 1.0                                         # somewhat larger than before (0.78); the Windows one is no taller than 22 px
 RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22
+
+
+def speed():
+    """PC_CONTROL_CURSOR_SPEED: how much faster than the base animation (1 = base, 2 = twice as fast). Read on every move."""
+    try:
+        return max(0.25, min(8.0, float(envvars.get("CURSOR_SPEED", "1") or 1)))
+    except ValueError:
+        return 1.0
 LINGER = 1.6            # an indicator (pointer or bar) is shown for AT LEAST this long before yielding to the other: typing is very fast
 # RING_S, FADE_IN, FADE_OUT: duration of the click ring and of the fades (s)
 ORANGE, WHITE, DARK = (255, 122, 26), (255, 255, 255), (24, 24, 28)
@@ -314,12 +322,19 @@ class ClaudeCursor:
     # -- API (callable from any thread) --
     def pointer(self, x, y, click=False, ms=320, scale=1.0, owner=0):
         """Move the orange pointer to (x, y) on screen along a smooth curve and, if click, mark the click with a ring. Afterwards it stays
-        at rest, visible. owner = the window it acts on: the cursor is isolated to it."""
-        self._ensure(); self.q.put(("pointer", int(x), int(y), click, ms, float(scale), int(owner)))
+        at rest, visible. owner = the window it acts on: the cursor is isolated to it.
+        Returns an Event set the moment the pointer ARRIVES (at once if it is not visible): the action waits for it, so the click
+        happens when, and only when, the pointer is on the target."""
+        ev = threading.Event()
+        self._ensure(); self.q.put(("pointer", int(x), int(y), click, ms / speed(), float(scale), int(owner), ev))
+        return ev
 
     def caret(self, x, y, h=22, hold=None, scale=1.0, owner=0):
-        """Put the typing bar at (x, y) (vertical centre, h px high). It slides there and stays at rest, visible."""
-        self._ensure(); self.q.put(("caret", int(x), int(y), int(h), float(scale), int(owner)))
+        """Put the typing bar at (x, y) (vertical centre, h px high). It slides there and stays at rest, visible.
+        Returns an Event set when the bar has ARRIVED (at once if it is not visible)."""
+        ev = threading.Event()
+        self._ensure(); self.q.put(("caret", int(x), int(y), int(h), float(scale), int(owner), ev))
+        return ev
 
     def note(self, text, x, y, hold=10.0, scale=1.0, owner=0):
         """Notice banner for the user, centred on x with its top edge at y. Lasts `hold` seconds."""
@@ -431,6 +446,11 @@ class ClaudeCursor:
             return (rs / n, gs / n, bs / n) if n else None
 
         def refresh_palette(L, x, y, pts, now):
+            # GetPixel on the composed screen costs milliseconds per call: sampling 8 points on every frame of a travel made the
+            # animation late (464 ms for a 300 ms move) and slower on slower PCs. While travelling, the colour is kept; it is
+            # sampled again on arrival and every 0.4 s at rest.
+            if L.get("travel") and L["pal"] is not None:
+                return
             moved = L["bg_at"] is None or abs(x - L["bg_at"][0]) + abs(y - L["bg_at"][1]) > 40
             if moved or now - L["bg_t"] > 0.4:
                 bg = sample_bg(x, y, pts); L["bg_t"], L["bg_at"] = now, (x, y)
@@ -447,6 +467,8 @@ class ClaudeCursor:
         def reset_all():
             for L in (P, C, N, M):
                 L["on"] = False; L["a"] = 0.0
+                if L.get("arrived") is not None:
+                    L["arrived"].set(); L["arrived"] = None
             for w in wins.values(): w.hide()
 
         self.ready.set()
@@ -459,7 +481,10 @@ class ClaudeCursor:
                 while True:
                     cmd = self.q.get_nowait()
                     if cmd[0] == "pointer":
-                        _, x, y, click, ms, s, own = cmd
+                        _, x, y, click, ms, s, own, ev = cmd
+                        if P.get("arrived") is not None:
+                            P["arrived"].set()                                       # a newer move replaces it: never leave a waiter hanging
+                        P["arrived"] = ev
                         fresh = (not P["on"]) or P["owner"] != own or P["pos"] is None
                         P.update(on=True, owner=own, s=s, to=(x, y), click=click, dur=max(ms, 1) / 1000.0, t0=now, closing=False, travel=True, dirty=True)
                         if fresh:
@@ -470,7 +495,10 @@ class ClaudeCursor:
                         P["t_cmd"] = now; P["close_at"] = None
                         if C["on"]: C["close_at"] = max(now, C.get("t_cmd", 0.0) + LINGER)      # only ONE at a time, but the bar does not disappear before LINGER
                     elif cmd[0] == "caret":
-                        _, x, y, hh, s, own = cmd
+                        _, x, y, hh, s, own, ev = cmd
+                        if C.get("arrived") is not None:
+                            C["arrived"].set()
+                        C["arrived"] = ev
                         fresh = (not C["on"]) or C["owner"] != own or C["pos"] is None
                         C.update(on=True, owner=own, s=s, h=hh, to=(x, y), closing=False, dirty=True)
                         if fresh: C["pos"] = (x, y); C["a"] = 0.0                       # entrance: fades in
@@ -520,13 +548,17 @@ class ClaudeCursor:
                 iconic = bool(o and alive and win32gui.IsIconic(o)); vis = bool(not o or (alive and win32gui.IsWindowVisible(o)))
                 on_user = user_is_on(o) if o else True
                 hide_now = should_hide(mode(), alive, iconic, vis, on_user)
+                if hide_now and L.get("arrived") is not None:              # nobody can see it: the action does not wait for it
+                    L["arrived"].set(); L["arrived"] = None
                 want = 0.0 if (hide_now or L["closing"]) else 255.0
-                step = 255.0 * dt / (FADE_IN if want > L["a"] else FADE_OUT)
+                step = 255.0 * dt * speed() / (FADE_IN if want > L["a"] else FADE_OUT)
                 a2 = min(want, L["a"] + step) if want > L["a"] else max(want, L["a"] - step)
                 if a2 != L["a"]:
                     L["a"] = a2; L["dirty"] = True
                 if L["a"] <= 0.0:
                     w.hide(); L["last_shown"] = False
+                    if L.get("arrived") is not None:
+                        L["arrived"].set(); L["arrived"] = None
                     if (o and not alive) or L["closing"]:                  # the app closed (or the notice ended): the layer disappears completely
                         L["on"] = False; L["closing"] = False
                         if o and not alive: w.set_owner(0)
@@ -547,6 +579,8 @@ class ClaudeCursor:
                         if p >= 1.0:
                             P["travel"] = False
                             if P["click"]: P["ring_t0"] = now
+                            if P.get("arrived") is not None:
+                                P["arrived"].set(); P["arrived"] = None              # on the target NOW: the click goes out
                     ring = 0
                     if P["ring_t0"] and now - P["ring_t0"] < RING_S:
                         ring = 1 + int((now - P["ring_t0"]) / RING_S * 11); P["dirty"] = True
@@ -562,9 +596,11 @@ class ClaudeCursor:
                 elif name == "caret":
                     (cx, cy), (tx, ty) = C["pos"], C["to"]
                     if abs(tx - cx) + abs(ty - cy) > 0.4:                                                  # slides to its place (no jumping)
-                        f = 1 - (0.62 ** (dt / 0.012)); C["pos"] = (cx + (tx - cx) * f, cy + (ty - cy) * f); C["dirty"] = True
+                        f = 1 - (0.62 ** (dt * speed() / 0.012)); C["pos"] = (cx + (tx - cx) * f, cy + (ty - cy) * f); C["dirty"] = True
                     elif C["pos"] != C["to"]:
                         C["pos"] = C["to"]; C["dirty"] = True
+                    if abs(tx - C["pos"][0]) + abs(ty - C["pos"][1]) <= 3 and C.get("arrived") is not None:
+                        C["arrived"].set(); C["arrived"] = None                                          # at the field: the typing goes out
                     x, y = C["pos"]; s, hh = C["s"], C["h"]
                     refresh_palette(C, x + dx, y + dy, [(-20 * s, -hh / 2), (-20 * s, 0), (-20 * s, hh / 2), (20 * s, -hh / 2), (20 * s, 0), (20 * s, hh / 2)], now)
                     if not C["dirty"]: continue

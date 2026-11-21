@@ -926,10 +926,10 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None) and not (bridged and rel is None):   # nothing to travel to
             # the orange cursor travels to the element and then the click happens
             x, y, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)
-            cursor.CURSOR.pointer(x, y, click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.17)
+            cursor.CURSOR.pointer(x, y, click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd).wait(0.8)   # the click goes out ON arrival
             x2, y2, _, _ = _screen_point(hwnd, it, None if isinstance(t, int) else t)     # the user may have moved/resized while it was travelling
             if abs(x2 - x) + abs(y2 - y) > 6:
-                cursor.CURSOR.pointer(x2, y2, click=True, ms=100, scale=cursor.scale_for(hwnd), owner=hwnd); time.sleep(0.12)
+                cursor.CURSOR.pointer(x2, y2, click=True, ms=100, scale=cursor.scale_for(hwnd), owner=hwnd).wait(0.6)
                 rel = core.live_rel(hwnd, it) if (it and not hidden) else rel
         _tr("cursor")
         # the 0.4 s of the cursor's trip are the window of opportunity: verify AGAIN right before dispatching
@@ -1025,13 +1025,15 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
         if it and _cursor_wanted(hwnd, hidden):            # orange typing bar, the size of one line
             s = cursor.scale_for(hwnd)
             wc = core.word_caret(hwnd) if win32gui.GetClassName(hwnd) == "OpusApp" else None        # Word: Claude's point, real position and height
+            if wc is None and getattr(it, "src", "") == "sci":                                      # Scintilla: where the text really lands (its end)
+                from . import scintilla
+                wc = scintilla.end_point(it.hwnd)
             if wc:
-                cursor.CURSOR.caret(wc[0], wc[1], h=cursor.caret_height(wc[2], s), scale=s, owner=hwnd)
+                cursor.CURSOR.caret(wc[0], wc[1], h=cursor.caret_height(wc[2], s), scale=s, owner=hwnd).wait(0.6)
                 progress = lambda x, y, hh: cursor.CURSOR.caret(x, y, h=cursor.caret_height(hh, s), scale=s, owner=hwnd)
             else:
                 _, y, x, eh = _screen_point(hwnd, it)
-                cursor.CURSOR.caret(x + 8, y, h=cursor.caret_height(eh, s), scale=s, owner=hwnd)
-            time.sleep(0.15)
+                cursor.CURSOR.caret(x + 8, y, h=cursor.caret_height(eh, s), scale=s, owner=hwnd).wait(0.6)      # typing starts ON arrival
         _recheck_window(hwnd, cat0)                        # after the typing bar's trip: same window, same field, still not a secret
         bad = core.identity_problem(it)
         if bad:
@@ -1092,7 +1094,7 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
         if _cursor_wanted(hwnd, hidden) and len(shape_pts) >= 2:      # the orange pointer goes to the start and follows the stroke
             s = cursor.scale_for(hwnd)
             x0, y0, _, _ = _screen_point(hwnd, None, shape_pts[0])
-            cursor.CURSOR.pointer(x0, y0, click=True, ms=300, scale=s, owner=hwnd); time.sleep(0.34)
+            cursor.CURSOR.pointer(x0, y0, click=True, ms=300, scale=s, owner=hwnd).wait(1.0)
             x1, y1, _, _ = _screen_point(hwnd, None, shape_pts[-1])
             cursor.CURSOR.pointer(x1, y1, click=False, ms=int(min(2500, 120 + 6 * len(core._densify(shape_pts)))), scale=s, owner=hwnd)
         _recheck_window(hwnd, cat0)
