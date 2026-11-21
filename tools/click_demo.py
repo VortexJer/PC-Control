@@ -15,7 +15,7 @@ from mcp.client.stdio import stdio_client
 import realapps
 from pc_control.focus import FocusGuard
 
-BUTTONS = ["＋", "new 1", "new 2", "Search", "@esc", "new 1", "＋", "new 2", "✕"]
+BUTTONS = ["＋", "new 1", "new 2", "new 1", "new 2", "✕"]
 
 
 async def run(hw, speed, list_only):
@@ -31,8 +31,8 @@ async def run(hw, speed, list_only):
             if list_only:
                 print(full[:3000]); return
             await call("look", window=str(hw), find="editor")
-            await call("type", window=str(hw), target="editor", text="Mira la punta del puntero naranja en cada boton que pulso.\n\tlinea con tabulador\n")
-            await asyncio.sleep(1.0)
+            await call("show", window=str(hw), target="editor", label=f"velocidad {speed:g}x", seconds=2.5)
+            await asyncio.sleep(2.5)
             for name in BUTTONS:
                 if name == "@esc":
                     print("esc:", (await call("key", window=str(hw), name="esc"))[:80]); await asyncio.sleep(1.0); continue
@@ -42,11 +42,11 @@ async def run(hw, speed, list_only):
                     print(f"{name}: not found ({found[:80]!r})"); continue
                 out = await call("click", window=str(hw), target=m.group(1))
                 print(f"{name}: {out[:110]}")
-                await asyncio.sleep(1.6)                      # time to see where the pointer ended
+                await asyncio.sleep(0.9)                      # time to see where the pointer ended
 
 
 def main(argv):
-    speed = float(argv[argv.index("--speed") + 1]) if "--speed" in argv else 1.0
+    speeds = [float(a) for a in argv if a.replace(".", "", 1).isdigit()] or [1.0]
     exe = realapps.load().get("notepadpp", {}).get("exe")
     guard = FocusGuard("notepad++").start()
     si = subprocess.STARTUPINFO(); si.dwFlags = 1; si.wShowWindow = 7
@@ -64,7 +64,11 @@ def main(argv):
     win32gui.SetWindowPos(hw, win32con.HWND_TOPMOST, 200, 120, 1100, 700, win32con.SWP_NOACTIVATE)
     time.sleep(0.6)
     try:
-        asyncio.run(run(hw, speed, "--list" in argv))
+        for i, speed in enumerate(speeds):
+            if i:
+                time.sleep(3.0)
+            print(f"--- velocidad {speed:g}x", flush=True)
+            asyncio.run(run(hw, speed, "--list" in argv))
     finally:
         p.kill(); guard.close()
 
