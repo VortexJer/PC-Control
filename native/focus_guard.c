@@ -1,6 +1,7 @@
 /* PC-Control: thread-specific pre-activation guard. No global input hook.
  * Windows loads this DLL only into explicitly selected target GUI threads.
- * It never injects keys/mouse events, activates a window, or changes z-order.
+ * It never injects keys/mouse events or changes z-order; the only window it ever brings to the foreground is the user's own
+ * (hand_back and the give-back message), and only after a target app took it without the user asking.
  */
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
@@ -8,12 +9,24 @@
 static HINSTANCE instance;
 static volatile LONG blocked_activation, blocked_focus;
 
+static HWND restore_target(void);
+
 static LRESULT CALLBACK probe_proc(int code, WPARAM removed, LPARAM data) {
     if (code == HC_ACTION && removed == PM_REMOVE && data) {
         MSG *message = (MSG *)data;
-        /* Inspect only our tagged WM_NULL heartbeat, never input contents. */
+        /* Inspect only our tagged WM_NULL messages, never input contents. */
         if (message->message == WM_NULL && message->wParam == 0x50434342 && message->hwnd)
             SetPropW(message->hwnd, L"PC-Control.FocusGuardReady", (HANDLE)(ULONG_PTR)message->lParam);
+        /* Give-back: this app's NEW window took the foreground although the user did not ask for it (a Store app's frame is
+         * activated by a thread the pre-activation hook could not reach in time). This process owns the foreground, so Windows lets
+         * it hand it back - only to the user's own window, only while this window is still the foreground. */
+        if (message->message == WM_NULL && message->wParam == 0x50434347 && message->hwnd) {
+            HWND fg = GetForegroundWindow(), target = restore_target();
+            if (fg && target && IsWindow(target) && IsWindowVisible(target) &&
+                GetAncestor(fg, GA_ROOT) == GetAncestor(message->hwnd, GA_ROOT) &&
+                GetAncestor(target, GA_ROOT) != GetAncestor(message->hwnd, GA_ROOT))
+                SetForegroundWindow(target);
+        }
     }
     return CallNextHookEx(NULL, code, removed, data);
 }

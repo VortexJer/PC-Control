@@ -526,13 +526,14 @@ def tree(hwnd, rect, offscreen_ok=False, budget_s=6.0, popups=True):
         return []                                                    # the frame of a remote screen has nothing to read: pixels only
     if popups:
         return walk_all(hwnd, rect, offscreen_ok=offscreen_ok, budget_s=budget_s)
-    return walk_uia(hwnd, rect, budget_s=budget_s, offscreen_ok=offscreen_ok) + native_editors(hwnd, rect)
+    items = walk_uia(hwnd, rect, budget_s=budget_s, offscreen_ok=offscreen_ok)
+    return items + native_editors(hwnd, rect, items)
 
 
 def walk_all(hwnd, rect, **kw):
     """The window tree plus the entries of open menus that are another window (the Windows context menu, drop-downs...)."""
     items = walk_uia(hwnd, rect, **kw)
-    items += native_editors(hwnd, rect)
+    items += native_editors(hwnd, rect, items)
     for h in popup_windows(hwnd):
         try:
             items += [i for i in walk_uia(h, rect, offscreen_ok=True) if i.kind in ("menuitem", "menu")]
@@ -541,10 +542,30 @@ def walk_all(hwnd, rect, **kw):
     return items
 
 
-def native_editors(hwnd, rect):
-    """Editor controls that UI Automation cannot see but that have their own message API (Scintilla), as document elements."""
+RICHEDIT_CLASSES = ("RichEditD2DPT", "RICHEDIT50W", "RichEdit20W", "RichEdit20A")
+
+
+def native_editors(hwnd, rect, known=()):
+    """Editor controls that UI Automation does not list (Scintilla, always; a RichEdit document such as the modern Notepad's while the
+    window is minimized) as document elements; they are written through their own APIs, never through keys."""
     from . import scintilla
     out = []
+    seen = set()
+    for it in known:
+        try:
+            seen.add(it.ctrl.NativeWindowHandle if it.ctrl is not None else 0)
+        except Exception:
+            pass
+    rich = []
+    win32gui.EnumChildWindows(hwnd, lambda c, _: rich.append(c) if win32gui.GetClassName(c) in RICHEDIT_CLASSES
+                              and win32gui.IsWindowVisible(c) and c not in seen else None, None)
+    for h in rich[:1] if len(rich) == 1 else []:                     # one document: unambiguous; several: leave them to the tree
+        try:
+            l, t, r, b = win32gui.GetWindowRect(h)
+            out.append(Item("document", win32gui.GetWindowText(h) or "document", (l - rect[0], t - rect[1], r - rect[0], b - rect[1]),
+                            auto.ControlFromHandle(h), "uia", True))
+        except Exception:
+            pass
     for h in scintilla.editors(hwnd):
         try:
             l, t, r, b = win32gui.GetWindowRect(h)
@@ -690,7 +711,8 @@ def _look_minimized(hwnd, mode, edge):
     edge = edge or auto_edge(screen_long_for(hwnd))
     rc = win32gui.GetWindowPlacement(hwnd)[4]; w, h = rc[2] - rc[0], rc[3] - rc[1]
     if mode != "image":
-        items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True) + native_editors(hwnd, win32gui.GetWindowRect(hwnd))
+        items = walk_uia(hwnd, (0, 0, 0, 0), offscreen_ok=True)
+        items += native_editors(hwnd, win32gui.GetWindowRect(hwnd), items)
         if sum(len(i.name) for i in items) >= 40:            # a minimized window has no image alternative: any tree with real text is worth sending
             assign_ids(hwnd, items)
             text = list_format(items); tok = txt_cost(text)
@@ -1746,6 +1768,33 @@ def open_minimized(command, wait_s=10.0, creationflags=0, env=None):
         return _open_minimized(command, wait_s, creationflags, focus_guard, env)
 
 
+SOFT_MINIMIZE_S = 0.6
+_SOFT = {}                     # hwnd -> when it was tucked behind the user's window (minimized SOFT_MINIMIZE_S later)
+
+
+def soft_minimize(h, user_window):
+    """An app that ignored "start minimized" is NOT minimized at once (a window flashing away is the flicker the user hates): it is
+    tucked right behind the user's window without activating it, and minimized a moment later, out of sight. Never if the user has
+    brought it to the front meanwhile."""
+    now = time.time()
+    if now - _SOFT.get(h, 0) < SOFT_MINIMIZE_S + 1.0:
+        return                                                       # already on its way
+    _SOFT[h] = now
+    if user_window and user_window != h and win32gui.IsWindow(user_window):
+        try:
+            ctypes.windll.user32.SetWindowPos(h, user_window, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
+        except Exception:
+            pass
+    def later():
+        try:
+            if win32gui.IsWindow(h) and not win32gui.IsIconic(h) and win32gui.GetForegroundWindow() != h:
+                ctypes.windll.user32.ShowWindow(h, 7)                  # SW_SHOWMINNOACTIVE
+        except Exception:
+            pass
+    import threading
+    threading.Timer(SOFT_MINIMIZE_S, later).start()
+
+
 def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
     """Launch an app MINIMIZED and without activating it: no window on screen, no focus stolen, and its button stays in the
     taskbar so you can open it with a click. If the app ignores the request and appears open, it is minimized immediately."""
@@ -1755,14 +1804,24 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
     found, honored, t0, last = {}, True, time.time(), 0.0
     family = {p.pid}
     via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")     # shell:AppsFolder\... (Store apps)
+    exe_name = os.path.splitext(os.path.basename(_exe_of(command)))[0].lower()
+    # A single-instance app (the modern Notepad) hands the request to its EXISTING process, which may restore its minimized window:
+    # those windows are watched, and put back minimized if they come up without the user asking.
+    reuse = {h: win32gui.GetWindowText(h) for h in before if win32gui.IsWindowVisible(h) and win32gui.IsIconic(h)
+             and _proc_name(win32process.GetWindowThreadProcessId(h)[1]) == exe_name}
+    reused = {}
     next_tree = 0.0
     while time.time() - t0 < wait_s:
         if time.time() >= next_tree:              # launchers hand the window to a child (wmplayer -> setup_wm, git-gui -> wish)
             family |= _descendants(family); next_tree = time.time() + 0.1
         mine = []
+        # A launcher stub that hands off and exits (calc.exe -> the Store Calculator's frame) leaves a NEW frame window: it is the app's,
+        # unless the user clicked or switched meanwhile (then a new window may be one they opened)
+        handoff = (via_shell or p.poll() is not None) and not focus_guard.user_recent()
         win32gui.EnumWindows(lambda h, _: mine.append(h) if win32gui.IsWindowVisible(h) and (
             win32process.GetWindowThreadProcessId(h)[1] in family
-            or (via_shell and h not in before and win32gui.GetWindowText(h) and win32gui.GetClassName(h) not in SHELL_CLASSES)) else None, None)
+            or (handoff and h not in before and win32gui.GetWindowText(h) and win32gui.GetClassName(h) not in SHELL_CLASSES
+                and (via_shell or win32gui.GetClassName(h) == "ApplicationFrameWindow") and app_window(h))) else None, None)
         for h in mine:
             if h in before or h in found:
                 continue
@@ -1771,24 +1830,49 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
                 honored = False
                 # The native guard prevents activation where supported; minimizing
                 # must not itself activate anything or undo the user's choice.
-                ctypes.windll.user32.ShowWindow(h, 7)
+                soft_minimize(h, fg0)
             found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
-        if any(found.values()) and time.time() - last > 0.6:
+        for h, title in reuse.items():
+            if not win32gui.IsWindow(h) or focus_guard.user_recent():
+                continue
+            if not win32gui.IsIconic(h):
+                soft_minimize(h, fg0); reused[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+            elif win32gui.GetWindowText(h) != title:
+                reused[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+        if (any(found.values()) or (reused and p.poll() is not None)) and time.time() - last > 0.6:
             break
         time.sleep(0.001)
     # Catch late restores without fighting a deliberate user activation.
     end = time.time() + (3.0 if found else 0)
     while time.time() < end:
-        for h in list(found):
-            if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow" and not focus_guard.user_selected(h):
+        for h in list(found) + list(reused):
+            if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow" and not focus_guard.user_selected(h) and not focus_guard.user_recent():
                 honored = False
-                ctypes.windll.user32.ShowWindow(h, 7)
+                soft_minimize(h, fg0)
         time.sleep(0.05)
     own = {pid for pid in family if pid != p.pid or not via_shell}       # the app's OWN processes (never the shared shell ones)
     own = {pid for pid in own if _proc_name(pid) not in SHARED_PROCS}
+    for h in getattr(focus_guard, "reclaimed", []):
+        if h not in found and h not in reused and win32gui.IsWindow(h):
+            reused[h] = win32gui.GetWindowText(h)[:50]
+    note = "" if any(found.values()) else (
+        "single-instance app: it opened in its EXISTING window " + "; ".join(f"{h} «{t}»" for h, t in reused.items())
+        + " (left as it was; if it came to the front, the foreground was given back to the user)" if reused
+        else "no window with a title (it may be single-instance, or take longer)")
     return {"pid": p.pid, "pids": sorted(own), "windows": [{"hwnd": h, "title": t} for h, t in found.items() if t],
-            "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0,
-            "note": "" if any(found.values()) else "no window with a title (it may be single-instance, or take longer)"}
+            "minimizada_de_origen": honored, "foco_intacto": win32gui.GetForegroundWindow() == fg0, "reused": list(reused), "note": note}
+
+
+def app_window(h):
+    """A real app window (it has a frame or a taskbar button), not a helper: XAML 'PopupHost', tool windows, tooltips, drop shadows.
+    Seen live: opening Settings produced a new 'PopupHost' window that was taken for the app."""
+    try:
+        style, ex = win32gui.GetWindowLong(h, win32con.GWL_STYLE), win32gui.GetWindowLong(h, win32con.GWL_EXSTYLE)
+    except Exception:
+        return False
+    if ex & win32con.WS_EX_TOOLWINDOW or win32gui.GetWindowText(h) in ("PopupHost", "DesktopWindowXamlSource"):
+        return False
+    return win32gui.GetClassName(h) == "ApplicationFrameWindow" or bool(ex & win32con.WS_EX_APPWINDOW) or (style & win32con.WS_CAPTION) == win32con.WS_CAPTION
 
 
 SHELL_CLASSES = {"Progman", "WorkerW", "Shell_TrayWnd", "Shell_SecondaryTrayWnd", "PC-Control-Overlay"}     # the desktop and taskbar

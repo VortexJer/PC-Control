@@ -219,6 +219,148 @@ class FocusGuard:
             publish_restore(self.fg0)
         except Exception:
             pass
+        self.windows0 = set()                                       # top-level windows that existed when the guard started
+        try:
+            import win32gui
+            win32gui.EnumWindows(lambda h, _: self.windows0.add(h), None)
+        except Exception:
+            pass
+        self.user_acted = False                                     # the user clicked or Alt/Win-switched since then (for reports)
+        self.last_user_action = 0.0                                 # when they last did (monotonic): only a RECENT action explains a switch
+        self.given_back, self._tried, self.reclaimed = 0, {}, []
+
+    USER_SWITCH_S = 0.4                                             # a switch this soon after a click / Alt / Win is the user's
+
+    def watch_user(self):
+        u = ctypes.windll.user32
+        if any(u.GetAsyncKeyState(vk) & 0x8000 for vk in (0x12, 0x5B, 0x5C)):          # Alt / Win: a window switch of theirs
+            self.user_acted = True
+            self.last_user_action = self.last_switch_key = time.monotonic()
+        if any(u.GetAsyncKeyState(vk) & 0x8000 for vk in (0x01, 0x02, 0x04)):          # a click: on WHICH window
+            self.user_acted = True
+            self.last_user_action = time.monotonic()
+            pt = W.POINT()
+            if u.GetCursorPos(ctypes.byref(pt)):
+                h = u.WindowFromPoint(pt)
+                self.last_click_root = (u.GetAncestor(h, 2) or h) if h else 0
+
+    last_switch_key, last_click_root = 0.0, 0
+
+    def user_recent(self, root=None):
+        """The user caused a switch to `root` a moment ago: they clicked ON it, or pressed Alt/Win. Without `root`: any recent action.
+        An older action is not: if they used the app and then went to another window, the app taking the foreground again is a steal.
+        A click on ANOTHER window at the same moment does not make the stealing window theirs."""
+        now = time.monotonic()
+        if root is None:
+            return now - self.last_user_action < self.USER_SWITCH_S
+        return now - self.last_switch_key < self.USER_SWITCH_S or (
+            now - self.last_user_action < self.USER_SWITCH_S and self.last_click_root == root)
+
+    _gb_lock = threading.Lock()
+
+    def give_back(self):
+        if not self._gb_lock.acquire(blocking=False):
+            return False                                            # the event thread and the watch thread never act twice at once
+        try:
+            return self._give_back()
+        finally:
+            self._gb_lock.release()
+
+    def tuck(self, root):
+        """Put the window that took the foreground right BEHIND the user's window, without activating it: no flash of a window
+        disappearing; the launch code minimizes it a moment later, out of sight."""
+        try:
+            ctypes.windll.user32.SetWindowPos(root, self.fg0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
+        except Exception:
+            pass
+
+    def _give_back(self):
+        """A window holds the foreground although the user neither clicked nor switched since the guard started:
+        an app slipped past the pre-activation veto (a Store app's frame is activated by a brand-new thread). A tagged message makes
+        the guard DLL inside THAT process, which now owns the foreground, hand it back to the user's window. Twice per window at most."""
+        u = ctypes.windll.user32
+        fg = u.GetForegroundWindow()
+        if not fg or not self.fg0:
+            return False
+        root = u.GetAncestor(fg, 2) or fg
+        if self.user_recent(root) or self._user_switched(fg, root):
+            self.fg0 = fg                                           # the user chose this window: from now on it is the one to protect
+            try:
+                publish_restore(fg)
+            except Exception:
+                pass
+            return False
+        # also a window that existed before: a single-instance app (Settings) brings its EXISTING window up; Store apps re-activate
+        # themselves several times while starting, so it is given back each time (bounded)
+        if fg == self.fg0 or root == self.fg0 or self._tried.get(root, 0) >= 20:
+            return False
+        if not u.IsWindow(self.fg0) or not u.IsWindowVisible(self.fg0):
+            return False
+        self._tried[root] = self._tried.get(root, 0) + 1
+        if self._give_back_attached(root):
+            return True
+        import win32gui, win32process
+        try:
+            tid, pid = win32process.GetWindowThreadProcessId(root)
+            arch = process_arch(pid)
+            if arch not in ("native", "x86"):
+                return False
+            backend = self.backends[arch]
+            probe = backend.probe(tid)
+            if not probe:
+                return False
+            try:
+                win32gui.PostMessage(root, 0, 0x50434347, 0)
+                end = time.monotonic() + 0.04                       # the DLL answers in a few ms or not at all (Microsoft-signed-only apps)
+                while time.monotonic() < end:
+                    if u.GetForegroundWindow() == self.fg0:
+                        self.given_back += 1
+                        self.reclaimed.append(root)
+                        self.tuck(root)
+                        return True
+                    time.sleep(0.002)
+            finally:
+                backend.remove(probe)
+        except Exception:
+            pass
+        return False
+
+    def _user_switched(self, fg, root):
+        """The window the user is now in came by THEIR action: a recent click/Alt/Win, or the hooked app marked a mouse activation."""
+        try:
+            return self.user_selected(root) and not self._tried.get(root)
+        except Exception:
+            return False
+
+    def _give_back_attached(self, root):
+        """Fallback when the guard DLL cannot run inside the app (ApplicationFrameHost only loads Microsoft-signed DLLs): the known
+        AutoHotkey WinActivate technique - attach this thread's input queue to the foreground thread for an instant, give the
+        foreground back to the user's window, detach - and tuck the window that took it right behind the user's window without
+        activating it (SetWindowPos + SWP_NOACTIVATE), so it does not flash away."""
+        u = ctypes.windll.user32
+        k = ctypes.windll.kernel32
+        try:
+            fg = u.GetForegroundWindow()
+            if not fg or (u.GetAncestor(fg, 2) or fg) != root or self.user_recent(root):
+                return False
+            me, theirs = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(fg, None)
+            attached = bool(theirs and theirs != me and u.AttachThreadInput(me, theirs, True))
+            try:
+                u.SetForegroundWindow(self.fg0)
+            finally:
+                if attached:
+                    u.AttachThreadInput(me, theirs, False)
+            end = time.monotonic() + 0.05
+            while time.monotonic() < end:
+                if u.GetForegroundWindow() == self.fg0:
+                    self.given_back += 1
+                    self.reclaimed.append(root)
+                    self.tuck(root)
+                    return True
+                time.sleep(0.002)
+        except Exception:
+            pass
+        return False
 
     def attach(self, tid, arch=None):
         with self.lock:
@@ -263,15 +405,43 @@ class FocusGuard:
         except Exception:
             self.close()
             raise
-        def monitor():
-            while not self.stop.wait(0.005):
+        def watch():                                                 # the user's clicks / Alt / Win, and an emptied foreground
+            while not self.stop.wait(0.004):
+                self.watch_user()
                 self.hand_back()
+                self.give_back()
+        def events():                                                # EVENT_SYSTEM_FOREGROUND: told at once, whatever the PC's speed
+            u = ctypes.WinDLL("user32", use_last_error=True)
+            proc_t = ctypes.WINFUNCTYPE(None, W.HANDLE, W.DWORD, W.HWND, W.LONG, W.LONG, W.DWORD, W.DWORD)
+            def on_foreground(hook, event, hwnd, obj, child, thread, when):
+                try:
+                    self.watch_user()
+                    self.give_back()
+                except Exception:
+                    pass
+            cb = proc_t(on_foreground)
+            u.SetWinEventHook.restype = W.HANDLE
+            u.SetWinEventHook.argtypes = [W.DWORD, W.DWORD, W.HMODULE, proc_t, W.DWORD, W.DWORD, W.DWORD]
+            hook = u.SetWinEventHook(0x0003, 0x0003, None, cb, 0, 0, 0x0000)    # EVENT_SYSTEM_FOREGROUND, out of context
+            msg = W.MSG()
+            try:
+                while not self.stop.is_set():
+                    while u.PeekMessageW(ctypes.byref(msg), None, 0, 0, 1):
+                        u.TranslateMessage(ctypes.byref(msg)); u.DispatchMessageW(ctypes.byref(msg))
+                    u.MsgWaitForMultipleObjects(0, None, False, 5, 0x04FF)
+            finally:
+                if hook:
+                    u.UnhookWinEvent(hook)
+        def hooks():                                                 # slow (a process snapshot takes ~45 ms): new threads get hooked
+            while not self.stop.wait(0.005):
                 try:
                     self.refresh()
                 except OSError:
                     continue
-        self.thread = threading.Thread(target=monitor, name="pc-control-focus-guard", daemon=True)
-        self.thread.start()
+        self.thread = threading.Thread(target=watch, name="pc-control-focus-guard", daemon=True)
+        self.hook_thread = threading.Thread(target=hooks, name="pc-control-focus-hooks", daemon=True)
+        self.event_thread = threading.Thread(target=events, name="pc-control-focus-events", daemon=True)
+        self.thread.start(); self.hook_thread.start(); self.event_thread.start()
         return self
 
     def launch(self, command, startupinfo, cwd=None, creationflags=0, env=None):
@@ -354,8 +524,9 @@ class FocusGuard:
     def close(self):
         self.hand_back()
         self.stop.set()
-        if self.thread is not None and self.thread is not threading.current_thread():
-            self.thread.join(2)
+        for th in (self.thread, getattr(self, "hook_thread", None), getattr(self, "event_thread", None)):
+            if th is not None and th is not threading.current_thread():
+                th.join(2)
         with self.lock:
             for tid, hook in self.hooks.items():
                 self.backends[self.arch.get(tid, "native")].remove(hook)
@@ -420,7 +591,9 @@ class FocusGuard:
             raise
         def monitor():                                               # an action can open a window that grabs the foreground too
             while not guard.stop.wait(0.005):
+                guard.watch_user()
                 guard.hand_back()
+                guard.give_back()
         guard.thread = threading.Thread(target=monitor, name="pc-control-focus-handback", daemon=True)
         guard.thread.start()
         return guard

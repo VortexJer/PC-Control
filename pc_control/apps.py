@@ -81,7 +81,9 @@ def resolve(command):
     """(command to run, how it was found, exe name for the focus guard). exe name None if nothing was found."""
     exe, rest = split(command)
     low = exe.casefold()
-    if low.startswith(URI_SCHEMES) or os.path.isfile(os.path.expandvars(exe)):
+    if low.startswith(URI_SCHEMES) and not os.path.isfile(os.path.expandvars(exe)):
+        return f'explorer.exe "{command.strip()}"', "URI through the shell", "explorer"      # a URI is not a program: the shell opens it
+    if os.path.isfile(os.path.expandvars(exe)):
         return command, "as written", os.path.splitext(os.path.basename(exe))[0].lower()
     alias = ALIASES.get(command.strip().casefold()) or ALIASES.get(low)
     if alias and alias.endswith(":"):
