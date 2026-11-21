@@ -71,6 +71,7 @@ pip uninstall -y claude-pc-control
 | Adds a short managed block pointing to the skill | `~/.claude/CLAUDE.md` (between `<!-- pc-control:begin ... -->` and `<!-- pc-control:end -->`) |
 | Registers the permission hooks (`PreToolUse`, `PermissionRequest`) | `~/.claude/settings.json` (backed up once to `settings.json.pc-control-bak`) |
 | Keeps a record of all of the above | `~/.claude/pc-control-install.json` |
+| Copies of the launcher and of the native focus guard, so an update works while sessions are open | `~/.pc-control/bin`, `~/.pc-control/native` |
 
 Options: `--mode follow|auto|ask|strict|bypass` (default `follow`, see [Permission modes](#permission-modes)),
 `--scope user|project|local`, `--allow-reads` (let `windows` and `look` run without asking). `pc-control reinstall` repeats the
