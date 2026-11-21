@@ -1,17 +1,17 @@
 {
   "focus_guard_x64.dll": {
-    "source_sha256": "40cbe4ff6c22d5e915d5b7d128c91b1240b46c805bed10b9ea619b60dbd821de",
-    "binary_sha256": "3096498c5e79267ec186e84a834bba4c65ab3097862d386fa52f148cb23a9c56",
+    "source_sha256": "687d3545790ea38fcafe87c201b9eccf0605fd0c51e6c86ca1b8e6f23b445c95",
+    "binary_sha256": "1a719383c1a96e815e89c4bf8d0a6a03619a77d58bd7d29ad4ea6acae9e192eb",
     "compiler": "0.17.1"
   },
   "focus_guard_arm64.dll": {
-    "source_sha256": "40cbe4ff6c22d5e915d5b7d128c91b1240b46c805bed10b9ea619b60dbd821de",
-    "binary_sha256": "73790fb546939a7f7141cbf6949dc9a6f924d3094b1489794faf5b6f4961f707",
+    "source_sha256": "687d3545790ea38fcafe87c201b9eccf0605fd0c51e6c86ca1b8e6f23b445c95",
+    "binary_sha256": "b918949f74a6685cfac2f5e2081dc524345f09e9e09f0548c9aa7314db7985f7",
     "compiler": "0.17.1"
   },
   "focus_guard_x86.dll": {
-    "source_sha256": "40cbe4ff6c22d5e915d5b7d128c91b1240b46c805bed10b9ea619b60dbd821de",
-    "binary_sha256": "4684763328b72fb6edab0c83b03d38212a6fa9ae3bd463ec3b3e23b480c085bb",
+    "source_sha256": "687d3545790ea38fcafe87c201b9eccf0605fd0c51e6c86ca1b8e6f23b445c95",
+    "binary_sha256": "d62a14299073cf6dd6a8ef88aebbeb826cbb5908c879ed959baf0252654db735",
     "compiler": "0.17.1"
   },
   "focus_guard_host32.exe": {
