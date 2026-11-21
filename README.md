@@ -5,67 +5,35 @@
 Let an AI see and operate Windows apps cheaply, **without stealing focus, moving your mouse or typing on your keyboard**.
 An MCP server for Claude Code and Codex (and any MCP client). Early version: it works, but expect rough edges.
 
-### Install in Codex
+## Install
 
-Windows 10/11, 64-bit Python 3.10+ and the Codex CLI are required. From a checkout:
-
-```powershell
-.\install.ps1 -Client codex              # add -Editable for development
-pc-control status --client codex
-```
-
-If the current Python package is already installed:
+You need **Windows 10 or 11**, **64-bit Python 3.10+** and **Claude Code** (or the Codex CLI). In PowerShell:
 
 ```powershell
-pc-control install --client codex
-pc-control reinstall --client codex
-pc-control uninstall --client codex      # keeps shared runtime data and the Python package
+pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip
+pc-control install                      # for Codex: pc-control install --client codex
 ```
 
-The installer uses `codex mcp add` to register **PC-Control** in the user's Codex configuration
-(`$CODEX_HOME/config.toml`, normally `~/.codex/config.toml`). It installs a skill in `~/.agents/skills/pc-control`,
-adds a managed instruction block to `$CODEX_HOME/AGENTS.md`, and records ownership in
-`$CODEX_HOME/pc-control-install.json`. Other MCP servers, instructions and foreign skills are preserved.
-Reconnect MCP or open a new Codex session to load the tools and skill.
+Then open a **new** Claude Code (or Codex) session and ask, for example, *"what do I have open in Word?"*.
 
-The native focus guard is included in the package (64-bit Python; x64 and ARM64 binaries). No compiler is needed to install it.
-The x64 build is verified on Windows; the ARM64 build is cross-compiled and has not been run on ARM hardware.
+> The PyPI package (`pip install claude-pc-control`) is behind (0.7.7): install from GitHub as above to get the current version.
 
-Claude remains the default client; its installation commands and permission hooks continue to work.
-Codex uses MCP elicitation to ask the user for permission; no Claude hooks or settings are changed.
-If Codex cannot display a permission request, the action is refused. `--mode follow` uses PC-Control's
-`auto` policy in Codex; it does **not** infer Codex's sandbox or approval mode. Other modes work as documented below.
-Only user scope is supported for Codex; `--allow-reads` is specific to Claude and is rejected for Codex.
-`pc-control reinstall` (also used by updates) refreshes both clients when both have installation records.
-Pause/resume and runtime data are shared. Removing one client keeps runtime data while the other is installed;
-`.\uninstall.ps1 -Client codex` also keeps the shared package if Claude is still installed.
-
-## Quick start
-
-Windows 10/11, 64-bit Python 3.10+ and [Claude Code](https://claude.com/claude-code). In PowerShell:
-
-**Install**
-
-```powershell
-pip install claude-pc-control
-pc-control install
-```
-
-**Update** (from any earlier version, including installs made before the package was renamed)
+## Update
 
 ```powershell
 pc-control update
 ```
 
-**Uninstall** (everything it added, then the package)
+## Uninstall
 
 ```powershell
 pc-control uninstall
-pip uninstall -y claude-pc-control pc-control     # whichever of the two names is installed
+pip uninstall -y claude-pc-control
 ```
 
-Then open a **new** Claude Code session and ask, for example, *"what do I have open in Word?"*. Details in [Install](#install),
-[Update](#update) and [Uninstall](#uninstall).
+`pc-control status` says whether it is installed, connected and paused; `pc-control pause` / `pc-control resume` is the kill switch.
+
+## What it does
 
 - **Sees a window without focusing it.** `look` picks the cheapest of: UI-tree text, OCR text, or an image with numbered marks.
   It never sends empty text, text that costs more than the image, or text that does not cover the window.
@@ -77,84 +45,40 @@ Then open a **new** Claude Code session and ask, for example, *"what do I have o
   open it whenever you want to see Claude work. Its windows are marked *opened by Claude*, so the model never mistakes yours for its own.
 - **Lets you keep working.** You and Claude can use the same app at the same time (see [You and Claude in the same app](#you-and-claude-in-the-same-app)).
 
-Windows 10/11 only. Python 3.10+.
+<details>
+<summary><b>Installation details</b> (what install changes, options, installing from a clone, Codex, older versions)</summary>
 
-## Install
-
-```powershell
-git clone https://github.com/VortexJer/PC-Control.git
-cd PC-Control
-.\install.ps1                 # installs the package and runs `pc-control install` (options: -Mode ask|auto|strict|bypass, -AllowReads, -Editable)
-```
-
-Or by hand, without cloning:
-
-```powershell
-pip install claude-pc-control                                                       # from PyPI
-pip install https://github.com/VortexJer/PC-Control/archive/refs/heads/main.zip     # or the latest code from GitHub (no git needed)
-pc-control install
-```
-
-The package is called **`claude-pc-control`** (before 0.6 it was `pc-control`; the commands `pc-control` and `pc-control-mcp` and the `pc_control`
-code did not change). If you have an older install, do not pip-install over it: run `pc-control update` or `.\install.ps1`, which remove the old
-package first (both install the same files, so removing the old one afterwards would delete the new code).
-
-All the commands:
-
-| Command | What it does |
-|---|---|
-| `pc-control install [--mode ...] [--scope ...] [--allow-reads]` | Registers PC-Control in Claude Code (see the table below). |
-| `pc-control update` | Gets the latest code (git pull for a checkout, otherwise GitHub), then `reinstall`. |
-| `pc-control reinstall` | `install` again with the mode, scope and options recorded by the previous install. |
-| `pc-control uninstall [--keep-data]` | Undoes everything `install` added. |
-| `pc-control status` | Shows whether it is registered, connected, which mode, and whether it is paused. |
-| `pc-control pause` / `pc-control resume` | The kill switch: every tool refuses while paused. |
-| `pc-control serve` | Starts the MCP server (what Claude Code runs; you normally never call it). |
-
-What `pc-control install` does (and nothing else):
+**What `pc-control install` changes, and nothing else** (all of it is recorded, so `uninstall` removes exactly that):
 
 | Step | Where |
 |---|---|
-| Registers the MCP server as **PC-Control** (`mcp__PC-Control__*`). It runs the `pc-control-mcp` launcher (full path; a program with its own name, so policy tools can recognize it, unlike `python -m ...`); without a launcher it falls back to `python -m pc_control.server`. An update re-registers it, so old installs switch by themselves | `claude mcp add` (scope `user` by default) |
+| Registers the MCP server as **PC-Control** (tools `mcp__PC-Control__*`) | `claude mcp add` (scope `user` by default) |
 | Writes the usage skill | `~/.claude/skills/pc-control/SKILL.md` |
 | Adds a short managed block pointing to the skill | `~/.claude/CLAUDE.md` (between `<!-- pc-control:begin ... -->` and `<!-- pc-control:end -->`) |
-| Registers the permission hooks (`PreToolUse`, `PermissionRequest`) | `~/.claude/settings.json` |
+| Registers the permission hooks (`PreToolUse`, `PermissionRequest`) | `~/.claude/settings.json` (backed up once to `settings.json.pc-control-bak`) |
 | Keeps a record of all of the above | `~/.claude/pc-control-install.json` |
-| Backs up your settings before editing them (once) | `~/.claude/settings.json.pc-control-bak` |
 
 Options: `--mode follow|auto|ask|strict|bypass` (default `follow`, see [Permission modes](#permission-modes)),
-`--scope user|project|local`, `--allow-reads` (let `windows` and `look` run without asking).
-Then open a **new** Claude Code session; the tools appear as `PC-Control`.
+`--scope user|project|local`, `--allow-reads` (let `windows` and `look` run without asking). `pc-control reinstall` repeats the
+install with the options recorded last time; `pc-control uninstall --keep-data` keeps the `~/.pc-control` data folder.
 
-`pc-control status` shows whether it is installed, connected and paused. `pc-control pause` / `pc-control resume` is the kill switch.
+**From a clone** (for development): `git clone https://github.com/VortexJer/PC-Control.git`, then run `install.ps1` in it
+(options `-Mode`, `-AllowReads`, `-Editable`, `-Client codex`); `update.ps1` and `uninstall.ps1` (`-KeepData`, `-KeepPackage`) do the
+same as the commands above.
 
-## Update
+**Codex:** `pc-control install --client codex` registers the server with `codex mcp add`, installs the skill in
+`~/.agents/skills/pc-control` and a managed block in `$CODEX_HOME/AGENTS.md`. Permission requests reach you through MCP elicitation
+(if Codex cannot show one, the action is refused). Only user scope; `--allow-reads` is Claude-only. Both clients can be installed at
+once; uninstalling one keeps what the other needs.
 
-From **any** earlier version (including the first one, then called `pcsight`):
+**Native focus guard:** included in the package (x64, ARM64 and x86 binaries; no compiler needed). The ARM64 build is cross-compiled
+and has not been run on ARM hardware.
 
-```powershell
-pc-control update            # or .\update.ps1
-```
+**Older versions:** `pc-control update` works from any earlier version, including the first one (`pcsight`) and installs made before
+the package was renamed from `pc-control` to `claude-pc-control` (0.6). It removes whatever an older version left behind (server,
+skill, CLAUDE.md block, hooks, `ask` rules for PC-Control's tools) and only that.
 
-It pulls the source if you installed from a git checkout, otherwise installs the latest code from GitHub (first removing the package
-under its old name `pc-control`, if you have one: it is `claude-pc-control` since 0.6), then runs
-`pc-control install` again with the same mode, scope and options, which also registers the current launcher. On the way it removes whatever an earlier version left behind
-(the old `pcsight` server, skill, CLAUDE.md block, hooks, install record and package, and old `ask` rules for PC-Control's tools,
-which would force a dialog on every call), and only that: your own skills, hooks, rules and notes are kept. Then open a new
-Claude Code session.
-
-## Uninstall
-
-```powershell
-pc-control uninstall           # removes everything install added, and the ~/.pc-control data folder
-pip uninstall claude-pc-control   # removes the package itself (pc-control if you installed before 0.6)
-```
-
-or, from the checkout, `.\uninstall.ps1` (does both; add `-KeepData` to keep `~/.pc-control`, `-KeepPackage` to keep the package).
-
-`pc-control uninstall` is exact: it uses the record written by `install`, so it removes the MCP registration, the skill folder, the
-managed block in `CLAUDE.md` (the file itself is deleted only if `install` created it and nothing else is in it), our hooks, any
-read permissions it added, the settings backup and the data folder. Skills, hooks, permissions and notes that are not ours are left untouched.
+</details>
 
 ## Cost
 
@@ -220,6 +144,9 @@ insertion point. Only one is shown at a time (the one for the last action; each 
 moves with its window. Both are transparent click-through windows that never take focus. They fade in when Claude starts and **stay visible,
 idle at their last position, after it finishes** (`PC_CONTROL_CURSOR=always` default; `user`: only while you are in that window; `off`).
 Their colour adapts to what is behind them and they scale with the screen DPI.
+
+The click (or the typing) happens the moment the cursor **arrives**, never before. Speed: `PC_CONTROL_CURSOR_SPEED` for the pointer
+(default 1.5) and `PC_CONTROL_CARET_SPEED` for the typing bar (default 3); 1 is the original, slower animation.
 
 The cursor is **isolated to the app it acts on**: it is an owned window of the target, so it follows that window's place in the stacking
 order. **Closing the app removes them for good; minimizing it only hides them** and they come back when you restore the window.
