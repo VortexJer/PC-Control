@@ -241,9 +241,17 @@ class FocusGuard:
         except Exception:
             pass
         self.windows0 = set()                                       # top-level windows that existed when the guard started
+        self.above0 = {}                                            # ... and the window right above each one (its place in the stacking order)
         try:
             import win32gui
-            win32gui.EnumWindows(lambda h, _: self.windows0.add(h), None)
+            order = []
+            win32gui.EnumWindows(lambda h, _: order.append(h), None)   # top to bottom
+            self.windows0 = set(order)
+            last = 0                                                # the first VISIBLE window above each one (invisible helpers are
+            for h in order:                                         # ignored by Windows as a place to insert after)
+                self.above0[h] = last
+                if win32gui.IsWindowVisible(h):
+                    last = h
         except Exception:
             pass
         self.user_acted = False                                     # the user clicked or Alt/Win-switched since then (for reports)
@@ -287,10 +295,17 @@ class FocusGuard:
             lock.release()
 
     def tuck(self, root):
-        """Put the window that took the foreground right BEHIND the user's window, without activating it: no flash of a window
-        disappearing; the launch code minimizes it a moment later, out of sight."""
+        """Put the window that took the foreground back where it belongs, without activating it: a NEW window goes behind ALL windows;
+        one that already existed goes back to its place in the stacking order when the guard started (right below the same window
+        as before), where the user had left it."""
+        u = ctypes.windll.user32
         try:
-            ctypes.windll.user32.SetWindowPos(root, self.fg0, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
+            above = self.above0.get(root) if root in self.windows0 else None
+            if above is not None and above != root and (above == 0 or u.IsWindow(above)):
+                after = above if above else self.fg0                 # it was the very top: right below the user's window
+            else:
+                after = 1                                            # HWND_BOTTOM
+            u.SetWindowPos(root, after, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
         except Exception:
             pass
 
@@ -355,7 +370,7 @@ class FocusGuard:
     def _give_back_attached(self, root):
         """Fallback when the guard DLL cannot run inside the app (ApplicationFrameHost only loads Microsoft-signed DLLs): the known
         AutoHotkey WinActivate technique - attach this thread's input queue to the foreground thread for an instant, give the
-        foreground back to the user's window, detach - and tuck the window that took it right behind the user's window without
+        foreground back to the user's window, detach - and send the window that took it behind ALL windows without
         activating it (SetWindowPos + SWP_NOACTIVATE), so it does not flash away."""
         u = ctypes.windll.user32
         k = ctypes.windll.kernel32

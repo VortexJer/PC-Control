@@ -1856,20 +1856,32 @@ def open_minimized(command, wait_s=10.0, creationflags=0, env=None):
 
 
 SOFT_MINIMIZE_S = 0.6
-_SOFT = {}                     # hwnd -> when it was tucked behind the user's window (minimized SOFT_MINIMIZE_S later)
+_SOFT = {}                     # hwnd -> when it was sent behind all windows (minimized SOFT_MINIMIZE_S later)
 
 
-def soft_minimize(h, user_window):
+def visible_above(h):
+    """The first VISIBLE window right above h: its place in the stacking order. Invisible helpers (an app's IME window) are glued
+    above their owner and Windows ignores them as a place to insert after (seen in tests: the window stayed on top)."""
+    u = ctypes.windll.user32
+    prev = u.GetWindow(h, 3)                                             # GW_HWNDPREV
+    while prev and not win32gui.IsWindowVisible(prev):
+        prev = u.GetWindow(prev, 3)
+    return prev
+
+
+def soft_minimize(h, user_window, above=None):
     """An app that ignored "start minimized" is NOT minimized at once (a window flashing away is the flicker the user hates): it is
-    tucked right behind the user's window without activating it, and minimized a moment later, out of sight. Never if the user has
+    sent behind ALL windows (a new window) or back to its own place in the stacking order (`above`: the window that was right above
+    it, for one that already existed) without activating it, and minimized a moment later, out of sight. Never if the user has
     brought it to the front meanwhile."""
     now = time.time()
     if now - _SOFT.get(h, 0) < SOFT_MINIMIZE_S + 1.0:
         return                                                       # already on its way
     _SOFT[h] = now
-    if user_window and user_window != h and win32gui.IsWindow(user_window):
+    if h != user_window:
+        after = above if (above and above != h and win32gui.IsWindow(above)) else 1             # its old place, or HWND_BOTTOM
         try:
-            ctypes.windll.user32.SetWindowPos(h, user_window, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
+            ctypes.windll.user32.SetWindowPos(h, after, 0, 0, 0, 0, 0x0001 | 0x0002 | 0x0010)   # NOSIZE | NOMOVE | NOACTIVATE
         except Exception:
             pass
     def later():
@@ -1896,6 +1908,7 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
     # those windows are watched, and put back minimized if they come up without the user asking.
     reuse = {h: win32gui.GetWindowText(h) for h in before if win32gui.IsWindowVisible(h) and win32gui.IsIconic(h)
              and _proc_name(win32process.GetWindowThreadProcessId(h)[1]) == exe_name}
+    above0 = {h: visible_above(h) for h in reuse}                                     # its place in the stacking order
     reused = {}
     next_tree = 0.0
     while time.time() - t0 < wait_s:
@@ -1923,7 +1936,7 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
             if not win32gui.IsWindow(h) or focus_guard.user_recent():
                 continue
             if not win32gui.IsIconic(h):
-                soft_minimize(h, fg0); reused[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+                soft_minimize(h, fg0, above0.get(h)); reused[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
             elif win32gui.GetWindowText(h) != title:
                 reused[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
         if (any(found.values()) or (reused and p.poll() is not None)) and time.time() - last > 0.6:
@@ -1935,7 +1948,7 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
         for h in list(found) + list(reused):
             if win32gui.IsWindow(h) and win32gui.IsWindowVisible(h) and not win32gui.IsIconic(h) and win32gui.GetClassName(h) != "Windows.UI.Core.CoreWindow" and not focus_guard.user_selected(h) and not focus_guard.user_recent():
                 honored = False
-                soft_minimize(h, fg0)
+                soft_minimize(h, fg0, above0.get(h))
         time.sleep(0.05)
     own = {pid for pid in family if pid != p.pid or not via_shell}       # the app's OWN processes (never the shared shell ones)
     own = {pid for pid in own if _proc_name(pid) not in SHARED_PROCS}
