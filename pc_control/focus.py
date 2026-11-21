@@ -389,6 +389,9 @@ class FocusGuard:
             fg = u.GetForegroundWindow()
             if not fg or (u.GetAncestor(fg, 2) or fg) != root or self.user_recent(root):
                 return False
+            # AttachThreadInput fails if the calling thread has no message queue (the watch thread had none: through the server the
+            # give-back failed every time, while the event thread, which pumps messages, succeeded). PeekMessage creates the queue.
+            u.PeekMessageW(ctypes.byref(W.MSG()), None, 0, 0, 0)
             me, theirs = k.GetCurrentThreadId(), u.GetWindowThreadProcessId(fg, None)
             attached = bool(theirs and theirs != me and u.AttachThreadInput(me, theirs, True))
             try:
