@@ -1454,6 +1454,24 @@ def word_caret(hwnd):
     return word.caret(hwnd)
 
 
+def notify_combo_edit(edit):
+    """The text box of an editable combo (the File name box of Open/Save dialogs, address bars, search boxes): its owner only learns
+    about a change through the combo's CBN_EDITCHANGE / CBN_EDITUPDATE, which Windows sends for TYPED text only. Without them the
+    real Save As dialog of Notepad++ saved under its OLD name although the box showed the new one (a false 'ok', seen live). The
+    notification the user's typing would have produced is sent, so the dialog takes the new text."""
+    try:
+        combo = win32gui.GetParent(edit)
+        if not combo or win32gui.GetClassName(combo).lower() not in ("combobox", "comboboxex32"):
+            return False
+        owner = win32gui.GetParent(combo)
+        cid = win32gui.GetDlgCtrlID(combo)
+        for code in (5, 6):                                              # CBN_EDITCHANGE, CBN_EDITUPDATE
+            win32gui.SendMessage(owner, win32con.WM_COMMAND, win32api.MAKELONG(cid & 0xFFFF, code), combo)
+        return True
+    except Exception:
+        return False
+
+
 def _read_back(ctrl, text, replace):
     """After typing into a field, read what it contains and say whether the typed text is really there (empty if it cannot be read)."""
     v = field_value(ctrl)
@@ -1583,6 +1601,7 @@ def type_text(query, text, target=None, replace=False, progress=None):
             finally:
                 if tick is not None and _input_tick() == tick:
                     win32gui.SendMessage(nh, 0x00B1, *selection)        # preserve their caret; do not undo a new selection they made meanwhile
+            notify_combo_edit(nh)
             return ("ok (WM_SETTEXT)" if replace else "ok (EM_REPLACESEL)") + _read_back(ctrl, text, replace)
         from . import actions
         picked = actions.select_option(ctrl, text)                       # drop-down or list: pick the entry with that text
@@ -1592,6 +1611,7 @@ def type_text(query, text, target=None, replace=False, progress=None):
             inner = win32gui.FindWindowEx(nh, 0, "Edit", None)
             if inner:
                 win32gui.SendMessage(inner, win32con.WM_SETTEXT, 0, text)
+                notify_combo_edit(inner)
                 return "ok (WM_SETTEXT into the drop-down's text box)" + _read_back(ctrl, text, True)
         done = _set_accessible_text(ctrl, text, replace)
         if done:

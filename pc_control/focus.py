@@ -256,15 +256,14 @@ class FocusGuard:
         return now - self.last_switch_key < self.USER_SWITCH_S or (
             now - self.last_user_action < self.USER_SWITCH_S and self.last_click_root == root)
 
-    _gb_lock = threading.Lock()
-
     def give_back(self):
-        if not self._gb_lock.acquire(blocking=False):
+        lock = self.__dict__.setdefault("_gb_lock", threading.Lock())   # per guard: one guard must never block another's give-back
+        if not lock.acquire(blocking=False):
             return False                                            # the event thread and the watch thread never act twice at once
         try:
             return self._give_back()
         finally:
-            self._gb_lock.release()
+            lock.release()
 
     def tuck(self, root):
         """Put the window that took the foreground right BEHIND the user's window, without activating it: no flash of a window
