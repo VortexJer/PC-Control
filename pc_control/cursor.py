@@ -28,9 +28,10 @@ ARROW_K = 1.0                                         # somewhat larger than bef
 RING_S, FADE_IN, FADE_OUT = 0.45, 0.18, 0.22
 
 
-def speed(name="CURSOR_SPEED", default="1"):
+def speed(name="CURSOR_SPEED", default="1.5"):
     """PC_CONTROL_CURSOR_SPEED (the pointer) / PC_CONTROL_CARET_SPEED (the typing bar): how much faster than the base animation
-    (1 = base, 2 = twice as fast). Read on every move. The typing bar defaults to 3x: the user chose it from the demos (2026-11-21)."""
+    (1 = base, 2 = twice as fast). Read on every move. Defaults chosen by the user from live demos (2026-11-21): pointer 1.5x,
+    typing bar 3x."""
     try:
         return max(0.25, min(8.0, float(envvars.get(name, default) or default)))
     except ValueError:
