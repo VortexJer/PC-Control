@@ -59,7 +59,15 @@ class CodexTests(unittest.TestCase):
         self.assertTrue(neighbor.exists())
         self.assertFalse(skill.exists())
         self.assertFalse(Path(p["record"]).exists())
+        self.assertFalse(Path(cli.data_home()).exists())             # no other client: runtime data goes (like Claude's uninstall)
+        # with Claude Code still installed, the shared runtime data stays
+        self.install(mode="ask")
+        Path(cli.data_home()).mkdir(exist_ok=True)
+        claude_record = Path(cli._paths()["record"]); claude_record.parent.mkdir(parents=True, exist_ok=True)
+        claude_record.write_text("{}", encoding="utf-8")
+        codex.uninstall(runner=self.runner)
         self.assertTrue(Path(cli.data_home()).exists())
+        claude_record.unlink()
 
     def test_created_agents_removed(self):
         self.install()

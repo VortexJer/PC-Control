@@ -98,8 +98,10 @@ def uninstall(keep_data=False, runner=None):
     if os.path.exists(p["record"]):
         os.remove(p["record"])
     # Permissions and runtime data may still be used by Claude; removing one client must not erase them.
-    return ["Codex MCP registration, managed instructions and owned skill removed",
-            "shared ~/.pc-control runtime data kept (may be used by Claude Code)"]
+    log = ["Codex MCP registration, managed instructions and owned skill removed"]
+    if os.path.exists(cli._paths()["record"]):
+        return log + ["shared ~/.pc-control runtime data kept (used by Claude Code)"]
+    return log + cli.remove_runtime(keep_data)
 
 
 def status(runner=None):

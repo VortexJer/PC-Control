@@ -616,9 +616,23 @@ def uninstall(keep_data=False, scope="user", runner=run_claude):
     shared = os.path.exists(codex.paths()["record"])
     if shared:
         log.append("shared runtime data kept: Codex is still installed")
-    if not keep_data and not shared and os.path.isdir(data_home()):
-        shutil.rmtree(data_home(), ignore_errors=True); log.append(f"data folder {data_home()} removed")
+    if not shared:
+        log += remove_runtime(keep_data)
     log.append(f"done. To remove the package itself: pip uninstall {DIST}")
+    return log
+
+
+def remove_runtime(keep_data=False):
+    """What PC-Control keeps outside the package, once NO client uses it any more: the launcher copies (~/.pc-control/bin), the cache of
+    native guard copies (~/.pc-control/native) and, unless kept, the data folder. A copy still in use by an open session
+    cannot be deleted by Windows: it is reported and goes with the next uninstall or update."""
+    log = []
+    for d, what in ((os.path.join(data_home(), "bin"), "launcher copies"), (os.path.join(data_home(), "native"), "native guard cache")):
+        if os.path.isdir(d):
+            shutil.rmtree(d, ignore_errors=True)
+            log.append(f"{what} removed" if not os.path.isdir(d) else f"{what}: some files are in use by an open session ({d})")
+    if not keep_data and os.path.isdir(data_home()):
+        shutil.rmtree(data_home(), ignore_errors=True); log.append(f"data folder {data_home()} removed")
     return log
 
 
