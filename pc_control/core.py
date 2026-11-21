@@ -1851,8 +1851,14 @@ def is_hidden(hwnd):
 def open_minimized(command, wait_s=10.0, creationflags=0, env=None):
     from .focus import FocusGuard
     exe = os.path.basename(_exe_of(command)).lower().removesuffix(".exe")
-    with FocusGuard(exe).start() as focus_guard:
+    focus_guard = FocusGuard(exe).start()
+    try:
         return _open_minimized(command, wait_s, creationflags, focus_guard, env)
+    finally:
+        # Some apps take the foreground LATE (Settings brought its existing window up ~3.6 s after the launch, when open_app had
+        # already answered): the guard keeps watching for a while after the answer, off the caller's time, then closes.
+        import threading
+        t = threading.Timer(BACK_GRACE_S, focus_guard.close); t.daemon = True; t.start()
 
 
 SOFT_MINIMIZE_S = 0.6
@@ -1925,13 +1931,19 @@ def _open_minimized(command, wait_s, creationflags, focus_guard, env=None):
         for h in mine:
             if h in before or h in found:
                 continue
-            focus_guard.verify_window(h, timeout=3.0)
-            if not win32gui.IsIconic(h) and win32gui.GetWindowText(h) and not focus_guard.user_selected(h):
-                honored = False
-                # The native guard prevents activation where supported; minimizing
-                # must not itself activate anything or undo the user's choice.
-                soft_minimize(h, fg0)
-            found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+            try:
+                try:
+                    focus_guard.verify_window(h, timeout=3.0)
+                except RuntimeError:
+                    pass                  # a frame that only loads Microsoft-signed DLLs (Store apps): the give-back covers it; the app IS open
+                if not win32gui.IsIconic(h) and win32gui.GetWindowText(h) and not focus_guard.user_selected(h):
+                    honored = False
+                    # The native guard prevents activation where supported; minimizing
+                    # must not itself activate anything or undo the user's choice.
+                    soft_minimize(h, fg0)
+                found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+            except win32gui.error:
+                continue                  # a passing window that closed meanwhile: not the app's
         for h, title in reuse.items():
             if not win32gui.IsWindow(h) or focus_guard.user_recent():
                 continue
@@ -2117,10 +2129,16 @@ def open_behind(command, exe, wait_s=15.0, env=None):
                 except Exception:
                     continue
                 if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
-                    focus_guard.verify_window(h, timeout=3.0)
-                    if not focus_guard.user_selected(h):
-                        ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)
-                    found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+                    try:
+                        try:
+                            focus_guard.verify_window(h, timeout=3.0)
+                        except RuntimeError:
+                            pass          # cannot be verified (Microsoft-signed-only frame): the give-back covers it; the app IS open
+                        if not focus_guard.user_selected(h):
+                            ctypes.windll.user32.SetWindowPos(h, 1, 0, 0, 0, 0, 0x0013)
+                        found[h] = win32gui.GetWindowText(h)[:50]; last = time.time()
+                    except win32gui.error:
+                        continue          # a passing window that closed meanwhile
             if any(found.values()) and time.time() - last > 0.3:
                 break
             time.sleep(0.005)

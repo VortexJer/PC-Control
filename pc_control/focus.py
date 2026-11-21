@@ -221,6 +221,9 @@ def publish_restore(hwnd):
         k.UnmapViewOfFile(view)
 
 
+_ACTIVE, _ACTIVE_LOCK = [], threading.Lock()      # the guards running now, oldest first: only the newest gives the foreground back
+
+
 class FocusGuard:
     def __init__(self, exe):
         self.exe = exe
@@ -327,11 +330,19 @@ class FocusGuard:
             return False
         # also a window that existed before: a single-instance app (Settings) brings its EXISTING window up; Store apps re-activate
         # themselves several times while starting, so it is given back each time (bounded)
-        if fg == self.fg0 or root == self.fg0 or self._tried.get(root, 0) >= 20:
+        # Only the NEWEST guard gives back (two guards attaching to the same thread at once got in each other's way: Settings kept
+        # the foreground 2.2 s with two launches in a row); retries are spaced and bounded by TIME, not by a count.
+        with _ACTIVE_LOCK:
+            newest = _ACTIVE[-1] if _ACTIVE else self
+        if newest is not self:
+            return False
+        first, last_try = self._tried.get(root, (0.0, 0.0)) if isinstance(self._tried.get(root), tuple) else (0.0, 0.0)
+        now = time.monotonic()
+        if fg == self.fg0 or root == self.fg0 or (first and now - first > 5.0) or now - last_try < 0.04:
             return False
         if not u.IsWindow(self.fg0) or not u.IsWindowVisible(self.fg0):
             return False
-        self._tried[root] = self._tried.get(root, 0) + 1
+        self._tried[root] = (first or now, now)
         if self._give_back_attached(root):
             return True
         import win32gui, win32process
@@ -433,6 +444,8 @@ class FocusGuard:
                 self.attach(tid, arch or self.arch.get(tid))
 
     def start(self):
+        with _ACTIVE_LOCK:
+            _ACTIVE.append(self)
         if self.stop.is_set():
             raise RuntimeError("cannot restart a closed focus guard")
         try:
@@ -557,6 +570,9 @@ class FocusGuard:
         return bool(tick and ((tick - self.started_tick) & 0xFFFFFFFF) < 0x80000000)
 
     def close(self):
+        with _ACTIVE_LOCK:
+            if self in _ACTIVE:
+                _ACTIVE.remove(self)
         self.hand_back()
         self.stop.set()
         for th in (self.thread, getattr(self, "hook_thread", None), getattr(self, "event_thread", None)):
@@ -630,6 +646,8 @@ class FocusGuard:
                 guard.hand_back()
                 guard.give_back()
         guard.thread = threading.Thread(target=monitor, name="pc-control-focus-handback", daemon=True)
+        with _ACTIVE_LOCK:
+            _ACTIVE.append(guard)
         guard.thread.start()
         return guard
 
