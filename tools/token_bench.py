@@ -50,7 +50,7 @@ async def scenario(s):
 
 async def main():
     params = StdioServerParameters(command=sys.executable, args=["-m", "pc_control.server"], cwd=ROOT,
-                                   env={**os.environ, "PYTHONPATH": ROOT, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PYTHONUTF8": "1"})
+                                   env={**os.environ, "PYTHONPATH": ROOT, "PC_CONTROL_HOME": os.path.join(tmp, "home"), "PC_CONTROL_MODE": "bypass", "PYTHONUTF8": "1", "PC_CONTROL_HIDDEN": "allow"})
     async with stdio_client(params) as (r, w):
         async with ClientSession(r, w) as s:
             await s.initialize()
