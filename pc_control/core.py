@@ -1380,6 +1380,26 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
         if rel is None:
             return "the element is no longer where it was (the window changed size or the control disappeared): look again with look"
         x, y = (rel[0] + rel[2]) // 2, (rel[1] + rel[3]) // 2
+        if it.ctrl is not None and not in_client(hwnd, x, y):
+            # In the window's FRAME (menu bar, title bar, borders): a posted client mouse message lands at a negative client
+            # coordinate and the app ignores it (seen live: Notepad++'s menu-bar "+" and "x" answered "ok" and did nothing).
+            # Pressed through its own UI Automation pattern instead; the focus guard vetoes any activation that may cause.
+            if right or double:
+                return "did not press: this element is in the window's frame (menu or title bar), where background right/double clicks do not reach"
+            for getter, call in (("GetInvokePattern", "Invoke"), ("GetTogglePattern", "Toggle"), ("GetSelectionItemPattern", "Select"),
+                                 ("GetExpandCollapsePattern", "Expand"), ("GetLegacyIAccessiblePattern", "DoDefaultAction")):
+                try:
+                    p = getattr(it.ctrl, getter)()
+                    if p:
+                        getattr(p, call)()
+                        return f"ok (UI Automation {call}: the element is in the window's frame, where mouse messages do not reach)"
+                except Exception:
+                    continue
+            done = _menubar_command(hwnd, it)
+            if done:
+                return done
+            return ("did not press: this element is in the window's frame (menu or title bar), where background mouse messages do not "
+                    "reach, and it exposes no pattern to press it")
     else:
         if st and _size(win32gui.GetWindowRect(hwnd)) != _size(st["rect"]) and not win32gui.IsIconic(hwnd):
             return "the window changed size since the last image: those coordinates are no longer valid; look again with look"
@@ -1404,6 +1424,53 @@ def click(query, target, right=False, double=False, allow_focus=False, rel=None)
     if how == "busy":
         return "did not press: you are pressing or dragging with the mouse and a click of mine would break your gesture; retry when you let go"
     return f"ok (BM_CLICK at {x},{y})" if how == "button" else f"ok (mouse message at {x},{y} of the window)"
+
+def _menubar_command(hwnd, it):
+    """A command entry of the window's classic menu BAR (Notepad++'s '+' / 'x' at its right end): run by its WM_COMMAND, what clicking
+    it does, without opening anything. Matched by text, or - for owner-drawn entries without text - by its position among the bar's
+    entries as UI Automation lists them. Submenus (File, Edit...) are not commands: None."""
+    u = ctypes.windll.user32
+    menu = u.GetMenu(hwnd)
+    n = u.GetMenuItemCount(menu) if menu else 0
+    if n <= 0:
+        return None
+    clean = lambda s: s.split("\t")[0].replace("&", "").strip().lower()
+    texts = []
+    for i in range(n):
+        buf = ctypes.create_unicode_buffer(256)
+        u.GetMenuStringW(menu, i, buf, 256, 0x400)                           # MF_BYPOSITION
+        texts.append(clean(buf.value))
+    pos = texts.index(clean(it.name)) if clean(it.name) in texts else None
+    if pos is None:
+        try:                                                                 # owner-drawn: same position among the bar's entries
+            bar = it.ctrl.GetParentControl()
+            sibs = [c.Name for c in bar.GetChildren()] if bar else []
+            if len(sibs) == n and it.name in sibs and sibs.count(it.name) == 1:
+                pos = sibs.index(it.name)
+        except Exception:
+            pos = None
+    if pos is None or u.GetSubMenu(menu, pos):
+        return None
+    if u.GetMenuState(menu, pos, 0x400) & 0x3:                               # MF_GRAYED | MF_DISABLED
+        return f"did not press: «{it.name}» is disabled (greyed out) right now"
+    cid = u.GetMenuItemID(menu, pos)
+    if cid in (0, 0xFFFFFFFF, -1):
+        return None
+    win32gui.PostMessage(hwnd, win32con.WM_COMMAND, cid, 0)
+    return f"ok (menu-bar command «{it.name}» run by the app: WM_COMMAND {cid})"
+
+
+def in_client(hwnd, x, y):
+    """True if (x, y) - pixels from the window's top-left - falls inside its CLIENT area (not the title bar, menu bar or borders)."""
+    try:
+        l, t = win32gui.GetWindowRect(hwnd)[:2]
+        cx, cy = win32gui.ClientToScreen(hwnd, (0, 0))
+        _, _, cw, ch = win32gui.GetClientRect(hwnd)
+        sx, sy = l + x, t + y
+        return cx <= sx < cx + cw and cy <= sy < cy + ch
+    except Exception:
+        return True
+
 
 def _thread_focus(hwnd):
     tid = win32process.GetWindowThreadProcessId(hwnd)[0]
