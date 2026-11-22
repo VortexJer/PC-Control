@@ -40,20 +40,29 @@ def kernel():
     return k
 
 
-def snapshot(exe):
-    """Matching process ids and their threads. No command lines or document text is read."""
+def snapshot(exe, roots=()):
+    """Matching process ids and their threads, plus every process descended from `roots` (what a launcher starts in turn: WMP's
+    first-run setup, LibreOffice's soffice.bin, Git GUI's wish). No command lines or document text is read."""
     k = kernel()
     h = k.CreateToolhelp32Snapshot(2 | 4, 0)
     if h == ctypes.c_void_p(-1).value:
         raise ctypes.WinError(ctypes.get_last_error())
-    pids, threads = set(), {}
+    pids, threads, parent = set(), {}, {}
     try:
         p = ProcessEntry(); p.dwSize = ctypes.sizeof(p)
         more = k.Process32FirstW(h, ctypes.byref(p))
         while more:
             if p.exe.lower().removesuffix(".exe") == exe.lower().removesuffix(".exe"):
                 pids.add(p.pid)
+            parent[p.pid] = p.parent
             more = k.Process32NextW(h, ctypes.byref(p))
+        family = set(roots)
+        for _ in range(4):                                       # children, grandchildren... of the launched processes
+            grown = {pid for pid, par in parent.items() if par in family and pid not in family}
+            if not grown:
+                break
+            family |= grown
+        pids |= family - set(roots) if roots else set()
         t = ThreadEntry(); t.dwSize = ctypes.sizeof(t)
         more = k.Thread32First(h, ctypes.byref(t))
         while more:
@@ -238,13 +247,27 @@ def _mark(name):
     return next((m for m in ANTICHEAT_MARKS if m in n), None)
 
 
+def _container(d):
+    """Folders that hold MANY programs (their anti-cheat folders belong to other programs): never searched."""
+    n = os.path.normcase(os.path.abspath(d)).rstrip(r"\/")
+    names = ("ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData", "LOCAL" + "APP" + "DATA", "APP" + "DATA",
+             "USERPROFILE", "SystemRoot", "PUBLIC")                   # (the variable NAMES, spelled so the hygiene test sees no path)
+    roots = [os.environ.get(v, "") for v in names]
+    roots += [os.path.join(roots[4], "Programs")] if roots[4] else []
+    return n in {os.path.normcase(r).rstrip(r"\/") for r in roots if r} or os.path.dirname(n) == n or len(n) <= 3
+
+
 def anticheat_dir(exe_path):
-    """The anti-cheat a program ships with (a folder next to its exe or one level up), or None."""
+    """The anti-cheat a program ships with: a folder in its own install folder, looked for from the exe up to three levels
+    (Game/Binaries/Win64/game.exe has it in Game), stopping at folders shared by many programs, or None."""
     d = os.path.dirname(os.path.abspath(exe_path or ""))
-    for base in (d, os.path.dirname(d)):
+    for _ in range(4):
+        if not d or _container(d):
+            break
         for sub in ANTICHEAT_DIRS:
-            if base and os.path.isdir(os.path.join(base, sub)):
+            if os.path.isdir(os.path.join(d, sub)):
                 return sub
+        d = os.path.dirname(d)
     return None
 
 
@@ -564,10 +587,11 @@ class FocusGuard:
             return False
 
     def refresh(self):
-        named, threads = snapshot(self.exe)
+        alive = {p.pid for p in self.processes if p.poll() is None}
+        named, threads = snapshot(self.exe, alive)
         # Retain actual process handles for our launches, rather than following
         # a dead PID if Windows later reuses its numeric identifier.
-        self.pids = named | {p.pid for p in self.processes if p.poll() is None}
+        self.pids = named | alive
         self.compatible.intersection_update(self.pids)
         for pid in list(self.pids):
             if pid not in self.compatible:

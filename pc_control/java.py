@@ -830,15 +830,24 @@ def disable(path=None):
     return path
 
 
+def ships_java(exe_path):
+    """A program that carries its own Java runtime (JetBrains IDEs' jbr, Android Studio, many Java apps' jre): it is a Java app,
+    whatever its launcher is called."""
+    d = os.path.dirname(os.path.abspath(exe_path or ""))
+    for base in (d, os.path.dirname(d)):
+        for rt in ("jbr", "jre"):
+            if os.path.exists(os.path.join(base, rt, "bin", "java.exe")) or os.path.exists(os.path.join(base, rt, "bin", "javaw.exe")):
+                return True
+    return False
+
+
 def launch_env(command, env=None):
     """The environment for open_app: a Java program gets the bridge through JAVA_TOOL_OPTIONS (only for that process)."""
-    import shlex
-    try:
-        exe = os.path.splitext(os.path.basename(shlex.split(command, posix=False)[0].strip('"')))[0].lower()
-    except (ValueError, IndexError):
-        return None
-    jarlike = command.lower().rstrip('" ').endswith((".jar", ".jnlp"))
-    if exe not in JAVA_PROCS and not jarlike:
+    from .apps import split
+    path = split(command)[0].strip('"')
+    exe = os.path.splitext(os.path.basename(path))[0].lower()
+    jarlike = path.lower().endswith((".jar", ".jnlp")) or command.lower().rstrip('" ').endswith((".jar", ".jnlp"))
+    if exe not in JAVA_PROCS and not jarlike and not ships_java(path):
         return None
     env = dict(os.environ if env is None else env)
     cur = env.get("JAVA_TOOL_OPTIONS", "")
