@@ -1887,6 +1887,15 @@ def type_text(query, text, target=None, replace=False, progress=None):
             out = f"Word COM error: {e.__class__.__name__}: {e}"
         if out:
             return out
+    if win32gui.GetClassName(hwnd) == "SALFRAME" and (target is None or (       # LibreOffice: keys need the system focus; UNO not
+            st and not isinstance(target, tuple) and getattr(st["items"].get(target), "kind", "") == "document")):
+        from . import libreoffice
+        try:
+            out = libreoffice.type_text(hwnd, text, replace)
+        except Exception as e:
+            out = None if "ServiceManager" in str(e) else f"LibreOffice UNO error: {e.__class__.__name__}: {e}"
+        if out:
+            return out
     dest = None
     if surface(hwnd) == "remote":
         from . import remote
@@ -2434,6 +2443,7 @@ def open_behind(command, exe, wait_s=15.0, env=None):
         found, t0, last = {}, time.time(), 0.0
         family, next_tree = {p.pid}, 0.0
         via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")
+        home = os.path.dirname(process_path(p.pid) or (_exe_of(command) if os.path.isabs(_exe_of(command)) else "")).lower()
         while time.time() - t0 < wait_s:
             if time.time() >= next_tree:                         # launchers hand the window to a child (wmplayer, soffice, git-gui)
                 family |= _descendants(family); pids.update(family); next_tree = time.time() + 0.1
@@ -2446,7 +2456,11 @@ def open_behind(command, exe, wait_s=15.0, env=None):
                     pid = win32process.GetWindowThreadProcessId(h)[1]
                 except Exception:
                     continue
-                frame = (handoff and win32gui.GetWindowText(h) and win32gui.GetClassName(h) == "ApplicationFrameWindow" and app_window(h))
+                # ... or a window of the program the launcher handed the request to, installed next to it (scalc.exe -> the
+                # soffice.bin that was already running): same folder, so it is the same application, not a stray window
+                frame = (handoff and win32gui.GetWindowText(h) and app_window(h)
+                         and (win32gui.GetClassName(h) == "ApplicationFrameWindow"
+                              or (home and os.path.dirname(process_path(pid)).lower() == home)))
                 if pid == p.pid or psutil_name(pid) == exe or pid in family or frame:   # also a window handed to a running browser
                     try:
                         try:
@@ -2471,7 +2485,8 @@ def open_behind(command, exe, wait_s=15.0, env=None):
     return {"pid": p.pid, "windows": [w for w in wins if w["title"]], "foco_intacto": win32gui.GetForegroundWindow() == fg0,
             "note": "" if wins else "no window with a title (it may have joined a browser that was already open)"}
 
-def psutil_name(pid):
+def process_path(pid):
+    """The full path of a process's program ("" if it cannot be read)."""
     k = ctypes.windll.kernel32
     h = k.OpenProcess(0x1000, False, pid)
     if not h:
@@ -2479,6 +2494,10 @@ def psutil_name(pid):
     try:
         buf = ctypes.create_unicode_buffer(520); n = ctypes.wintypes.DWORD(520)
         k.QueryFullProcessImageNameW(h, 0, buf, ctypes.byref(n))
-        return os.path.splitext(os.path.basename(buf.value))[0].lower()
+        return buf.value
     finally:
         k.CloseHandle(h)
+
+
+def psutil_name(pid):
+    return os.path.splitext(os.path.basename(process_path(pid)))[0].lower()

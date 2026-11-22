@@ -685,6 +685,9 @@ def verdict(result, delta):
         return "WARNING: typing NOT CONFIRMED: it may not have arrived; check with look (mode=image)"
     if "WARNING: the field does NOT contain" in result:
         return "WARNING: the typed text is not in the field; check with look"
+    if "the field now contains the text" in result and "LegacyIAccessible" in result and "on screen either" in delta:
+        # the accessible value echoes what was written into it; some apps (LibreOffice's document) keep it without applying it
+        return "WARNING: NOT CONFIRMED: the accessible value took the text but nothing changed on screen; check with look (mode=image)"
     if "the field now contains the text" in result:
         return "typing confirmed by reading the field back"
     if "WARNING: it shows something else" in result:
@@ -1049,6 +1052,15 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
         if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
             policy.check_type(policy.mode(), str(target), False)
             return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
+        if win32gui.GetClassName(hwnd) == "SALFRAME" and (not str(target).strip() or office.is_cell(target)):
+            # LibreOffice: through UNO (keys reach it only with the system focus): the document at Claude's point, Calc's cell
+            from . import libreoffice
+            policy.check_type(policy.mode(), str(target), False)
+            cell = str(target).strip() or None
+            if libreoffice.document(hwnd) is not None:           # (the Start Center has no document: the other ways below)
+                return _act(hwnd, hidden, lambda: libreoffice.type_text(hwnd, text, replace, cell)
+                            or "did not type: " + ("that cell address means nothing here (only in Calc)" if cell else
+                                                   "this LibreOffice window has no text to type into; give a field id from look"))
         if not hidden and core.surface(hwnd) == "remote":       # a remote screen: at its caret, or click x,y / an OCR id first
             cat0 = _category(hwnd)
             tid = _target(target, True, hwnd) if str(target).strip() else None

@@ -290,6 +290,15 @@ def _sci_one(hwnd):
     return eds[0] if len(eds) == 1 else 0
 
 
+def _lo_text(hwnd):
+    """(text, source) of a LibreOffice document through UNO, or None (the Start Center, or UNO unreachable)."""
+    from . import libreoffice
+    try:
+        return libreoffice.read(hwnd)
+    except Exception:
+        return None
+
+
 def read_text(query, target=None, start=0, length=6000):
     """The whole text of the window's document/page/field (or of the element `target`), in pieces of `length` characters."""
     hwnd = core.find_window(query); st = core._state.get(hwnd); src = None; text = None
@@ -311,6 +320,8 @@ def read_text(query, target=None, start=0, length=6000):
             text = _ctrl_text(it.ctrl); src = f"element «{it.name[:40]}»"
         if text is None:
             text = it.name; src = "element name only (it exposes no text)"
+    elif win32gui.GetClassName(hwnd) == "SALFRAME" and (lo := _lo_text(hwnd)) is not None:   # LibreOffice: the document (UNO)
+        text, src = lo
     elif core.surface(hwnd) == "java":                                      # Java: every text of the window through the bridge
         from . import java
         try:

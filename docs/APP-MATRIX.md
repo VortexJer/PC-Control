@@ -16,9 +16,9 @@ visible (UWP Store apps: Calculator, Clock, Settings stay on their splash screen
 | PowerPoint | look:uia | uia 43 ids 0.2s | 887 chars | ok | click ok [Presentación en blanco/Blank Presentation]; type ok (read back) [Titulo PC-Cont] | kept | ok (reopened behind as the answer advised) |
 | OneNote | look:uia | uia 24 ids 0.1s | 6 chars | did not scroll: no scrollable area found in this w | click ok [Insertar/Insert/Dibujar/Draw] | kept | ok |
 | Access | look:uia | uia 30 ids 0.1s | 494 chars | ok | click ok [Abrir/Open] | kept | ok (reopened behind as the answer advised) |
-| LibreOffice Writer | look:uia | uia 73 ids 0.5s | 32 chars | did not scroll: no scrollable area found in this w | type: no field 'Vista del documento/Document view/documento' | kept | 1/1 actions failed |
-| LibreOffice Calc | look:uia | uia 94 ids 0.6s | 15 chars | did not scroll: no scrollable area found in this w | type: no field 'Cuadro de nombre/Name Box' | kept | 1/1 actions failed |
-| LibreOffice Math | look:uia | uia 43 ids 0.2s | 27 chars | did not scroll: no scrollable area found in this w | type ok (read back) [a over b] | kept | ok |
+| LibreOffice Writer | look:uia | uia 73 ids 0.5s | no text found in this window (an image-o | did not scroll: no scrollable area found in this w | type ok (read back) [Hola LibreOffi] | kept | ok |
+| LibreOffice Calc | look:uia | uia 94 ids 0.6s | no text found in this window (an image-o | did not scroll: no scrollable area found in this w | type ok (read back) [hola celda] | kept | ok |
+| LibreOffice Math | look:uia | uia 43 ids 0.2s | no text found in this window (an image-o | did not scroll: no scrollable area found in this w | type ok (read back) [a over b] | kept | ok |
 | Adobe Acrobat Reader | look:image | image 0 ids 0.5s | 4 chars | ok | click ok [Buscar texto o herramientas/Search text or tools]; type: no field 'Buscar/Search' | kept | 1/2 actions failed (reopened behind as the answer advised) |
 | Blender 5.2 | look:image | image 0 ids 1.0s | 465 chars | ok | key ok [esc]; key ok [f2]; type FAIL: said ok but the text is not in the window [CuboPCC]; key ok [enter] | kept | 1/4 actions failed (reopened behind as the answer advised) |
 | Spotify | chromium+look:uia | uia 90 ids 1.9s | 14221 chars | ok | type ok (read back) [Hola]; click ok [Inicio/Home] | kept | ok |
@@ -50,6 +50,9 @@ visible (UWP Store apps: Calculator, Clock, Settings stay on their splash screen
 | File Explorer | look:uia | uia 38 ids 0.2s | 21 chars | ok | type FAIL: did not type: no unambiguous input control belongs to this window; another windo; click FAIL: ok (mouse message at 861,170 of the window) / changes: no changes (not [Ver/View] | kept | 2/2 actions failed (reopened behind as the answer advised) |
 
 ## Known limits found by this matrix
+
+- LibreOffice rows: rerun after the UNO route (0.8.5.5); before it, its document took typing only into an accessible value that it never applied.
+- Brave: the harness did not find the address bar in its run, but driven by hand through the same server the bar took the text (read back), Enter loaded the page and its link was found: a harness miss, kept here as measured.
 
 - UWP Store apps (Calculator, Clock, Settings) do not load their content while the display is off; with it on they are covered by `tests/test_store_focus.py`.
 - VS Code's editor (Monaco) publishes no writable value: typing into it is refused rather than sent to whatever has the focus.
