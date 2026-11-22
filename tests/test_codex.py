@@ -117,6 +117,7 @@ class CodexTests(unittest.TestCase):
             def __init__(self, action, allow):
                 self.action, self.allow = action, allow
             async def elicit(self, *args):
+                await asyncio.sleep(server.ANSWERED_BY_CLIENT_S + 0.05)        # a person's answer (an instant one is the client's)
                 return SimpleNamespace(action=self.action, data=SimpleNamespace(allow=self.allow))
         with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "codex"}):
             for action, allow, expected in (("accept", True, True), ("accept", False, False), ("decline", True, False)):
@@ -219,6 +220,29 @@ class CodexTests(unittest.TestCase):
         low = getattr(server.mcp, "_lowlevel_server", None) or server.mcp._mcp_server
         caps = low.create_initialization_options().capabilities
         self.assertIn("codex/sandbox-state-meta", caps.experimental or {})
+
+    def test_question_answered_by_the_client_is_not_a_users_no(self):
+        # Codex's VS Code extension declined PC-Control's question in 12 ms without showing it: that is not the user saying no
+        from types import SimpleNamespace
+        from pc_control import server
+        ToolError = server.ToolError
+
+        class Instant:
+            async def elicit(self, *args):
+                return SimpleNamespace(action="decline", data=None)
+
+        class Person:
+            def __init__(self, action, allow):
+                self.action, self.allow = action, allow
+            async def elicit(self, *args):
+                await asyncio.sleep(server.ANSWERED_BY_CLIENT_S + 0.1)          # a person reads before answering
+                return SimpleNamespace(action=self.action, data=SimpleNamespace(allow=self.allow))
+
+        with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "codex"}):
+            with self.assertRaisesRegex(ToolError, "without showing it to the user.*did not refuse"):
+                asyncio.run(server._ask_user(Instant(), policy.NeedsPermission("test"), "click", {}))
+            self.assertFalse(asyncio.run(server._ask_user(Person("decline", True), policy.NeedsPermission("test"), "click", {})))
+            self.assertTrue(asyncio.run(server._ask_user(Person("accept", True), policy.NeedsPermission("test"), "click", {})))
 
     def test_permission_no_claude_fallback(self):
         from pc_control import server

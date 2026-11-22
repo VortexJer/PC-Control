@@ -83,11 +83,15 @@ class _Permission(BaseModel):
     allow: bool = Field(False, description="Whether you allow Claude to do it")
 
 
+ANSWERED_BY_CLIENT_S = 0.5            # an answer faster than this was given by the client, not read and answered by a person
+
+
 async def _ask_user(ctx, e, tool_name, args):
     """Ask the USER for permission, never the model. First through the MCP protocol (elicitation). If the client does not support it (Claude Code),
     it relies on the PC-Control hook: Claude Code shows its permission dialog to the user (see hook.py and perm.py)."""
     if e.key and perm.approved(e.key):
         return True
+    t0 = time.monotonic()
     try:
         r = await ctx.elicit(e.question, _Permission)
     except Exception:
@@ -106,7 +110,15 @@ async def _ask_user(ctx, e, tool_name, args):
         raise ToolError(f"{e.question} It needs the USER's permission and they cannot be asked from here. Repeat EXACTLY the same "
                         f"call: Claude Code will show the user a permission question; if they say no, it is not executed and you must not insist. "
                         f"(If no question appears for them, the hook is missing: they should run `pc-control install`.)")
-    return r.action == "accept" and bool(getattr(r.data, "allow", False))        # a yes is valid for this time only; remembering the window is done by the hook (convert_rules)
+    yes = r.action == "accept" and bool(getattr(r.data, "allow", False))
+    if not yes and envvars.get("CLIENT") == "codex" and time.monotonic() - t0 < ANSWERED_BY_CLIENT_S:
+        # Nobody answers a question in a fraction of a second: the client answered it by itself without showing it (seen in Codex's
+        # VS Code extension: declined in 12 ms). Telling the model "the user said no" would be false; say what happened instead.
+        raise ToolError(f"{e.question} Not executed: this Codex answered PC-Control's permission question by itself, without showing "
+                        "it to the user (in under a second). The user did not refuse. For this protected window or action, tell the "
+                        "user: they can switch /permissions to Full Access (PC-Control then acts without asking), or do it themselves. "
+                        "Do not retry it the same way.")
+    return yes                                                   # a yes is valid for this time only; remembering the window is done by the hook (convert_rules)
 
 
 RAW = {}                                                        # tool name -> the plain function (no MCP wrapper)
@@ -807,6 +819,11 @@ def _put_back(hwnd, z0):
 def _act(hwnd, hidden, fn, note="", roi=None):
     if hidden:
         return _act_body(hwnd, hidden, fn, note, roi=roi)
+    if core.is_taskbar(hwnd):
+        # A taskbar press (only after the user's yes, or in bypass: _taskbar_press_guard) opens Windows' own UI IN FRONT on purpose:
+        # Quick settings, Start, the calendar. That panel needs the keyboard focus to stay open; handing the focus back closed it the
+        # instant it opened (seen: "the app tried to take the keyboard focus: it was refused" and no panel). Not guarded here.
+        return _act_body(hwnd, hidden, fn, note, None, roi)
     from .focus import FocusGuard
     with FocusGuard.for_window(hwnd) as focus_guard:
         out = _act_body(hwnd, hidden, fn, note, focus_guard, roi)
@@ -889,7 +906,7 @@ def windows(filter: str = "") -> str:
     cls = {h: win32gui.GetClassName(h) for h in tops}
     content = {win32gui.GetWindowText(h): h for h in tops if cls[h] == "Windows.UI.Core.CoreWindow"}
     frame_of = {content[win32gui.GetWindowText(h)]: h for h in tops if cls[h] == "ApplicationFrameWindow" and win32gui.GetWindowText(h) in content}
-    framed = set(frame_of.values())
+    framed = set(frame_of.values()) | {h for h, _ in core.taskbar_panels()}    # (an open taskbar panel is listed with the taskbar)
     for h in tops:                                     # z-order is usage order: the first one is the most recent
         if h in framed:
             continue
@@ -916,6 +933,9 @@ def windows(filter: str = "") -> str:
     tb = win32gui.FindWindow("Shell_TrayWnd", None)
     if tb and not miss("taskbar barra de tareas tray volume volumen", "explorer"):
         out.append(f"{tb} | explorer | Taskbar (apps, tray, volume, clock): window=\"taskbar\"")
+    for h, t in core.taskbar_panels():                 # a panel the taskbar opened (Quick settings...): only while it is open
+        if not miss(t + " taskbar panel quick settings", _proc(h)):
+            out.append(f"{h} | {_proc(h)} | {t[:44]} (taskbar panel, open now: it closes when the user clicks elsewhere)")
     return "\n".join(out) or f"no window matches '{filter}'"
 
 
@@ -957,6 +977,8 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
                          "buttons opens Windows UI in front of the user: the user is asked first")
             except Exception:
                 pass
+            for ph, pt in core.taskbar_panels():
+                head += f"\nOpen taskbar panel «{pt}»: look window=\"{ph}\" to use it (Wi-Fi, Bluetooth... are switches there)"
         if r["mode"] == "image":
             return [head + f" | image {r['image_size']}: numbered marks = ids; x,y = image pixels", Image(path=r["image"])]
         return head + "\n" + (r.get("text") or "")
@@ -1029,7 +1051,12 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         if roi is None and not isinstance(t, int):
             k = core._state.get(hwnd, {}).get("scale", 1.0)
             roi = (int(t[0] * k) - 10, int(t[1] * k) - 10, int(t[0] * k) + 10, int(t[1] * k) + 10)
+        panels0 = {h for h, _ in core.taskbar_panels()} if core.is_taskbar(hwnd) else None
         res = _act(hwnd, hidden, act, note, roi)
+        if panels0 is not None:                       # a taskbar button opens a panel of the shell: THAT is its effect
+            opened = _panel_opened(panels0)
+            if opened:
+                return _panel_answer(res, opened)     # and no second press: the same button would close it again
         # Apps that draw their own controls (modern Store/XAML apps) ignore mouse messages: if the plain click had NO visible effect, press
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
         # Not if the click already changed what the element is (a toggle): pressing it again would do the opposite.
@@ -1043,8 +1070,31 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
                     _MOUSE["ignored"].add(_mouse_key(hwnd))                          # remembered: next time (and inside steps) it goes straight there
         elif "mouse message" in res and "effect observed" in res and it is not None and not right and _mouse_key(hwnd):
             _MOUSE["ok"].add(_mouse_key(hwnd))                                       # a plain click was seen to work on this program
+        if panels0 is not None:
+            opened = _panel_opened(panels0)
+            if opened:
+                return _panel_answer(res, opened)
         return res
     return _on(window, run)
+
+
+def _panel_opened(before, wait_s=1.0):
+    """Taskbar panels (Quick settings...) that opened since `before` (they take a moment to show)."""
+    t0 = time.time()
+    while True:
+        new = [(h, t) for h, t in core.taskbar_panels() if h not in before]
+        if new or time.time() - t0 > wait_s:
+            return new
+        time.sleep(0.1)
+
+
+def _panel_answer(res, opened):
+    """The taskbar's own check looks at the taskbar, where nothing changes: the panel that opened IS the effect."""
+    res = re.sub(r"\s*\|\s*WARNING: NO VISIBLE EFFECT[^|]*", "", res)
+    res = re.sub(r"\s*\|\s*the plain mouse click had no effect[^|]*", "", res)
+    h, t = opened[0]
+    return (res.rstrip(" |") + f" | opened the taskbar panel «{t}» (window \"{h}\"): look window=\"{h}\" to use it (Wi-Fi, Bluetooth, "
+            "airplane mode... are switches there); it closes when the user clicks elsewhere")
 
 
 TEXT_KINDS = ("edit", "document", "combobox")

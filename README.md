@@ -253,6 +253,9 @@ You can keep working in the app while Claude works in it, as long as you do not 
   your windows.
 - **The taskbar:** `window="taskbar"`. Its volume button takes `scroll` (2 per step, like the wheel) and `type` 0-100 / mute through
   Windows' audio API: no flyout, no focus change. Other taskbar buttons open Windows UI in front of you, so you are asked first.
+  A button that opens a panel (the network or volume button opens **Quick settings**) says so with the panel's window id; while it
+  is open, `windows()` lists it and `window="quick settings"` (any language) reaches it: Wi-Fi, Bluetooth, airplane mode... are
+  switches there, pressed and read back through UI Automation. It closes when you click elsewhere (or `key esc`).
 - **Hidden views:** an app's invisible web view or dialog (Acrobat keeps one over the page) still publishes its buttons; anything another
   window of the app covers is not offered, and text an app only draws is read by OCR of what is on screen.
 - **Games with anti-cheat:** PC-Control puts nothing inside them (a foreign DLL can get your account banned): it says so and does nothing.
@@ -306,7 +309,8 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images. On an image,
   the numbered marks are the app's elements and the lines OCR read; a button that is only an icon has no mark and is clicked by `x,y`.
 - The R console (Rgui) and VS Code's editor publish no writable text: typing there is refused or unconfirmed, never reported as done.
-- Store apps (Calculator, Clock, Settings) do not draw their content while the display is off.
+- Store apps (Calculator, Clock, Settings) do not draw their content while the display is off, or while they are minimized or
+  covered: they are suspended until visible.
 - Notepad++ 8.9 refuses the guard DLL: PC-Control does not start it guarded and says so.
 - A minimized window is read through its UI tree only: no screenshot, no scrolling, no clicks by coordinates (it would have to be shown).
   Open it from the taskbar when that is needed.

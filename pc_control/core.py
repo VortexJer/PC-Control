@@ -228,6 +228,46 @@ def is_taskbar(hwnd):
         return False
 
 
+PANEL_PROCS = {"shellhost", "shellexperiencehost", "startmenuexperiencehost", "searchhost"}
+PANEL_NAMES = {"quick settings", "configuracion rapida", "configuración rápida", "control center", "action center", "centro de actividades",
+               "taskbar panel", "panel"}
+
+
+def _dwm_cloaked(h):
+    v = ctypes.c_int(0)
+    try:
+        ctypes.windll.dwmapi.DwmGetWindowAttribute(h, 14, ctypes.byref(v), 4)        # DWMWA_CLOAKED
+    except Exception:
+        return 0
+    return v.value
+
+
+def taskbar_panels():
+    """Windows' own panels that the taskbar opens - Quick settings (Wi-Fi, Bluetooth, airplane mode...), notifications, calendar, Start,
+    search - that are OPEN now: [(hwnd, title)]. They are tool windows of the shell (Quick settings: class ControlCenterWindow of
+    shellhost.exe) that always exist and are only shown (or uncloaked) while open, so neither the window list nor a "new window"
+    check saw them: the panel opened and the click said there was no visible effect (seen in a real session)."""
+    out, h = [], 0
+    # They live in the shell's own z-order band, which EnumWindows does NOT return (measured: 307 windows without it, 361 walking
+    # FindWindowEx, the panel among them): walk every top-level window instead.
+    for _ in range(5000):
+        h = win32gui.FindWindowEx(0, h, None, None)
+        if not h:
+            break
+        try:
+            if not win32gui.IsWindowVisible(h) or _dwm_cloaked(h):
+                continue
+            t, cls = win32gui.GetWindowText(h), win32gui.GetClassName(h)
+            if not t or not (cls == "ControlCenterWindow" or psutil_name(window_pid(h)) in PANEL_PROCS):
+                continue
+            r = win32gui.GetWindowRect(h)
+            if r[2] - r[0] > 40 and r[3] - r[1] > 40:
+                out.append((h, t))
+        except Exception:
+            continue
+    return out
+
+
 def find_window(query, follow=False):
     """The window the model means: an hwnd, an exact title, the app's process name (winword, mspaint) or a title substring.
     follow=True: a closed hwnd whose app replaced it with ONE new window resolves to that window (for reading)."""
@@ -250,6 +290,14 @@ def find_window(query, follow=False):
         if h:
             _remember(h)
             return h
+    if q in PANEL_NAMES:                            # the taskbar's Quick settings panel, in any language, while it is open
+        panels = taskbar_panels()
+        qs = [h for h, _ in panels if win32gui.GetClassName(h) == "ControlCenterWindow"] or [h for h, _ in panels]
+        if qs:
+            _remember(qs[0])
+            return qs[0]
+        raise LookupError("the taskbar's Quick settings panel is closed: it opens with the taskbar's network, volume or battery "
+                          "button (click it in window=\"taskbar\")")
     q = _clean_title(q).casefold() or q
     hits = []
     def cb(h, _):

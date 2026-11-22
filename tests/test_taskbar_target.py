@@ -70,9 +70,41 @@ async def strict(call):
     checks["...and nothing opened"] = visible_tops() - tops0 == set() and win32gui.GetForegroundWindow() == fg0
 
 
+def panels():
+    """The taskbar's Quick settings panel (Windows 11: ControlCenterWindow of shellhost.exe) lives in the shell's z-order band, which
+    EnumWindows does not return: it was invisible to windows() and to the click's check, which said "no visible effect" while the
+    panel was open (seen live). Checked without opening it: the window is made to look visible to PC-Control."""
+    from pc_control import core, server
+    h = win32gui.FindWindow("ControlCenterWindow", None)
+    if not h:
+        return                                                  # no Quick settings host on this Windows
+    listed = []
+    win32gui.EnumWindows(lambda w, _: listed.append(w), None)
+    checks["(Quick settings is not in EnumWindows: the reason it was missed)"] = h not in listed
+    if not win32gui.IsWindowVisible(h):
+        checks["a closed panel is not reported"] = core.taskbar_panels() == []
+        try:
+            core.find_window("quick settings"); checks["a closed panel says how to open it"] = False
+        except LookupError as e:
+            checks["a closed panel says how to open it"] = "network, volume or battery" in str(e)
+    real = win32gui.IsWindowVisible
+    win32gui.IsWindowVisible = lambda w: True if w == h else real(w)
+    try:
+        checks["an open panel is found although EnumWindows misses it"] = h in {p for p, _ in core.taskbar_panels()}
+        checks["'quick settings' / 'configuración rápida' reach it in any language"] = (
+            core.find_window("quick settings") == h and core.find_window("configuración rápida") == h)
+    finally:
+        win32gui.IsWindowVisible = real
+    ans = server._panel_answer("ok (UI Automation Invoke: x) | changes: no changes | WARNING: NO VISIBLE EFFECT; check with look"
+                               " | the plain mouse click had no effect, so it was sent through UI Automation", [(h, "Configuración rápida")])
+    checks["the click says the panel opened (not 'no visible effect')"] = ("NO VISIBLE EFFECT" not in ans and f'window "{h}"' in ans
+                                                                          and "opened the taskbar panel" in ans)
+
+
 try:
     asyncio.run(session("bypass", main))
     asyncio.run(session("strict", strict))
+    panels()
 finally:
     audio.set_level(level0); audio.set_mute(mute0)
 for k, v in checks.items():
