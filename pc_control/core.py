@@ -721,18 +721,91 @@ async def _ocr(png):
         return []                                      # no OCR on this machine: the decider falls back to the image
     st = InMemoryRandomAccessStream(); w = DataWriter(st); w.write_bytes(png); await w.store_async(); await w.flush_async(); st.seek(0)
     bmp = await (await BitmapDecoder.create_async(st)).get_software_bitmap_async()
+    res = await eng.recognize_async(bmp)
+    # When the engine thinks the image is tilted (perspective lines in a 3D viewport, a chart), it reports TextAngle and gives the
+    # boxes in the ROTATED image: Blender's row of tabs came back as a diagonal and clicks on its words would have missed. Screens
+    # are never tilted: every box corner is rotated back around the image center (measured: lands on the words to the pixel).
+    ang = math.radians(res.text_angle or 0.0)
+    cx, cy = bmp.pixel_width / 2, bmp.pixel_height / 2
+    ca, sa = math.cos(ang), math.sin(ang)
+    def back(x, y):
+        dx, dy = x - cx, y - cy
+        return cx + dx * ca - dy * sa, cy + dx * sa + dy * ca
     out = []
-    for ln in (await eng.recognize_async(bmp)).lines:
+    for ln in res.lines:
         ws = list(ln.words)
         if ws:
-            x0 = min(w.bounding_rect.x for w in ws); y0 = min(w.bounding_rect.y for w in ws)
-            x1 = max(w.bounding_rect.x + w.bounding_rect.width for w in ws); y1 = max(w.bounding_rect.y + w.bounding_rect.height for w in ws)
+            pts = [back(px, py) for w in ws for px, py in ((w.bounding_rect.x, w.bounding_rect.y),
+                   (w.bounding_rect.x + w.bounding_rect.width, w.bounding_rect.y + w.bounding_rect.height),
+                   (w.bounding_rect.x + w.bounding_rect.width, w.bounding_rect.y), (w.bounding_rect.x, w.bounding_rect.y + w.bounding_rect.height))]
+            if ang:                          # an upright word's box, from its rotated-back center and the engine's own height
+                hgt = max(w.bounding_rect.height for w in ws)
+                cs = [back(w.bounding_rect.x + w.bounding_rect.width / 2, w.bounding_rect.y + w.bounding_rect.height / 2) for w in ws]
+                mid = sum(p[1] for p in cs) / len(cs)
+                x0 = min(back(w.bounding_rect.x, w.bounding_rect.y + w.bounding_rect.height / 2)[0] for w in ws)
+                x1 = max(back(w.bounding_rect.x + w.bounding_rect.width, w.bounding_rect.y + w.bounding_rect.height / 2)[0] for w in ws)
+                y0, y1 = mid - hgt / 2, mid + hgt / 2
+            else:
+                x0, y0 = min(p[0] for p in pts), min(p[1] for p in pts); x1, y1 = max(p[0] for p in pts), max(p[1] for p in pts)
             out.append(Item("ocr", ln.text.strip(), (int(x0), int(y0), int(x1), int(y1)), None, "ocr", True))
     return out
 
 def ocr_items(img):
     b = io.BytesIO(); Image.fromarray(img[:, :, ::-1]).save(b, "PNG")
     return asyncio.run(_ocr(b.getvalue()))
+
+ICONS = os.environ.get("PC_CONTROL_ICONS", "0") == "1"      # experimental: PC_CONTROL_ICONS=1 also marks textless icons (more false marks)
+
+
+def icon_items(img, known=(), dpi=1.0, limit=120):
+    """Buttons with NO text (icons, arrows, swatches, toggles) found in the pixels: OCR only sees text, so a window with no usable
+    tree lost every icon button. Edges of the image -> each icon's strokes joined -> connected blobs of a button's size and shape
+    (scaled by the window's DPI) that no known element or text line already covers. They become clickable ids like OCR lines:
+    clicked at their place. Returns Items (kind "icon")."""
+    h, w = img.shape[:2]
+    s = max(1.0, dpi)
+    lo, hi = int(7 * s), int(72 * s)                                     # an icon/button is 7..72 px at 100% scale
+    g = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    e = cv2.Canny(g, 30, 90)
+    j = max(1, int(round(1.5 * s)))                                       # joins the strokes of ONE icon, not neighbouring icons
+    d = cv2.dilate(e, cv2.getStructuringElement(cv2.MORPH_RECT, (j * 2 + 1, j * 2 + 1)))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(d, connectivity=8)
+    cover = [k.rect for k in known if (k.rect[2] - k.rect[0]) * (k.rect[3] - k.rect[1]) <= 0.02 * w * h]
+    # Words look like icons to the pixels (a short word is a small compact blob): whatever lies inside a line of TEXT is not an
+    # icon. OCR reads whole lines, so it covers every word of a page, of code, of a ruler. Run here if the caller has none.
+    lines = [k.rect for k in known if getattr(k, "src", "") == "ocr"]
+    if not lines:
+        try:
+            lines = [o.rect for o in ocr_items(img)]
+        except Exception:
+            lines = []
+    cover += [(r[0] - 3, r[1] - 3, r[2] + 3, r[3] + 3) for r in lines]
+    # Inside a text area (a document, an editor) there are no icon buttons: only its text, its pictures, its code
+    text_areas = [k.rect for k in known if k.kind in ("document", "edit") and (k.rect[2] - k.rect[0]) * (k.rect[3] - k.rect[1]) > 0.05 * w * h]
+    out = []
+    for i in range(1, n):
+        x, y, bw, bh, area = stats[i]
+        x0, y0, x1, y1 = int(x + j), int(y + j), int(x + bw - j), int(y + bh - j)   # back to the icon's own size (before joining)
+        rw, rh = x1 - x0, y1 - y0
+        if not (lo <= rw <= hi and lo <= rh <= hi) or max(rw, rh) > 3.2 * min(rw, rh):
+            continue                                                      # too small (a comma, a ruler digit), too big, a line
+        if area < 0.18 * bw * bh:
+            continue                                                      # a thin outline around nothing (a frame, a separator)
+        if e[y0:y1, x0:x1].mean() < 0.12 * 255:
+            continue                                                      # nearly empty inside (guides, a frame): icons have strokes
+        cx, cy = (x0 + x1) // 2, (y0 + y1) // 2                           # (measured: real icons >= 0.14, empty frames 0.08-0.10)
+        if any(r[0] - 2 <= cx <= r[2] + 2 and r[1] - 2 <= cy <= r[3] + 2 for r in cover):
+            continue                                                      # already an element or a text line
+        if any(max(0, min(x1, r[2]) - max(x0, r[0])) * max(0, min(y1, r[3]) - max(y0, r[1])) > 0.25 * rw * rh for r in lines):
+            continue                                                      # a good part of it is text (words with guides around)
+        if any(r[0] <= cx <= r[2] and r[1] <= cy <= r[3] for r in text_areas):
+            continue
+        if x0 <= 1 or y0 <= 1 or x1 >= w - 2 or y1 >= h - 2:
+            continue                                                      # glued to the window edge: the frame, not a button
+        out.append(Item("icon", "icon", (x0, y0, x1, y1), None, "vis", True))
+    out.sort(key=lambda it: (it.rect[1] // max(1, int(12 * s)), it.rect[0]))
+    return out[:limit]
+
 
 def grid(items, w, h):
     rows_n = max(20, min(70, h // 18)); cols = 120
@@ -766,10 +839,12 @@ def blind_cells(img, items):
 
 
 def draw_marks(im, items, k, area):
-    """Number the actionable elements on the image (at most 40, no large containers). The label size
-    is proportional to the image: not a fixed size."""
+    """Number the actionable elements on the image (at most 160, no large containers). The label size is proportional to the
+    image, a bit smaller when there are many marks (dense toolbars), so the labels cover less of what they mark."""
     from PIL import ImageDraw, ImageFont
     fs = mark_font(im.width)
+    if sum(1 for it in items if it.clickable) > 60:
+        fs = max(9, int(fs * 0.8))
     try:
         font = ImageFont.load_default(size=fs)
     except Exception:
@@ -785,7 +860,7 @@ def draw_marks(im, items, k, area):
         lab = str(it.id); tw = int(fs * 0.62 * len(lab)) + 4
         d.rectangle([x0, y0, x0 + tw, y0 + fs + 2], fill=(255, 90, 40)); d.text((x0 + 2, y0 - 1), lab, fill=(0, 0, 0), font=font)
         n += 1
-        if n >= 40:
+        if n >= 160:
             break
 
 
@@ -904,6 +979,15 @@ def _look(hwnd, mode, edge):
 
     def finish(kind, why, items=None, text=None, tokens=None):
         items = items if items is not None else known
+        if kind == "image" and ICONS and img is not None:              # the photo: icon buttons get ids too, not only text
+            try:
+                dpi = ctypes.windll.user32.GetDpiForWindow(hwnd) / 96
+            except Exception:
+                dpi = 1.0
+            icons = icon_items(img, items, dpi)
+            if icons:
+                items = list(items) + icons
+                res["icons"] = len(icons)
         assign_ids(hwnd, items)
         res.update(mode=kind, why=why)
         scale = 1.0
@@ -1566,6 +1650,47 @@ def in_title_bar(ctrl):
         return False
 
 
+PRESSABLE = {"ButtonControl", "MenuItemControl", "TabItemControl", "ListItemControl", "HyperlinkControl", "CheckBoxControl",
+             "RadioButtonControl", "SplitButtonControl", "TreeItemControl", "ComboBoxControl", "DataItemControl"}
+
+
+def _uia_at(hwnd, x, y, budget_s=0.6):
+    """The smallest pressable UI Automation control of THIS window at window point x,y (None if none): only the branch that
+    contains the point is walked (and children with no rectangle, which some apps report), never the screen's topmost element,
+    which could be another window covering this one."""
+    l, t = win32gui.GetWindowRect(hwnd)[:2]
+    px, py = l + x, t + y
+    try:
+        root = auto.ControlFromHandle(hwnd)
+    except Exception:
+        return None
+    best, t0, area_max = None, time.time(), None
+    stack = [root]
+    while stack and time.time() - t0 < budget_s:
+        c = stack.pop()
+        try:
+            kids = c.GetChildren()
+        except Exception:
+            continue
+        for ch in kids:
+            try:
+                r = ch.BoundingRectangle
+            except Exception:
+                continue
+            empty = r.width() <= 0 or r.height() <= 0
+            if not empty and not (r.left <= px <= r.right and r.top <= py <= r.bottom):
+                continue
+            stack.append(ch)
+            if not empty and ch.ControlTypeName in PRESSABLE:
+                a = r.width() * r.height()
+                if area_max is None or a < area_max:
+                    best, area_max = ch, a
+    wr = win32gui.GetWindowRect(hwnd)
+    if best is not None and area_max > 0.05 * (wr[2] - wr[0]) * (wr[3] - wr[1]):
+        return None                                                   # a big control (a whole list): not what the mark points at
+    return best
+
+
 def invoke(query, target, why="this app ignores mouse messages", double=False):
     """Press an element through its UI Automation pattern (Invoke, Toggle, Select, Expand). Apps whose controls are drawn by the app itself
     (modern Store/XAML apps such as Calculator or Paint) ignore the mouse messages, but a screen reader's Invoke works on them: it neither
@@ -1574,7 +1699,14 @@ def invoke(query, target, why="this app ignores mouse messages", double=False):
     if window_busy(hwnd):
         return "did not press: you are using this window; your current input was left untouched"
     it = st["items"].get(target) if st and isinstance(target, int) else None
-    if it is None or it.ctrl is None:
+    if it is None:
+        return None
+    ctrl = it.ctrl
+    if ctrl is None and getattr(it, "src", "") in ("ocr", "vis"):    # a mark from the photo: the control the app has THERE, if any
+        ctrl = _uia_at(hwnd, (it.rect[0] + it.rect[2]) // 2, (it.rect[1] + it.rect[3]) // 2)
+        if ctrl is not None:
+            why += f"; the photo's mark is its control «{(ctrl.Name or ctrl.ControlTypeName)[:40]}»"
+    if ctrl is None:
         return None
     order = [("GetInvokePattern", "Invoke", "Invoke"), ("GetTogglePattern", "Toggle", "Toggle"),
              ("GetSelectionItemPattern", "Select", "Select"), ("GetExpandCollapsePattern", "Expand", "Expand")]
@@ -1582,7 +1714,7 @@ def invoke(query, target, why="this app ignores mouse messages", double=False):
         order = [order[3], order[0]] + [order[1], order[2]]
     for getter, call, label in order:
         try:
-            p = getattr(it.ctrl, getter)()
+            p = getattr(ctrl, getter)()
             if p:
                 getattr(p, call)()
                 return f"ok (UI Automation {label}: {why})"
