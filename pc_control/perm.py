@@ -132,12 +132,54 @@ def approved(key):
     return time.time() - _load_approved().get(session_id(), {}).get(key, 0) < APPROVED_TTL
 
 
+def _update_json(path, change):
+    """Read-change-write a small JSON file shared by every PC-Control process (several Claude sessions, their hooks): under a lock
+    file, and written to a temporary file that replaces the old one, so no process ever reads half a file or loses another's write."""
+    import contextlib, msvcrt
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    lock = open(path + ".lock", "a+b")
+    try:
+        for _ in range(200):                                        # up to ~2 s: the holder only reads and writes a few hundred bytes
+            try:
+                lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_NBLCK, 1); break
+            except OSError:
+                time.sleep(0.01)
+        else:
+            raise OSError("permission file busy")
+        try:
+            try:
+                data = json.load(open(path, encoding="utf-8"))
+            except (OSError, ValueError):
+                data = {}
+            data = change(data)
+            tmp = f"{path}.{os.getpid()}.tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump(data, f)
+            for i in range(50):
+                try:
+                    os.replace(tmp, path); break
+                except PermissionError:                             # a reader has it open this instant (Windows): try again
+                    time.sleep(0.01)
+            else:
+                with contextlib.suppress(OSError):
+                    os.remove(tmp)
+                raise OSError("permission file busy")
+        finally:
+            lock.seek(0); msvcrt.locking(lock.fileno(), msvcrt.LK_UNLCK, 1)
+    finally:
+        lock.close()
+
+
 def approve(key):
-    _dir("asked")
-    data = _load_approved(); sid = session_id()
-    data = {sid: {k: v for k, v in data.get(sid, {}).items() if time.time() - v < APPROVED_TTL}}     # this session only; the others no longer count
-    data[sid][key] = time.time()
-    json.dump(data, open(_approved_file(), "w", encoding="utf-8"))
+    """The user's yes for THIS session. Other sessions' approvals are kept (each session only ever reads its own: approved()), so
+    approving in one Claude session no longer wipes what the user approved in another one; only expired ones are dropped."""
+    sid, now = session_id(), time.time()
+    def change(data):
+        data = {s: {k: v for k, v in keys.items() if now - v < APPROVED_TTL} for s, keys in data.items() if isinstance(keys, dict)}
+        data = {s: keys for s, keys in data.items() if keys}
+        data.setdefault(sid, {})[key] = now
+        return data
+    _update_json(_approved_file(), change)
 
 
 # ---- CLAUDE CODE's permission mode (default / plan / acceptEdits / auto / bypassPermissions) ----
@@ -149,15 +191,12 @@ def _cc_file():
 def set_cc_mode(pm):
     if not pm:
         return
-    _dir("asked")
-    try:
-        data = json.load(open(_cc_file(), encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    sid = session_id()
-    data = {k: v for k, v in data.items() if time.time() - v.get("t", 0) < 24 * 3600}      # old sessions dropped
-    data[sid] = {"mode": str(pm), "t": time.time()}
-    json.dump(data, open(_cc_file(), "w", encoding="utf-8"))
+    sid, now = session_id(), time.time()
+    def change(data):
+        data = {k: v for k, v in data.items() if isinstance(v, dict) and now - v.get("t", 0) < 24 * 3600}   # old sessions dropped
+        data[sid] = {"mode": str(pm), "t": now}
+        return data
+    _update_json(_cc_file(), change)
 
 
 def cc_mode():
@@ -175,15 +214,12 @@ def _last_file():
 
 def set_last(tool, key):
     """The last window the hook asked the user about with this tool (per session)."""
-    _dir("asked")
-    try:
-        data = json.load(open(_last_file(), encoding="utf-8"))
-    except (OSError, ValueError):
-        data = {}
-    sid = session_id()
-    data = {k: v for k, v in data.items() if any(time.time() - e.get("t", 0) < 24 * 3600 for e in v.values())}
-    data.setdefault(sid, {})[tool] = {"key": key, "t": time.time()}
-    json.dump(data, open(_last_file(), "w", encoding="utf-8"))
+    sid, now = session_id(), time.time()
+    def change(data):
+        data = {k: v for k, v in data.items() if isinstance(v, dict) and any(now - e.get("t", 0) < 24 * 3600 for e in v.values())}
+        data.setdefault(sid, {})[tool] = {"key": key, "t": now}
+        return data
+    _update_json(_last_file(), change)
 
 
 def get_last(tool):
