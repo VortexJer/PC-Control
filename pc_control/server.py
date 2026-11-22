@@ -16,7 +16,8 @@ Permission modes (env PC_CONTROL_MODE, see policy.py)
 """
 import asyncio, ctypes, ctypes.wintypes as wt, functools, hashlib, inspect, json, os, re, shlex, shutil, subprocess, time, traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
-from pydantic import BaseModel, Field
+import typing
+from pydantic import BaseModel, BeforeValidator, Field
 import uiautomation as auto
 import win32gui, win32process
 try:                                              # mcp >= 2
@@ -188,6 +189,13 @@ SETTLE_S = 0.12                                                 # wait after an 
 _FAST = {"skip": False}                                         # True while a middle step of steps() runs (actions all run on the MAIN thread, one at a time)
 
 
+def _as_text(v):
+    return str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else v
+
+
+_TEXT = typing.Annotated[str, BeforeValidator(_as_text)]          # still "type": "string" in the schema
+
+
 def tool(fn):
     """Register the tool. Returns the REAL error to the model (and saves ONLY the last one in ~/.pc-control/last_error.log; it is overwritten and deleted after a day).
     Permissions are NOT a parameter the model can set: if the user's permission is needed, the server asks them."""
@@ -255,10 +263,12 @@ def tool(fn):
                 raise ToolError(brand.text(str(e))) from None
             raise
     sig = inspect.signature(fn)
-    ps = [p for p in sig.parameters.values() if p.name != "confirm"]
+    # A text parameter also takes a NUMBER (window=1377828, target=12): Codex's models send hwnds and ids as integers, and the strict
+    # check refused the call ("Input should be a valid string"). Converted before validation; the schema the model reads is unchanged.
+    ps = [p.replace(annotation=_TEXT) if p.annotation is str else p for p in sig.parameters.values() if p.name != "confirm"]
     ps.append(inspect.Parameter("ctx", inspect.Parameter.KEYWORD_ONLY, annotation=Context))
     wrapper.__signature__ = sig.replace(parameters=ps)
-    wrapper.__annotations__ = {k: v for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
+    wrapper.__annotations__ = {k: (_TEXT if v is str else v) for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
     wrapper.__doc__ = brand.text(fn.__doc__)                    # the tool description, too
     return mcp.tool(description=brand.text(fn.__doc__))(wrapper)
 

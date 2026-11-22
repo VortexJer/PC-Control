@@ -54,10 +54,16 @@ try:
         tools = (await s.list_tools()).tools
         SCHEMAS.extend(getattr(t, "inputSchema", None) or getattr(t, "input_schema", None) for t in tools)
         size = sum(len(t.name) + len(t.description or "") + len(json.dumps(getattr(t, "inputSchema", None) or getattr(t, "input_schema", None))) for t in tools)
+        # Codex's models send hwnds and ids as NUMBERS: a text parameter takes one, a boolean is still refused
+        num = await call(s, "windows", filter=12345), await call(s, "look", window=True)
         return ({t.name for t in tools}, round(size / 3.6),
                 await call(s, "click", window="Program Manager", target="1"), await call(s, "type", window="Program Manager", target="1", text="x"),
-                await call(s, "key", window="Program Manager", name="enter"), await call(s, "open_app", command="calc.exe"))
-    names, tool_tok, ck, ty, ky, op = asyncio.run(session({"PC_CONTROL_MODE": "strict"}, a))
+                await call(s, "key", window="Program Manager", name="enter"), await call(s, "open_app", command="calc.exe"), num)
+    names, tool_tok, ck, ty, ky, op, num = asyncio.run(session({"PC_CONTROL_MODE": "strict"}, a))
+    checks["a number where text is expected (Codex: window=1377828) is taken as text"] = not num[0][0] and "12345" in num[0][1]
+    checks["...a boolean is still refused"] = num[1][0]
+    checks["...and the schema still says string"] = all(p.get("type") == "string" for sch in SCHEMAS
+                                                        for k, p in (sch or {}).get("properties", {}).items() if k in ("window", "target"))
     checks["tools"] = names == {"windows", "look", "click", "type", "key", "open_app", "drag", "scroll", "read", "show", "wait_for", "steps"}
     checks["the model has NO confirm parameter (it cannot grant itself permissions)"] = "confirm" not in json.dumps(SCHEMAS)
     checks["definitions < 1600 tok (12 tools)"] = tool_tok < 1600
