@@ -31,7 +31,27 @@ APPS = {
                      "zip", "sqldeveloper/sqldeveloper/bin/sqldeveloper64W.exe", [os.path.join(ROAMING, "sqldeveloper")]),
     "firefox": ("Gecko (Firefox)", "https://download.mozilla.org/?product=firefox-latest-ssl&os=win64&lang=es-ES", "7z-sfx", "core/firefox.exe",
                 []),
+    # Chromium family (asked for on Reddit: Brave; Electron like VS Code / Discord). Both portable, nothing installed system-wide.
+    "brave": ("Chromium (Brave)", "github-latest:brave/brave-browser:brave-v*-win32-x64.zip", "zip", "brave.exe",
+              [os.path.join(LOCAL, "BraveSoftware")]),
+    "vscode": ("Electron (VS Code)", "https://update.code.visualstudio.com/latest/win32-x64-archive/stable", "zip", "Code.exe", []),
 }
+
+
+def resolve(url):
+    """github-latest:owner/repo:asset-glob -> the download URL of the newest release asset matching the glob."""
+    if not url.startswith("github-latest:"):
+        return url
+    import fnmatch
+    _, repo, pattern = url.split(":", 2)
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/releases?per_page=15", headers=UA)
+    for rel in json.load(urllib.request.urlopen(req, timeout=60)):
+        if rel.get("prerelease") or rel.get("draft"):
+            continue
+        for a in rel.get("assets", []):
+            if fnmatch.fnmatch(a["name"], pattern):
+                return a["browser_download_url"]
+    raise RuntimeError(f"no release asset {pattern} in {repo}")
 
 
 def load():
@@ -67,6 +87,7 @@ def install(name):
     save(m)                                              # recorded BEFORE downloading: a cut-off install is still uninstalled
     os.makedirs(folder, exist_ok=True)
     tmp = os.path.join(BASE, name + ".download")
+    url = resolve(url)
     print(f"{name}: downloading {url}")
     fetch(url, tmp)
     if how == "zip":

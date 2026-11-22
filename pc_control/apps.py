@@ -168,4 +168,11 @@ def chromium_like(exe):
     import os
     exe = exec_alias_target(exe) or exe
     d = os.path.dirname(exe)
-    return bool(d) and any(os.path.exists(os.path.join(d, f)) for f in CHROMIUM_FILES)
+    if not d or not os.path.isdir(d):
+        return False
+    dirs = [d]
+    try:                                               # Chrome and newer VS Code keep them in a version folder next to the exe
+        dirs += [e.path for e in os.scandir(d) if e.is_dir() and any(ch.isdigit() for ch in e.name)][:6]
+    except OSError:
+        pass
+    return any(os.path.exists(os.path.join(x, f)) for x in dirs for f in CHROMIUM_FILES)
