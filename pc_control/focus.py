@@ -221,6 +221,60 @@ def publish_restore(hwnd):
         k.UnmapViewOfFile(view)
 
 
+_VP, _VP_PATCHED, _RAW_KB = {}, set(), {}
+
+
+def raw_keyboard(pid):
+    """None = not asked yet; 0 = key messages work; 1 = the app reads Raw Input (2 = and asked Windows for NO key messages)."""
+    return _RAW_KB.get(pid)
+
+
+def _vp_view(pid):
+    """The shared section "Local\\PC-Control.VPointer.<pid>" the native guard reads: x, y (screen pixels), expiry tick, use counter."""
+    if pid in _VP:
+        return _VP[pid][1]
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileMappingW.argtypes = [W.HANDLE, ctypes.c_void_p, W.DWORD, W.DWORD, W.DWORD, W.LPCWSTR]
+    k.CreateFileMappingW.restype = W.HANDLE
+    k.MapViewOfFile.argtypes = [W.HANDLE, W.DWORD, W.DWORD, W.DWORD, ctypes.c_size_t]
+    k.MapViewOfFile.restype = ctypes.c_void_p
+    m = k.CreateFileMappingW(W.HANDLE(-1), None, 0x04, 0, 2048, f"Local\\PC-Control.VPointer.{int(pid)}")   # PAGE_READWRITE
+    if not m:
+        return None
+    view = k.MapViewOfFile(m, 0x0002 | 0x0004, 0, 0, 2048)        # FILE_MAP_WRITE | READ; layout: native/focus_guard.c VPOINT
+    if not view:
+        k.CloseHandle(m); return None
+    _VP[pid] = (m, view)                                         # kept for the server's life: the name stays valid
+    return view
+
+
+def vpointer_ready(pid):
+    return pid in _VP_PATCHED
+
+
+def set_vpointer(pid, sx, sy, ms=900):
+    """Until `ms` from now, this process is told the mouse is at sx, sy (screen pixels) when it asks Windows (GetCursorPos/GetMessagePos):
+    the place of Claude's click, not the user's mouse. Only where the native guard redirected those calls (vpointer_ready)."""
+    view = _VP.get(pid, (None, None))[1]
+    if not view or pid not in _VP_PATCHED:
+        return False
+    ctypes.c_long.from_address(view).value = int(sx)
+    ctypes.c_long.from_address(view + 4).value = int(sy)
+    ctypes.c_uint32.from_address(view + 8).value = (ctypes.windll.kernel32.GetTickCount() + int(ms)) & 0xFFFFFFFF or 1
+    return True
+
+
+def clear_vpointer(pid):
+    view = _VP.get(pid, (None, None))[1]
+    if view:
+        ctypes.c_uint32.from_address(view + 8).value = 0
+
+
+def vpointer_used(pid):
+    view = _VP.get(pid, (None, None))[1]
+    return ctypes.c_long.from_address(view + 12).value if view else 0
+
+
 _ACTIVE, _ACTIVE_LOCK = [], threading.Lock()      # the guards running now, oldest first: only the newest gives the foreground back
 
 
@@ -621,11 +675,37 @@ class FocusGuard:
             deadline = time.monotonic() + timeout
             while time.monotonic() < deadline:
                 if u.GetPropW(hwnd, "PC-Control.FocusGuardReady") == nonce:
+                    self._enable_vpointer(hwnd, pid, u)
                     return
                 time.sleep(0.005)
             raise RuntimeError("the app did not acknowledge the in-process focus guard; action not executed")
         finally:
             backend.remove(probe)
+
+    def _enable_vpointer(self, hwnd, pid, u, timeout=1.0):
+        """Once per process, while the probe is in: ask the guard inside the app to answer its 'where is the mouse' calls with Claude's
+        point while PC-Control delivers a click (see set_vpointer). Without it, apps that ask Windows for the mouse position (Blender,
+        game engines) take the position of the USER's mouse for Claude's click. Failure only means the app is not redirected."""
+        from . import envvars
+        if envvars.get("VPOINTER", "1") == "0":                   # off switch: no redirect at all (clicks by message, as before)
+            return
+        if pid in _VP_PATCHED or _vp_view(pid) is None:
+            return
+        import win32gui
+        try:
+            u.RemovePropW(hwnd, "PC-Control.VPointerReady")
+            nonce = secrets.randbelow(0x7FFFFFFE) + 1
+            win32gui.PostMessage(hwnd, 0, 0x50434356, nonce)
+            deadline = time.monotonic() + timeout
+            while time.monotonic() < deadline:
+                if u.GetPropW(hwnd, "PC-Control.VPointerReady") == nonce:
+                    _VP_PATCHED.add(pid)
+                    kb = u.GetPropW(hwnd, "PC-Control.RawKeyboard")
+                    _RAW_KB[pid] = max(0, (kb or 1) - 1)
+                    return
+                time.sleep(0.005)
+        except Exception:
+            pass
 
     @classmethod
     def for_window(cls, hwnd):
