@@ -70,6 +70,10 @@ Tools `mcp__PC-Control__*`: `windows`, `look`, `click`, `type`, `scroll`, `read`
   terminal Claude Code itself runs in; if several tabs could be the one, the answer lists them: ask the user which. `open_app` starts cmd or PowerShell in a console of its own.
 - Java apps (Swing/AWT, Oracle Forms, SQL Developer): read and operated through the Java Access Bridge, element by element like any app.
   If `look` says the bridge is off, tell the user to run `pc-control java enable` and restart that app (apps you open get it by themselves).
+- Apps that read the keyboard only as Raw Input (3D apps like Blender, game engines, games): detected by themselves. Clicks land
+  where you point, also in apps that ask Windows where the mouse is. `key` (with `target` x,y = where the mouse is for that key)
+  and `type` (with `target` x,y = click there first) are delivered as real keys INSIDE that app only, exact characters included.
+  These apps act on keys like a person's: `look` before and after. A background app is never let move or confine the user's mouse.
 - Remote Desktop / virtual machines: the window is a picture of another PC. `look` reads it by OCR; click by the OCR id or x,y; `type` and
   `key` go into the remote session. Check every step with `look`: there are no element names to confirm with.
 - Editors such as Notepad++ (Scintilla) are read, written and scrolled through their own API, also while minimized.

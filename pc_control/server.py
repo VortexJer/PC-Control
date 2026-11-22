@@ -14,7 +14,7 @@ Permission modes (env PC_CONTROL_MODE, see policy.py)
   * Nothing here ever focuses a window, moves your mouse or injects keystrokes.
   * Dialogs that an action opens in YOUR apps are only sent behind other windows, and never if you are using them.
 """
-import asyncio, ctypes, ctypes.wintypes as wt, functools, hashlib, inspect, json, os, re, shlex, subprocess, time, traceback
+import asyncio, ctypes, ctypes.wintypes as wt, functools, hashlib, inspect, json, os, re, shlex, shutil, subprocess, time, traceback
 from concurrent.futures import ThreadPoolExecutor, TimeoutError as FutureTimeout
 from pydantic import BaseModel, Field
 import uiautomation as auto
@@ -869,6 +869,9 @@ def windows(filter: str = "") -> str:
                 continue
             cat = policy.needs_ask(m, p, t)
             out.append(f"{h} | {p} | {t[:44]} (hidden) [mine]" + (" [ASKS]" if cat == policy.ASK_ALL else f" [PROTECTED: {cat}]" if cat else ""))
+    tb = win32gui.FindWindow("Shell_TrayWnd", None)
+    if tb and not miss("taskbar barra de tareas tray volume volumen", "explorer"):
+        out.append(f"{tb} | explorer | Taskbar (apps, tray, volume, clock): window=\"taskbar\"")
     return "\n".join(out) or f"no window matches '{filter}'"
 
 
@@ -901,6 +904,15 @@ def look(window: str, mode: str = "auto", find: str = "", wait: float = 0, confi
         head = f"{r['mode']} {r.get('tokens', 0)}tok | {r['why']}" + (f" | blind {r['blind']}" if "blind" in r else "") + advice
         if office.is_excel(hwnd):                          # the grid is not in the UI tree: say how to reach the cells
             head += "\n" + office.summary(hwnd)
+        if core.is_taskbar(hwnd):
+            from . import audio
+            try:
+                lvl, mute = audio.get()
+                head += (f"\nTaskbar: volume {lvl}%{' (muted)' if mute else ''}: change it with scroll up/down on the volume button "
+                         "or type a level 0-100 (or mute/unmute) into it: no flyout opens and nobody's focus changes. Pressing other "
+                         "buttons opens Windows UI in front of the user: the user is asked first")
+            except Exception:
+                pass
         if r["mode"] == "image":
             return [head + f" | image {r['image_size']}: numbered marks = ids; x,y = image pixels", Image(path=r["image"])]
         return head + "\n" + (r.get("text") or "")
@@ -913,6 +925,7 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
     def run(hidden):
         _TR.clear(); _tr("t0")
         hwnd = _gate(window, True, confirm)
+        _taskbar_press_guard(hwnd, target, confirm)
         cat0 = _category(hwnd)                              # what the user was (or was not) asked about: re-checked right before acting
         t = _target(target, True, hwnd)
         it = core._state.get(hwnd, {}).get("items", {}).get(t) if isinstance(t, int) else None
@@ -933,9 +946,19 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         if warn:
             raise ToolError(warn)
         rel = core.live_rel(hwnd, it) if (it and not hidden) else None        # a SINGLE resolution: pointer, warning and click all use the same one
-        _tr("layout+rel")
         bridged = it is not None and getattr(it, "src", "") == "jab"     # a Java element is pressed through the bridge: no position needed
+        if rel is None and it is not None and not hidden and it.ctrl is not None and not bridged and _offscreen_alive(it):
+            _guarded_scroll_into_view(hwnd, it.ctrl)                   # found out of view (look find=...): bring it in, then aim
+            time.sleep(0.35)
+            rel = core.live_rel(hwnd, it)
+        _tr("layout+rel")
         if it is not None and not hidden and rel is None and it.ctrl is not None and not bridged:
+            if _offscreen_alive(it) and not right and core.identity_problem(it) is None:
+                # alive but with no place on screen (a card's play button that the app only draws on hover): pressed through UI
+                # Automation, which needs no position and no mouse - under the focus guard like every action
+                r2 = _act(hwnd, hidden, lambda: core.invoke(str(hwnd), t, double=double) or "")
+                if not r2.startswith(" | changes"):
+                    return r2 + " | pressed through UI Automation: the element has no place on screen (the app shows it on hover)"
             return "did not press: the element is no longer where it was (or there are several like it now): look again | NOT EXECUTED"
         if _cursor_wanted(hwnd, hidden) and not (isinstance(t, int) and it is None) and not (bridged and rel is None):   # nothing to travel to
             # the orange cursor travels to the element and then the click happens
@@ -967,11 +990,11 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
         # the element through its UI Automation pattern instead (what a screen reader does: no mouse, no focus) and say so.
         # Not if the click already changed what the element is (a toggle): pressing it again would do the opposite.
         if "NO VISIBLE EFFECT" in res and "mouse message" in res and it is not None and not right and not core.identity_problem(it):
-            r2 = core.invoke(str(hwnd), t, double=double)
-            if r2:
-                time.sleep(0.25)
-                delta = core.changes(str(hwnd))
-                res = f"{r2} | changes: {delta} | {verdict(r2, delta)} | the plain mouse click had no effect, so it was sent through UI Automation"
+            # the second try runs under the SAME protection as the first: a UI Automation press can make an app activate itself, and a
+            # fallback that skipped the focus guard is exactly how a failed click used to take the user's focus
+            r2 = _act(hwnd, hidden, lambda: core.invoke(str(hwnd), t, double=double) or "", "", roi)
+            if not r2.startswith(" | changes"):                                      # "" from invoke: no pattern, keep the first answer
+                res = f"{r2} | the plain mouse click had no effect, so it was sent through UI Automation"
                 if _mouse_key(hwnd):
                     _MOUSE["ignored"].add(_mouse_key(hwnd))                          # remembered: next time (and inside steps) it goes straight there
         elif "mouse message" in res and "effect observed" in res and it is not None and not right and _mouse_key(hwnd):
@@ -981,6 +1004,24 @@ def click(window: str, target: str, right: bool = False, double: bool = False, c
 
 
 TEXT_KINDS = ("edit", "document", "combobox")
+
+
+def _screen_target(hwnd, target):
+    """'x,y' of the last image, or an element id, -> screen pixels; empty -> None."""
+    if not str(target).strip():
+        return None
+    t = _target(target, True, hwnd)
+    st = core._state.get(hwnd, {})
+    if isinstance(t, tuple):
+        k = st.get("scale", 1.0)
+        l, tp = win32gui.GetWindowRect(hwnd)[:2]
+        return l + int(t[0] * k), tp + int(t[1] * k)
+    it = st.get("items", {}).get(t)
+    if it is None:
+        raise ToolError("unknown id: call look() on this window first")
+    rel = core.live_rel(hwnd, it) or it.rect
+    l, tp = win32gui.GetWindowRect(hwnd)[:2]
+    return l + (rel[0] + rel[2]) // 2, tp + (rel[1] + rel[3]) // 2
 
 
 @tool
@@ -993,6 +1034,18 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
         hwnd = _gate(window, True, confirm)
         if _term(hwnd, hidden):                                  # a terminal: into its console (the answer shows what the console says afterwards)
             return _terminal_type(hwnd, text)
+        if _volume_button(hwnd, target):                         # the taskbar volume: a level, like the slider, without opening it
+            from . import audio
+            before, s = audio.get(), str(text).strip().lower().rstrip("%")
+            if s in ("mute", "silencio", "silenciar", "off"):
+                return _volume_answer(before, audio.set_mute(True), "muted")
+            if s in ("unmute", "on", "sonido", "activar"):
+                return _volume_answer(before, audio.set_mute(False), "unmuted")
+            try:
+                level = float(s.replace(",", "."))
+            except ValueError:
+                raise ToolError("the volume takes a level 0-100, or mute / unmute")
+            return _volume_answer(before, audio.set_level(level), f"set to {level:g}")
         if office.is_excel(hwnd) and office.is_cell(target):  # Excel: a cell by address (B3, Sheet2!A1), never the user's selection
             policy.check_type(policy.mode(), str(target), False)
             return _act(hwnd, hidden, lambda: office.write(hwnd, str(target), text) or "did not type: this Excel window exposes no workbook")
@@ -1004,6 +1057,14 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
             st = core._state.get(hwnd, {})
             roi = (st.get("items", {}).get(tid).rect if isinstance(tid, int) and st.get("items", {}).get(tid) else None)
             return _act(hwnd, hidden, lambda: core.type_text(str(hwnd), text, tid, replace), roi=roi)
+        if not hidden and core.reads_raw_keyboard(hwnd):      # an app that takes only Raw Input (3D apps, engines, games): keys inside it
+            cat0 = _category(hwnd)
+            policy.check_type(policy.mode(), "", False)
+            pt = _screen_target(hwnd, target)
+            _recheck_window(hwnd, cat0)
+            if pt is not None and _cursor_wanted(hwnd, hidden):
+                cursor.CURSOR.pointer(pt[0], pt[1], click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd).wait(0.8)
+            return _act(hwnd, hidden, lambda: core.raw_type(hwnd, text, pt, replace))
         if not str(target).strip():
             fields = [it for it in core._state.get(hwnd, {}).get("items", {}).values()
                       if it.kind in TEXTKINDS_ALL and not core.is_secret_field(it)] if core._state.get(hwnd) else None
@@ -1159,8 +1220,8 @@ def drag(window: str, points: str, shape: str = "path", right: bool = False, con
 
 
 @tool
-def key(window: str, name: str, confirm: bool = False) -> str:
-    """A key or shortcut (ctrl+s, alt+f4), never real keys. Shortcuts run the app's own command. Word: enter/space/backspace at Claude's point. RichEdit: enter/space by range; movement/deletion refuse to touch the user's caret. Other keys need a verified control in this window."""
+def key(window: str, name: str, target: str = "", confirm: bool = False) -> str:
+    """A key or shortcut (ctrl+s, alt+f4), never real keys. Shortcuts run the app's own command. Word: enter/space/backspace at Claude's point. RichEdit: enter/space by range; movement/deletion refuse to touch the user's caret. Other keys need a verified control in this window. target x,y: the mouse point for the key."""
     def run(hidden):
         hwnd = _gate(window, True, confirm)
         cat0 = _category(hwnd)
@@ -1168,7 +1229,8 @@ def key(window: str, name: str, confirm: bool = False) -> str:
         _recheck_window(hwnd, cat0)
         if _term(hwnd, hidden):
             return _terminal_key(hwnd, name)
-        return _act(hwnd, hidden, lambda: core.key(str(hwnd), name))
+        pt = _screen_target(hwnd, target)
+        return _act(hwnd, hidden, lambda: core.key(str(hwnd), name, pt))
     return _on(window, run)
 
 
@@ -1177,6 +1239,14 @@ def scroll(window: str, direction: str = "down", target: str = "", amount: int =
     """Scroll the window or an element id by `amount` pages: up|down|left|right|top|bottom. Then look again."""
     def run(hidden):
         hwnd = _gate(window, False, confirm)
+        if _volume_button(hwnd, target):                         # like the wheel on the taskbar's volume icon: 2 points per step
+            from . import audio
+            before = audio.get()
+            step = {"up": 2, "right": 2, "down": -2, "left": -2}.get(direction)
+            new = 100 if direction == "top" else 0 if direction == "bottom" else before[0] + step * max(1, int(amount or 1)) if step else None
+            if new is None:
+                raise ToolError("the volume scrolls up or down (or top / bottom)")
+            return _volume_answer(before, audio.set_level(new), f"scrolled {direction}")
         if _term(hwnd, hidden) and not str(target).strip() and win32gui.GetClassName(hwnd) == "CASCADIA_HOSTING_WINDOW_CLASS":
             if direction in ("top", "bottom"):                                  # a terminal has no scroll bar to jump with: many wheel steps do it
                 actions.scroll(str(hwnd), None, "up" if direction == "top" else "down", 60)
@@ -1354,6 +1424,54 @@ def _flash(hwnd):
         pass
 
 
+VOLUME_NAMES = ("volum", "speaker", "altavoz", "altavoces", "auricular", "headphone", "headset", "sound", "sonido")
+
+
+def _volume_button(hwnd, target):
+    """The taskbar's volume button, if `target` (id or name) is it."""
+    if not core.is_taskbar(hwnd) or not str(target).strip():
+        return None
+    try:
+        t = _target(target, True, hwnd)
+    except ToolError:
+        return None
+    it = core._state.get(hwnd, {}).get("items", {}).get(t) if isinstance(t, int) else None
+    name = (it.name if it else str(target)).lower()
+    return it or True if any(v in name for v in VOLUME_NAMES) else None
+
+
+def _volume_answer(before, after, how):
+    from . import audio
+    return (f"ok (system volume {before[0]}% -> {after[0]}%{' (muted)' if after[1] else ''}, {how}; read back from Windows' audio "
+            "endpoint; no flyout opened, nobody's focus changed)")
+
+
+def _taskbar_press_guard(hwnd, target, confirm):
+    """Taskbar buttons open Windows UI (Start, a flyout, an app) IN FRONT of the user, taking the keyboard: the user decides."""
+    if core.is_taskbar(hwnd) and not confirm and policy.mode() != "bypass":
+        raise policy.NeedsPermission(f"Claude wants to press «{str(target)[:40]}» in the taskbar: it opens in front of you and takes the "
+                                     "keyboard focus. Do you allow it?", detail="taskbar")
+
+
+def _offscreen_alive(it):
+    """The element still exists and is only scrolled out of view (not gone, not a stale handle)."""
+    try:
+        return bool(it.ctrl.IsOffscreen) and it.ctrl.Exists(0, 0)
+    except Exception:
+        return False
+
+
+def _guarded_scroll_into_view(hwnd, ctrl):
+    """Bring the element into view for the user under the focus guard. If the guard cannot protect this app, the element is NOT scrolled
+    (an unguarded call is how an app takes the focus); the outline is then drawn where the element is."""
+    from .focus import FocusGuard
+    try:
+        with FocusGuard.for_window(hwnd):
+            actions.scroll_into_view(ctrl)
+    except RuntimeError:
+        pass
+
+
 def _do_show(hidden, window, target, label, seconds, confirm):
     """Draw the orange outline for the user. Returns (message for the model, token of the outline)."""
     hwnd = _gate(window, False, confirm)
@@ -1370,7 +1488,7 @@ def _do_show(hidden, window, target, label, seconds, confirm):
         if it is None:
             raise ToolError("unknown id: call look() on this window first")
         if it.ctrl is not None:
-            actions.scroll_into_view(it.ctrl)
+            _guarded_scroll_into_view(hwnd, it.ctrl)
         rel = core.live_rel(hwnd, it) or it.rect
         name = it.name[:40]
     else:
@@ -1403,7 +1521,7 @@ def show(window: str, target: str, label: str = "", seconds: float = 10, confirm
     return _on(window, lambda hidden: _do_show(hidden, window, target, label, seconds, confirm)[0])
 
 
-_STEP_ARGS = {"click": ("target", "right", "double"), "type": ("target", "text", "replace"), "key": ("name",),
+_STEP_ARGS = {"click": ("target", "right", "double"), "type": ("target", "text", "replace"), "key": ("name", "target"),
               "scroll": ("direction", "target", "amount"), "read": ("target", "start", "length", "find"),
               "look": ("mode", "find", "wait"), "drag": ("points", "shape", "right")}
 _STEP_BAD = ("NOT EXECUTED", "NO VISIBLE EFFECT")
@@ -1479,6 +1597,11 @@ def _hidden_allowed(exe):
     return (envvars.get("HIDDEN") or "").strip().lower() in ("1", "on", "allow", "true") or exe in _NORMAL_FAILED
 
 
+# Chromium-family apps hide their page from UI Automation unless accessibility is on, and stop painting while covered by other windows
+CHROMIUM_FLAGS = ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows",
+                  "--disable-features=CalculateNativeWinOcclusion")
+
+
 @tool
 def open_app(command: str, behind: bool = False, hidden: bool = False, confirm: bool = False) -> str:
     """Launch an app (path or name: winword, Calculadora) minimized, unfocused. behind=true: behind all windows, for apps unreadable minimized. hidden=true: last resort, only after those failed."""
@@ -1496,15 +1619,18 @@ def open_app(command: str, behind: bool = False, hidden: bool = False, confirm: 
                         "behind=true for apps that cannot be read minimized); hidden=true is accepted only after that failed in this "
                         "session, or if the user asks for it explicitly (PC_CONTROL_HIDDEN=1)")
     env = java.launch_env(resolved)                          # a Java program gets the accessibility bridge (only that process)
+    tok0 = apps.split(resolved)[0]
+    chromium = exe in core.CHROMIUM or apps.chromium_like(tok0 if os.path.isabs(tok0) else (shutil.which(tok0) or tok0))
     try:
         if hidden:
             r = DESK.open(resolved); where = "hidden desktop (no taskbar button) - last resort"
         elif exe in ("cmd", "powershell", "pwsh"):
             r = _open_console(resolved); where = "its own console window, minimized, with its button in the taskbar"
-        elif behind or exe in core.CHROMIUM or exe in _learned_behind() or env is not None or exe in _remote_clients():
-            # browsers, Java apps (minimized they show the bridge nothing), apps asked for and apps that proved unreadable minimized
+        elif behind or chromium or exe in _learned_behind() or env is not None or exe in _remote_clients():
+            # browsers and Chromium-based apps (CEF/Electron: Spotify, Discord, VS Code...), Java apps (minimized they show the bridge
+            # nothing), apps asked for and apps that proved unreadable minimized
             tok = apps.split(resolved)[0]
-            extra = [f for f in ("--force-renderer-accessibility", "--disable-backgrounding-occluded-windows") if f not in resolved] if exe in core.CHROMIUM else []
+            extra = [f for f in CHROMIUM_FLAGS if f.split("=")[0] not in resolved] if chromium else []
             cmd = resolved
             if extra:
                 q = f'"{tok}"' if resolved.startswith('"') else tok

@@ -217,6 +217,16 @@ class WindowReplaced(LookupError):
                          f"(the same app): use {new}")
 
 
+TASKBAR_NAMES = {"taskbar", "barra de tareas", "tray", "system tray", "bandeja", "shell_traywnd"}
+
+
+def is_taskbar(hwnd):
+    try:
+        return win32gui.GetClassName(hwnd) in ("Shell_TrayWnd", "Shell_SecondaryTrayWnd")
+    except Exception:
+        return False
+
+
 def find_window(query, follow=False):
     """The window the model means: an hwnd, an exact title, the app's process name (winword, mspaint) or a title substring.
     follow=True: a closed hwnd whose app replaced it with ONE new window resolves to that window (for reading)."""
@@ -234,6 +244,11 @@ def find_window(query, follow=False):
             raise LookupError(f"no window with hwnd {q}: it was closed: call windows() to find it again")
         _remember(h)
         return h
+    if q in TASKBAR_NAMES:                          # the taskbar has no title: it is reached by name
+        h = win32gui.FindWindow("Shell_TrayWnd", None)
+        if h:
+            _remember(h)
+            return h
     q = _clean_title(q).casefold() or q
     hits = []
     def cb(h, _):
@@ -1162,6 +1177,103 @@ def _child_at(hwnd, sx, sy):
             return cur, win32gui.ScreenToClient(cur, (sx, sy))
         cur = ch
 
+LAST_POINT = {}       # hwnd -> screen point of Claude's last click there
+
+
+def reads_raw_keyboard(hwnd):
+    """True for an app that reads the keyboard only as Raw Input (key messages never reach it). Asked once per process to the guard
+    inside the app (it calls GetRegisteredRawInputDevices there); the guard is installed for that if it is not yet."""
+    from .focus import raw_keyboard, FocusGuard
+    pid = win32process.GetWindowThreadProcessId(hwnd)[1]
+    v = raw_keyboard(pid)
+    if v is None:
+        try:
+            with FocusGuard.for_window(hwnd):
+                pass
+        except Exception:
+            return False
+        v = raw_keyboard(pid)
+    return bool(v)
+
+
+def _hover(hwnd, point):
+    """Claude's pointer at `point` (screen) for this app: a mouse-move message there, and the app's 'where is the mouse' answered."""
+    if point is None:
+        return
+    tgt, (cx, cy) = _child_at(hwnd, point[0], point[1])
+    point_to(tgt, point[0], point[1], 2500)
+    cx, cy = to_app_client(tgt, cx, cy)
+    win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF))
+    time.sleep(0.08)
+
+
+def raw_key(hwnd, name, point=None):
+    from . import rawkeys
+    point = point or LAST_POINT.get(hwnd)
+    if point is None:
+        l, t, r, b = win32gui.GetWindowRect(hwnd); point = ((l + r) // 2, (t + b) // 2)
+    try:
+        _hover(hwnd, point)
+        with rawkeys.Session(hwnd, point=point) as ks:
+            ok = ks.combo(name)
+    except (ValueError, RuntimeError) as e:
+        return f"did not press '{name}': {e}"
+    finally:
+        from .focus import clear_vpointer
+        clear_vpointer(win32process.GetWindowThreadProcessId(hwnd)[1])
+    if not ok:
+        return f"did not press '{name}': the app did not take the key"
+    return (f"ok (key '{name}' delivered inside the app only, with the mouse at {_where_img(hwnd, point)}; this app reads raw keys: "
+            "it reacts as to a person's key, look to see what it did)")
+
+
+def raw_type(hwnd, text, point=None, replace=False):
+    """Text for a Raw Input app: optionally click x,y first (like a person), then the characters as keys inside the app, exact."""
+    from . import rawkeys
+    if point is not None:
+        l, t = win32gui.GetWindowRect(hwnd)[:2]
+        r = _post_click(hwnd, point[0] - l, point[1] - t)
+        if r == "busy":
+            return "did not type: you are pressing the mouse; retry when you let go"
+        time.sleep(0.2)
+    point = point or LAST_POINT.get(hwnd)
+    try:
+        if point is not None:
+            _hover(hwnd, point)
+        with rawkeys.Session(hwnd, point=point) as ks:
+            ok = (not replace or ks.combo("ctrl+a")) and (not text or ks.text(text))
+    except (ValueError, RuntimeError) as e:
+        return f"did not type: {e}"
+    finally:
+        from .focus import clear_vpointer
+        clear_vpointer(win32process.GetWindowThreadProcessId(hwnd)[1])
+    if not ok:
+        return "did not type: the app did not take the keys"
+    where = f"after clicking at {_where_img(hwnd, point)}" if point is not None else "at the app's own focus"
+    return f"ok ({len(text)} characters delivered as keys inside the app only, {where}; unconfirmed: look to check)"
+
+
+def _where_img(hwnd, point):
+    """Screen point -> 'x,y' in the pixels of the last image of this window."""
+    if point is None:
+        return "its center"
+    l, t = win32gui.GetWindowRect(hwnd)[:2]
+    k = _state.get(hwnd, {}).get("scale", 1.0) or 1.0
+    return f"{int((point[0] - l) / k)},{int((point[1] - t) / k)}"
+
+
+def point_to(hwnd, sx, sy, ms=900, app_coords=False):
+    """Claude's pointer for the app that owns hwnd: for `ms`, its 'where is the mouse' calls answer sx, sy (screen pixels). Only in
+    processes whose guard redirected those calls; elsewhere nothing happens (the app reads the position from the message anyway)."""
+    try:
+        from .focus import set_vpointer
+        if not app_coords:
+            sx, sy = to_app_screen(hwnd, sx, sy)                           # a DPI-unaware app is told its own (logical) coordinates
+        return set_vpointer(win32process.GetWindowThreadProcessId(hwnd)[1], sx, sy, ms)
+    except Exception:
+        return False
+
+
 def _post_click(hwnd, x, y, right=False, double=False):
     rect = win32gui.GetWindowRect(hwnd); sx, sy = rect[0] + x, rect[1] + y
     tgt, (cx, cy) = _child_at(hwnd, sx, sy); cx, cy = to_app_client(tgt, cx, cy); lp = win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
@@ -1171,6 +1283,8 @@ def _post_click(hwnd, x, y, right=False, double=False):
     if not wait_free_mouse(hwnd):
         return "busy"                                    # the user is dragging or pressing: a synthetic click would break it
     d, u, mk = (win32con.WM_RBUTTONDOWN, win32con.WM_RBUTTONUP, win32con.MK_RBUTTON) if right else (win32con.WM_LBUTTONDOWN, win32con.WM_LBUTTONUP, win32con.MK_LBUTTON)
+    point_to(tgt, sx, sy)                                 # apps that ask Windows where the mouse is get Claude's point, not the user's
+    LAST_POINT[hwnd] = (sx, sy)                          # keys in apps that act under the pointer go where Claude last clicked
     win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, lp)
     for _ in range(2 if double else 1):
         win32gui.PostMessage(tgt, d, mk, lp); win32gui.PostMessage(tgt, u, 0, lp)
@@ -1234,10 +1348,12 @@ def drag(query, points, shape="path", right=False, step=6, delay=0.006):
         return win32api.MAKELONG(cx & 0xFFFF, cy & 0xFFFF)
     down, last = False, path[0]
     try:
+        point_to(tgt, l + path[0][0], t + path[0][1])
         win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, 0, lp(path[0]))
         win32gui.PostMessage(tgt, d, mk, lp(path[0]))
         down = True
         for p in path[1:]:
+            point_to(tgt, l + p[0], t + p[1])
             win32gui.PostMessage(tgt, win32con.WM_MOUSEMOVE, mk, lp(p))
             last = p
             time.sleep(delay)
@@ -1734,9 +1850,24 @@ def key_lparam(vk, up=False):
     return 1 | (sc << 16) | ((1 << 24) if ext else 0) | (0xC0000000 if up else 0)
 
 
-def key(query, name):
+KEY_ALIASES = {"escape": "esc", "return": "enter", "del": "delete", "supr": "delete", "suprimir": "delete", "pageup": "pgup",
+               "page_up": "pgup", "pagedown": "pgdn", "page_down": "pgdn", "spacebar": "space", "espacio": "space", "intro": "enter",
+               "arrowup": "up", "arrowdown": "down", "arrowleft": "left", "arrowright": "right", "bksp": "backspace", "back": "backspace",
+               "control": "ctrl", "ctl": "ctrl", "mayus": "shift", "windows": "win"}
+
+
+def normalize_key(name):
+    """'Escape' -> 'esc', 'Ctrl+Return' -> 'ctrl+enter': the names people and models use for the same key."""
+    parts = [p.strip().lower() for p in str(name).replace(" ", "").split("+")]
+    return "+".join(KEY_ALIASES.get(p, p) for p in parts if p)
+
+
+def key(query, name, point=None):
     """Single keys by message, no focus. Shortcuts (ctrl+s...) go through actions.shortcut: the app's own command, never real keys."""
-    hwnd = find_window(query); parts = name.lower().split("+")
+    hwnd = find_window(query)
+    name = normalize_key(name); parts = name.split("+")
+    if reads_raw_keyboard(hwnd):                 # key messages never reach it: the key is delivered inside the app (rawkeys)
+        return raw_key(hwnd, name, point)
     surf = surface(hwnd)
     if surf == "remote":
         from . import remote

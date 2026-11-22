@@ -107,6 +107,7 @@ def _wheel(nh, x, y, direction, amount):
     x, y = core.to_app_screen(nh, x, y)                                    # a DPI-unaware app reads its own (logical) screen coordinates
     wp = win32api.MAKELONG(0, delta & 0xFFFF); lp = win32api.MAKELONG(x & 0xFFFF, y & 0xFFFF)
     try:
+        core.point_to(nh, x, y, app_coords=True)                                          # apps that ask where the mouse is scroll where Claude points
         win32gui.PostMessage(nh, msg, wp, lp)
         return True
     except Exception:                                    # e.g. error 1447 "the window has no scroll bars" (Store apps)
@@ -622,6 +623,17 @@ def shortcut(query, combo_text):
 
 
 # ---------- drop-downs and lists ----------
+def _types_text(ctrl):
+    """A combo box you type into (a search <input> with suggestions) - not a <select>, which also reports a writable value: it has
+    editable text (TextPattern) or an edit field inside."""
+    try:
+        if ctrl.GetPattern(auto.PatternId.TextPattern):
+            return True
+        return any(ch.ControlTypeName == "EditControl" for ch in ctrl.GetChildren())
+    except Exception:
+        return False
+
+
 def select_option(ctrl, text):
     """Pick the entry whose text is `text` (exact, else starting with it, else containing it) in a drop-down or list. None if not one."""
     try:
@@ -653,6 +665,12 @@ def select_option(ctrl, text):
         names = _native_options(nh, "combobox" in cls)
         if names and not any(want in n.lower() for n in names):
             return f"did not select: no option «{text}» in this list (options: {', '.join(n[:25] for n in names[:12])}{'...' if len(names) > 12 else ''})"
+    try:                                               # an EDITABLE combo box (a web search box with suggestions: Spotify, YouTube...)
+        vp = ctrl.GetValuePattern()                    # takes text, as a person types it; picking from its list is not what was asked
+        if vp and not vp.IsReadOnly and _types_text(ctrl):
+            return None
+    except Exception:
+        pass
     exp = None
     try:
         exp = ctrl.GetExpandCollapsePattern()
