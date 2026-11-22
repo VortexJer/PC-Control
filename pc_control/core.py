@@ -339,7 +339,16 @@ def grab(hwnd, rect):
     src = win32ui.CreateDCFromHandle(hdc); mem = src.CreateCompatibleDC()
     bmp = win32ui.CreateBitmap(); bmp.CreateCompatibleBitmap(src, w, h); mem.SelectObject(bmp)
     ok = ctypes.windll.user32.PrintWindow(hwnd, mem.GetSafeHdc(), 2)
-    img = np.frombuffer(bmp.GetBitmapBits(True), dtype=np.uint8).reshape(h, w, 4)[:, :, :3].copy()
+    raw = np.frombuffer(bmp.GetBitmapBits(True), dtype=np.uint8)
+    if raw.size == w * h * 4:
+        img = raw.reshape(h, w, 4)[:, :, :3].copy()
+    else:                                     # Windows made the bitmap another size (a DPI-unaware window, seen 2x): its real size,
+        info = bmp.GetInfo()                  # then fitted to the window's pixels so coordinates stay the window's
+        bw, bh = info["bmWidth"], info["bmHeight"]
+        img = cv2.resize(raw[:bw * bh * 4].reshape(bh, bw, 4)[:, :, :3], (w, h), interpolation=cv2.INTER_AREA) if bw * bh * 4 <= raw.size else None
+        if img is None:
+            win32gui.DeleteObject(bmp.GetHandle()); mem.DeleteDC(); src.DeleteDC(); win32gui.ReleaseDC(hwnd, hdc)
+            return None
     win32gui.DeleteObject(bmp.GetHandle()); mem.DeleteDC(); src.DeleteDC(); win32gui.ReleaseDC(hwnd, hdc)
     f = dpi_factor(hwnd)
     if ok and f > 1.01:                       # a DPI-unaware app is printed at its logical size in the top-left corner: scale it to the
@@ -1292,9 +1301,38 @@ def _child_at(hwnd, sx, sy):
 LAST_POINT = {}       # hwnd -> screen point of Claude's last click there
 
 
+_TREE_APP = {}        # pid -> the window offers a usable UI tree (its fields and commands are reached through it, not raw keys)
+
+
+def has_usable_tree(hwnd):
+    """True when the app publishes real controls (more than its title bar): then its text and keys go through those controls (UI
+    Automation, COM, Scintilla...), never as raw keys at the app's own caret. Office registers Raw Input too, but is a tree app."""
+    pid = window_pid(hwnd)
+    if _TREE_APP.get(pid):
+        return True
+    if win32gui.IsIconic(hwnd):                                  # minimized, many apps publish nothing: no verdict (no raw keys)
+        return True
+    st = _state.get(hwnd)
+    if st and st.get("mode") in ("uia", "uia+ocr"):
+        named = [i for i in st["items"].values() if i.src in ("uia", "jab")]
+    else:
+        try:
+            named = walk_uia(hwnd, win32gui.GetWindowRect(hwnd), budget_s=1.5, max_nodes=400)
+        except Exception:
+            named = []
+    chrome = {"sistema", "system", "minimizar", "minimize", "maximizar", "maximize", "restaurar", "restore", "cerrar", "close"}
+    real = [i for i in named if i.clickable and norm_name(i.name) not in chrome]
+    if len(real) >= 5:
+        _TREE_APP[pid] = True                                     # only the yes is kept: a window still loading may show less now
+    return len(real) >= 5
+
+
 def reads_raw_keyboard(hwnd):
-    """True for an app that reads the keyboard only as Raw Input (key messages never reach it). Asked once per process to the guard
-    inside the app (it calls GetRegisteredRawInputDevices there); the guard is installed for that if it is not yet."""
+    """True for an app whose keys can only arrive as Raw Input: it registered Raw Input for the keyboard AND publishes no usable tree
+    (Blender, game engines draw everything themselves). Asked once per process to the guard inside the app
+    (GetRegisteredRawInputDevices there); the guard is installed for that if it is not yet."""
+    if has_usable_tree(hwnd):
+        return False
     from .focus import raw_keyboard, FocusGuard
     pid = win32process.GetWindowThreadProcessId(hwnd)[1]
     v = raw_keyboard(pid)
@@ -1363,6 +1401,22 @@ def raw_type(hwnd, text, point=None, replace=False):
         return "did not type: the app did not take the keys"
     where = f"after clicking at {_where_img(hwnd, point)}" if point is not None else "at the app's own focus"
     return f"ok ({len(text)} characters delivered as keys inside the app only, {where}; unconfirmed: look to check)"
+
+
+def type_at(hwnd, text, point):
+    """Characters for the text area at a screen point whose app publishes no field for it: WM_CHAR to the child window drawn there
+    (its own window), never to the focus. Not possible when the point is on the main window itself (no child to address)."""
+    if reads_raw_keyboard(hwnd):
+        return raw_type(hwnd, text, point, False)
+    child = _top_child_at(hwnd, point[0], point[1])
+    if not child or child == hwnd:
+        return ("did not type: nothing at that point has a window of its own, and typing into the app's focus could go anywhere: "
+                "look again and give a field's id")
+    if not wait_free_keys(child):
+        return "did not type: you are holding a modifier key or typing in this same window; your input was left untouched"
+    for ch in text.replace("\r\n", "\n").replace("\n", "\r"):
+        win32gui.PostMessage(child, win32con.WM_CHAR, ord(ch), 0)
+    return f"ok ({len(text)} characters through WM_CHAR to the window at that point «{win32gui.GetClassName(child)[:24]}»; unconfirmed)"
 
 
 def _where_img(hwnd, point):
@@ -1907,10 +1961,25 @@ def type_text(query, text, target=None, replace=False, progress=None):
             if inner:
                 win32gui.SendMessage(inner, win32con.WM_SETTEXT, 0, text)
                 notify_combo_edit(inner)
-                return "ok (WM_SETTEXT into the drop-down's text box)" + _read_back(ctrl, text, True)
+                buf = ctypes.create_unicode_buffer(1024)                 # the combo's own value lags: its text box is the truth
+                ctypes.windll.user32.SendMessageW(inner, win32con.WM_GETTEXT, 1024, buf)   # (GetWindowText cannot read another app's)
+                now = buf.value
+                return "ok (WM_SETTEXT into the drop-down's text box)" + (
+                    f" | read back: the field now contains the text (\"{now[:40]}\")" if now == text else
+                    f" | read back: WARNING: the field does NOT contain the typed text (\"{now[:40]}\")")
         done = _set_accessible_text(ctrl, text, replace)
         if done:
             return done
+        if nh and win32gui.IsWindowVisible(nh) and nh != hwnd and not replace:
+            # the field has a window of its OWN (Tk text, R's console, custom editors): its characters go to that window only, never
+            # to whatever has the focus; then the field is read back to say whether they arrived
+            if not wait_free_keys(nh):
+                return "did not type: you are holding a modifier key or typing in this same window; your input was left untouched"
+            for ch in text.replace("\r\n", "\n").replace("\n", "\r"):
+                win32gui.PostMessage(nh, win32con.WM_CHAR, ord(ch), 0)
+            time.sleep(0.25)
+            back = _read_back(ctrl, text, False)
+            return f"ok ({len(text)} characters through WM_CHAR to the field's own window)" + (back or " | unconfirmed: look to check")
         return "did not type: this control exposes no writable value interface; focusing it or sending keys to another field would interfere with your input"
     dest = dest or _focus_hwnd(hwnd)
     if not dest:
@@ -2363,7 +2432,13 @@ def open_behind(command, exe, wait_s=15.0, env=None):
     try:
         p = focus_guard.launch(command, startupinfo=si, cwd=app_dir(command), env=env); pids.add(p.pid)
         found, t0, last = {}, time.time(), 0.0
+        family, next_tree = {p.pid}, 0.0
+        via_shell = os.path.basename(_exe_of(command)).lower() in ("explorer", "explorer.exe")
         while time.time() - t0 < wait_s:
+            if time.time() >= next_tree:                         # launchers hand the window to a child (wmplayer, soffice, git-gui)
+                family |= _descendants(family); pids.update(family); next_tree = time.time() + 0.1
+            # a launcher stub that hands off and exits (calc.exe / notepad.exe -> the Store app's frame) leaves a NEW frame window
+            handoff = (via_shell or p.poll() is not None) and not focus_guard.user_recent()
             for h in top_windows():
                 if h in before or h in found:
                     continue
@@ -2371,7 +2446,8 @@ def open_behind(command, exe, wait_s=15.0, env=None):
                     pid = win32process.GetWindowThreadProcessId(h)[1]
                 except Exception:
                     continue
-                if pid == p.pid or psutil_name(pid) == exe:          # also a window handed to an already-running browser
+                frame = (handoff and win32gui.GetWindowText(h) and win32gui.GetClassName(h) == "ApplicationFrameWindow" and app_window(h))
+                if pid == p.pid or psutil_name(pid) == exe or pid in family or frame:   # also a window handed to a running browser
                     try:
                         try:
                             focus_guard.verify_window(h, timeout=3.0)

@@ -686,6 +686,8 @@ def select_option(ctrl, text):
             win32gui.SendMessage(nh, 0x0186, idx, 0)                         # LB_SETCURSEL
             win32gui.SendMessage(win32gui.GetParent(nh), win32con.WM_COMMAND, win32api.MAKELONG(win32gui.GetDlgCtrlID(nh) & 0xFFFF, 1), nh)  # LBN_SELCHANGE
             return f"ok (entry {idx} selected in the list by message)" + _readback(ctrl, text)
+    if nh and "combobox" in cls and win32gui.FindWindowEx(nh, 0, "Edit", None):
+        return None                                    # an editable classic combo (Remote Desktop's "Computer"): it takes typed text
     if nh and ("combobox" in cls or "listbox" in cls):
         names = _native_options(nh, "combobox" in cls)
         if names and not any(want in n.lower() for n in names):

@@ -1026,7 +1026,7 @@ def _screen_target(hwnd, target):
 
 @tool
 def type(window: str, target: str = "", text: str = "", replace: bool = False, confirm: bool = False) -> str:
-    """Type into an element (id or name from look(); appends, replace=true replaces). target optional with ONE text field, in terminals and remote screens (x,y clicks first). Drop-down/list: selects the entry. Excel: a cell (B3). Word: at Claude's own point."""
+    """Type into an element (id or name from look(); appends, replace=true replaces). target optional with ONE text field, in terminals; x,y = text area there. Drop-down/list: selects the entry. Excel: a cell (B3). Word: at Claude's own point."""
     if not text and not replace:
         raise ToolError("nothing to type: give text (an empty text only with replace=true, to clear a field)")
 
@@ -1065,6 +1065,18 @@ def type(window: str, target: str = "", text: str = "", replace: bool = False, c
             if pt is not None and _cursor_wanted(hwnd, hidden):
                 cursor.CURSOR.pointer(pt[0], pt[1], click=True, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd).wait(0.8)
             return _act(hwnd, hidden, lambda: core.raw_type(hwnd, text, pt, replace))
+        if not hidden and re.fullmatch(r"\s*\d+\s*,\s*\d+\s*", str(target)):
+            # x,y: an app whose text areas publish nothing (Tk, custom editors): the characters go to the child window AT that point,
+            # its own window, never to whatever has the focus; checked by pixels at that spot
+            cat0 = _category(hwnd)
+            policy.check_type(policy.mode(), "", False)
+            pt = _screen_target(hwnd, target)
+            _recheck_window(hwnd, cat0)
+            if _cursor_wanted(hwnd, hidden):
+                cursor.CURSOR.pointer(pt[0], pt[1], click=False, ms=150, scale=cursor.scale_for(hwnd), owner=hwnd).wait(0.8)
+            l, tp = win32gui.GetWindowRect(hwnd)[:2]
+            roi = (pt[0] - l - 60, pt[1] - tp - 20, pt[0] - l + 400, pt[1] - tp + 40)
+            return _act(hwnd, hidden, lambda: core.type_at(hwnd, text, pt), roi=roi)
         if not str(target).strip():
             fields = [it for it in core._state.get(hwnd, {}).get("items", {}).values()
                       if it.kind in TEXTKINDS_ALL and not core.is_secret_field(it)] if core._state.get(hwnd) else None
@@ -1619,8 +1631,15 @@ def open_app(command: str, behind: bool = False, hidden: bool = False, confirm: 
                         "behind=true for apps that cannot be read minimized); hidden=true is accepted only after that failed in this "
                         "session, or if the user asks for it explicitly (PC_CONTROL_HIDDEN=1)")
     env = java.launch_env(resolved)                          # a Java program gets the accessibility bridge (only that process)
-    tok0 = apps.split(resolved)[0]
-    chromium = exe in core.CHROMIUM or apps.chromium_like(tok0 if os.path.isabs(tok0) else (shutil.which(tok0) or tok0))
+    tok0, rest0 = apps.split(resolved)
+    if tok0.lower().endswith(".jar"):                         # a .jar is not a program Windows can start: Java runs it
+        jw = shutil.which("javaw") or next((os.path.join(os.path.dirname(d), "javaw.exe") for d in java.find_dlls()
+                                             if os.path.exists(os.path.join(os.path.dirname(d), "javaw.exe"))), None)
+        if not jw or not os.path.exists(jw):
+            raise ToolError("a .jar needs Java installed (javaw not found on PATH or in JAVA_HOME)")
+        resolved, exe = subprocess.list2cmdline([jw, "-jar", tok0]) + (" " + rest0 if rest0 else ""), "javaw"
+        tok0 = jw
+    chromium =exe in core.CHROMIUM or apps.chromium_like(tok0 if os.path.isabs(tok0) else (shutil.which(tok0) or tok0))
     try:
         if hidden:
             r = DESK.open(resolved); where = "hidden desktop (no taskbar button) - last resort"
