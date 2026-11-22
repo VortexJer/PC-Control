@@ -254,6 +254,13 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - **Hidden views:** an app's invisible web view or dialog (Acrobat keeps one over the page) still publishes its buttons; anything another
   window of the app covers is not offered, and text an app only draws is read by OCR of what is on screen.
 - **Games with anti-cheat:** PC-Control puts nothing inside them (a foreign DLL can get your account banned): it says so and does nothing.
+- **LibreOffice (Writer, Calc, Math):** its windows take keys only while in front, and its document's accessible value echoes text it
+  never applies, so it is typed and read through LibreOffice's own automation API (UNO), found by the window's own handle. Writer types
+  at Claude's own insertion point (your caret and selection stay put; `replace` replaces only what Claude typed last), Calc writes the
+  selected cell or a cell by address (`target="B3"`, `Sheet2!A1`), Math the formula; each is read back from the document. `read` gives
+  the whole Writer text or Calc's used area.
+- **Tk and custom editors (IDLE...):** a text area that publishes nothing takes `type` with `target="x,y"`: the characters go to the
+  window at that point (never to the focus), checked by pixels.
 - **Apps whose UI Automation is very slow** (reported for Premiere Pro, which can freeze while a tree is read): detected while reading and
   from then on read from pixels only.
 
@@ -294,7 +301,11 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Some apps ignore "start minimized". A native, thread-specific CBT guard now vetoes programmatic activation/focus changes in compatible target threads, rather than restoring focus after it was stolen. It distinguishes top-level windows sharing a process, while allowing their own dialogs and user activation. A temporary, thread-specific message hook confirms delivery with a tagged `WM_NULL` heartbeat; it inspects no keyboard/mouse contents and is removed immediately. Startup GUI-queue initialization, new broker processes, protected apps and architecture differences still limit coverage; this is not a universal guarantee for every app.
 - Chromium browsers and Chromium-based apps expose the page contents only while their accessibility support is on: `open_app` starts them with it; one you started yourself may show only its own controls until it is restarted by `open_app`.
 - Shortcuts in apps with no menu entry for them are delivered as keys inside the app; some apps act on keys only while they are in front (Acrobat's zoom, a browser's back): the answer then says there was no visible effect. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
-- Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
+- Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images. On an image,
+  the numbered marks are the app's elements and the lines OCR read; a button that is only an icon has no mark and is clicked by `x,y`.
+- The R console (Rgui) and VS Code's editor publish no writable text: typing there is refused or unconfirmed, never reported as done.
+- Store apps (Calculator, Clock, Settings) do not draw their content while the display is off.
+- Notepad++ 8.9 refuses the guard DLL: PC-Control does not start it guarded and says so.
 - A minimized window is read through its UI tree only: no screenshot, no scrolling, no clicks by coordinates (it would have to be shown).
   Open it from the taskbar when that is needed.
 - Store (UWP) apps cannot run on a hidden desktop.
@@ -327,6 +338,7 @@ python tests/test_modern_input.py # focused-target refusal, value-pattern fallba
 python tests/test_richedit.py     # independent ranges, Unicode/line breaks, COM errors and no unsafe retry (simulated document)
 python tests/test_focus_guard.py  # real visible app: 24 startup + 24 runtime activation/focus attempts; WinEvent observer
 python tests/test_focus_safety.py # no acknowledgement => no mutation; partial hooks removed (simulated failures)
+python tests/test_libreoffice_live.py # LibreOffice Writer/Calc/Math through UNO (skipped without LibreOffice)
 python tools/visible_input_demo.py # visible real Win32 edits/canvas; nonactivating, ordinary window; foreground/focus events monitored
 python tools/probe_modern_input.py notepad --exercise # visible disposable document in the installed modern Notepad
 python tools/probe_modern_input.py mspaint --exercise # visible disposable bitmap; compares canvas pixels and reports the unsupported drag
@@ -380,6 +392,7 @@ untouched. "limits" = what does not work there and is reported as such, never as
 | Brave | Chromium | verified 2026-11-22 | hands-on: page read, link clicked, back button; `alt+left` delivered without visible effect (reported) |
 | Spotify | Chromium (CEF) | verified 2026-11-22 | hands-on: search typed, results read, play (hover-only button) and pause |
 | VS Code | Electron | limits | hands-on 2026-11-22: opens readable, menus and status bar; typing into its editor is refused (no writable value) |
+| LibreOffice Writer, Calc, Math | VCL (UNO) | verified | `test_libreoffice_live.py` (typed and read back, Calc cell by address, opened behind) |
 | Blender | Raw Input / reads the cursor | verified | `test_rawinput_live.py` (select, delete/undo, rename with accents and emoji, Text Editor) |
 | Adobe Acrobat Reader | CEF + custom | verified 2026-11-22 | hands-on: PDF text read (OCR of screen), search box, scroll; zoom shortcut without visible effect (reported) |
 | Adobe Premiere Pro / After Effects | Adobe | not tested | needs an Adobe account; protected by the slow-tree guard |
@@ -391,6 +404,10 @@ untouched. "limits" = what does not work there and is reported as such, never as
 
 Earlier releases were also driven, by Claude and by a cheaper model (Haiku) as a test user, in KiCad, OBS Studio, RStudio, Git GUI,
 Character Map, Windows Media Player and Clock.
+
+The full matrix of **37 installed apps** driven through the server (route the classifier picked, look/read/scroll, and click/type
+actions checked by reading the app back) is in [docs/APP-MATRIX.md](docs/APP-MATRIX.md), with the limits it found. Rerun it with
+`python tools/app_matrix.py run apps.json --out report.md`.
 
 ## Demo
 
