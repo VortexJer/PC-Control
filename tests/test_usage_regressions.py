@@ -146,6 +146,15 @@ c["a <select> (menu popup) is still a choice among options"] = not actions._type
     _Combo("expanded=false;haspopup=menu;multiline=false;multiselectable=false"))
 c["a combobox with no popup information is not assumed to take text"] = not actions._types_text(_Combo(""))
 
+# ---- Settings / Clock refused every action: "the app did not acknowledge the in-process focus guard". Store apps run in an AppContainer,
+# which loads a DLL only if the file grants read+execute to ALL APPLICATION PACKAGES; the profile folder of the copies did not.
+import win32security
+from pc_control import focus as _focus
+_dll = _focus.stable_copy(_focus.Path(_focus.__file__).with_name("native") / "focus_guard_x64.dll")
+_sd = win32security.GetFileSecurity(str(_dll), win32security.DACL_SECURITY_INFORMATION).GetSecurityDescriptorDacl()
+_sids = {win32security.ConvertSidToStringSid(_sd.GetAce(i)[2]) for i in range(_sd.GetAceCount())}
+c["the guard DLL copy can be loaded by Store apps (ALL APPLICATION PACKAGES may read+execute it)"] = {"S-1-15-2-1", "S-1-15-2-2"} <= _sids
+
 bad = [k for k, v in c.items() if not v]
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)

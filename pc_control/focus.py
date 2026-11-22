@@ -90,9 +90,49 @@ def stable_copy(path):
             d.mkdir(parents=True, exist_ok=True)
             tmp = d / (path.name + ".new")
             tmp.write_bytes(data); os.replace(tmp, dst)
+        _let_store_apps_load(d)
         return dst
     except OSError:
         return path
+
+
+APP_PACKAGES = ("S-1-15-2-1", "S-1-15-2-2")        # ALL APPLICATION PACKAGES, ALL RESTRICTED APPLICATION PACKAGES (any language)
+_STORE_OK = set()
+
+
+def _let_store_apps_load(folder):
+    """Store apps (Settings, Clock, Photos...) run in an AppContainer: it can load a DLL only if the file grants read+execute to ALL
+    APPLICATION PACKAGES. The profile folder does not, so the guard never loaded there and every action on them was refused ("the
+    app did not acknowledge the in-process focus guard", seen on Settings and Clock). This is PC-Control's own folder of copies;
+    nothing else is touched. Done once per folder and process."""
+    key = str(folder).lower()
+    if key in _STORE_OK or os.name != "nt":
+        return
+    try:
+        import win32security, ntsecuritycon as con
+        sd = win32security.GetFileSecurity(str(folder), win32security.DACL_SECURITY_INFORMATION)
+        dacl = sd.GetSecurityDescriptorDacl()
+        have = {win32security.ConvertSidToStringSid(dacl.GetAce(i)[2]) for i in range(dacl.GetAceCount())}
+        missing = [s for s in APP_PACKAGES if s not in have]
+        if missing:
+            rights = con.FILE_GENERIC_READ | con.FILE_GENERIC_EXECUTE
+            inherit = win32security.OBJECT_INHERIT_ACE | win32security.CONTAINER_INHERIT_ACE
+            for s in missing:
+                dacl.AddAccessAllowedAceEx(win32security.ACL_REVISION_DS, inherit, rights, win32security.ConvertStringSidToSid(s))
+            sd.SetSecurityDescriptorDacl(1, dacl, 0)
+            win32security.SetFileSecurity(str(folder), win32security.DACL_SECURITY_INFORMATION, sd)
+            for f in Path(folder).iterdir():                              # files already there do not inherit a change made later
+                fsd = win32security.GetFileSecurity(str(f), win32security.DACL_SECURITY_INFORMATION)
+                fdacl = fsd.GetSecurityDescriptorDacl()
+                fhave = {win32security.ConvertSidToStringSid(fdacl.GetAce(i)[2]) for i in range(fdacl.GetAceCount())}
+                for s in APP_PACKAGES:
+                    if s not in fhave:
+                        fdacl.AddAccessAllowedAce(win32security.ACL_REVISION_DS, rights, win32security.ConvertStringSidToSid(s))
+                fsd.SetSecurityDescriptorDacl(1, fdacl, 0)
+                win32security.SetFileSecurity(str(f), win32security.DACL_SECURITY_INFORMATION, fsd)
+        _STORE_OK.add(key)
+    except Exception:
+        pass                                                              # no change: Store apps keep refusing, as before
 
 
 @lru_cache(maxsize=1)
