@@ -30,7 +30,7 @@ _state = {}          # hwnd -> {"items": {id: Item}, "lines": set}
 
 
 class Item:
-    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value", "aid", "parent", "hwnd")
+    __slots__ = ("id", "kind", "name", "rect", "ctrl", "src", "clickable", "value", "aid", "parent", "hwnd", "host")
     def __init__(self, kind, name, rect, ctrl=None, src="uia", clickable=False):
         self.id = 0; self.kind = kind; self.name = name; self.rect = rect
         self.ctrl = ctrl; self.src = src; self.clickable = clickable
@@ -38,6 +38,7 @@ class Item:
         self.aid = ""                                        # its AutomationId when it was looked at (identity check before acting)
         self.parent = None                                   # (kind, name) of the container it was in (a namesake elsewhere is not it)
         self.hwnd = 0                                        # native control behind an element that UI Automation does not see (Scintilla)
+        self.host = 0                                        # the child window that draws it (to tell whether another one covers it)
 
 
 def line_key(it):
@@ -440,14 +441,103 @@ def row_cells(c, name):
     return " · ".join(parts)
 
 
+SLOW_UIA = set()        # programs whose UI Automation answers so slowly that reading their tree can freeze them (seen: Premiere Pro)
+SLOW_CALL_S = 1.0       # one element taking this long to answer = the app is struggling with UI Automation
+
+
+def slow_uia(hwnd):
+    return psutil_name(window_pid(hwnd)) in SLOW_UIA
+
+
+HOST_KINDS = {"PaneControl", "WindowControl", "DocumentControl", "CustomControl", "GroupControl"}
+
+
+def _native_host(c):
+    """The container's own native window (0 if none); -1 if it has one that is not visible (everything under it is invisible)."""
+    try:
+        nh = c.NativeWindowHandle
+        return (-1 if not win32gui.IsWindowVisible(nh) else nh) if nh else 0
+    except Exception:
+        return 0
+
+
+
+def _covered(hwnd, it):
+    """True when the element's own child window is not what is on top at the element's center: another child window of the same app
+    covers it there (a hidden tab or modal web view under the visible one keeps publishing its elements - seen in Acrobat, whose
+    invisible upsell dialog listed 45 buttons over the page). Such an element is not shown: clicking it would hit what is on top."""
+    host = getattr(it, "host", 0)
+    if not host or host == hwnd or not win32gui.IsWindow(host):
+        return False
+    l, t, r, b = win32gui.GetWindowRect(hwnd)
+    sx, sy = l + (it.rect[0] + it.rect[2]) // 2, t + (it.rect[1] + it.rect[3]) // 2
+    if not (l <= sx < r and t <= sy < b):                        # out of view (find): nothing on top to compare with
+        return False
+    try:
+        top = _top_child_at(hwnd, sx, sy)
+    except Exception:
+        return False
+    return top != host and not win32gui.IsChild(host, top) and not win32gui.IsChild(top, host)
+
+
+def _top_child_at(hwnd, sx, sy):
+    """The deepest child window that really shows at a screen point: invisible, disabled and transparent ones (drag bars, input
+    sinks, compositing layers) are skipped, as they show nothing."""
+    cur = hwnd
+    while True:
+        cx, cy = win32gui.ScreenToClient(cur, (sx, sy))
+        ch = ctypes.windll.user32.ChildWindowFromPointEx(cur, ctypes.wintypes.POINT(cx, cy), 0x0007)
+        if not ch or ch == cur:
+            return cur
+        ex = win32gui.GetWindowLong(ch, win32con.GWL_EXSTYLE)
+        if ex & 0x00080000:                                       # a layered child (drag bar, input sink, overlay): not content
+            return cur
+        cur = ch
+
+
+def walk_visible(hwnd, budget_s=3.0, max_nodes=2500, max_depth=28):
+    """(control, kind, depth) of the window's UI Automation tree, skipping what the user cannot see: a hidden native host and
+    everything under it, and containers another window of the app covers. send(False) to the generator skips a node's children."""
+    root = auto.ControlFromHandle(hwnd); t0 = time.time(); stack = [(root, 0, hwnd)]; n = 0
+    wl, wt = win32gui.GetWindowRect(hwnd)[:2]
+    while stack and time.time() - t0 < budget_s and n < max_nodes:
+        c, d, host = stack.pop(); n += 1
+        try:
+            kind = c.ControlTypeName
+        except Exception:
+            continue
+        if d > 0 and kind in HOST_KINDS:
+            nh = _native_host(c)
+            if nh == -1:
+                continue
+            if nh:
+                host = nh
+                try:
+                    r = c.BoundingRectangle
+                    probe = Item("pane", "", (r.left - wl, r.top - wt, r.right - wl, r.bottom - wt)); probe.host = host
+                    if _covered(hwnd, probe):
+                        continue
+                except Exception:
+                    pass
+        descend = yield c, kind, d
+        if descend is not False and d < max_depth:
+            try:
+                stack.extend((ch, d + 1, host) for ch in c.GetChildren())
+            except Exception:
+                pass
+
+
 def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
     root = auto.ControlFromHandle(hwnd)
     l, t = rect[0], rect[1]
-    t0 = time.time(); n = 0; items = []; stack = [(root, 0, None)]
+    t0 = time.time(); n = 0; items = []; stack = [(root, 0, None, hwnd)]
     while stack:
-        c, d, ps = stack.pop(); n += 1
+        c, d, ps, host = stack.pop(); n += 1
         if n > max_nodes or time.time() - t0 > budget_s:
+            if n < 50 * (time.time() - t0):                      # out of time at < 50 elements/s: this app answers too slowly
+                SLOW_UIA.add(psutil_name(window_pid(hwnd)))
             break
+        tc = time.time()
         try:
             kind = c.ControlTypeName
             if kind in SKIP_KINDS:                               # "line up", "page down"...: noise in every app; scroll() does that job
@@ -457,14 +547,26 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                 r = c.BoundingRectangle; off = c.IsOffscreen
             else:
                 r = off = None
+            failed = False
         except Exception:
+            failed = True
+        if time.time() - tc > SLOW_CALL_S:                       # an app that takes seconds per element can freeze while it is read
+            SLOW_UIA.add(psutil_name(window_pid(hwnd)))           # (reported for Premiere Pro): stop now, read it from pixels from now on
+            break
+        if failed:
             continue
+        if d > 0 and kind in HOST_KINDS:
+            nh = _native_host(c)
+            if nh == -1:                                         # a hidden web view / panel still publishes its elements
+                continue
+            host = nh or host
         leaf = kind in LEAF_KINDS                                # a label or an image has nothing worth listing below it
         if not name and kind in NAMELESS_OK:                     # Chromium drops a field's name once used; icon buttons often have none: keep them
             name = fallback_name(c, kind)
         if kind in TEXTY and name and (offscreen_ok or (not off and r.width() > 0 and r.height() > 0)):
             it = Item(kind[:-7].lower(), name, (r.left - l, r.top - t, r.right - l, r.bottom - t), c, "uia", kind in CLICKABLE or kind in LISTS)
             it.parent = ps
+            it.host = host
             try:
                 it.aid = c.AutomationId or ""
             except Exception:
@@ -482,10 +584,10 @@ def walk_uia(hwnd, rect, budget_s=6.0, max_nodes=2500, offscreen_ok=False):
                     continue
         if d < 28 and not leaf:                                 # web pages (Chromium/Electron) nest deep; max_nodes and budget_s still bound the walk
             try:
-                stack.extend((ch, d + 1, (kind[:-7].lower(), name)) for ch in reversed(c.GetChildren()))
+                stack.extend((ch, d + 1, (kind[:-7].lower(), name), host) for ch in reversed(c.GetChildren()))
             except Exception:
                 pass
-    return items
+    return [it for it in items if not _covered(hwnd, it)]       # what another window of the app covers is not offered (or clicked through)
 
 def popup_windows(hwnd):
     """Open menus that are a SEPARATE window from the app: same process, visible, and pop-ups (class #32768, owned windows or title-less drop-downs)."""
@@ -529,6 +631,8 @@ def surface(hwnd):
 
 def tree(hwnd, rect, offscreen_ok=False, budget_s=6.0, popups=True):
     """The elements of a window from the reader that understands it (see surface)."""
+    if slow_uia(hwnd):                                           # its tree freezes it: pixels only (OCR ids, x,y)
+        return []
     s = surface(hwnd)
     if s == "java":
         from . import java
@@ -769,6 +873,9 @@ def _look(hwnd, mode, edge):
         res.update(mode="none", why="the window has no size right now (it is opening or closing): look again in a moment", tokens=0)
         return res
     surf = surface(hwnd)
+    if slow_uia(hwnd):
+        res["note"] = ("this app answers UI Automation so slowly that reading its element tree could freeze it: it is read from its "
+                       "pixels (OCR ids and x,y) instead")
     if surf == "java-off":
         from . import java
         res["note"] = java.GUIDE_OFF
@@ -824,9 +931,14 @@ def _look(hwnd, mode, edge):
     if img is not None and poor and mode != "uia":
         t0 = time.time(); oc = ocr_items(img); res["ocr_s"] = round(time.time() - t0, 2)
         def covered(o):
+            """The OCR line is already in the tree: an element at its place SAYS the same. An element there that says something else
+            (a hidden web view's button over a document, seen in Acrobat) does not hide the text the user actually sees."""
             cx, cy = (o.rect[0] + o.rect[2]) // 2, (o.rect[1] + o.rect[3]) // 2
+            words = {x for x in re.findall(r"\w{3,}", o.name.lower())}
             return any(u.rect[0] <= cx <= u.rect[2] and u.rect[1] <= cy <= u.rect[3]
-                       and (u.rect[2] - u.rect[0]) * (u.rect[3] - u.rect[1]) <= 0.15 * w * h for u in items)
+                       and (u.rect[2] - u.rect[0]) * (u.rect[3] - u.rect[1]) <= 0.15 * w * h
+                       and (not words or words & {x for x in re.findall(r"\w{3,}", (u.name + " " + (u.value or "")).lower())})
+                       for u in items)
         merged = items + [o for o in oc if not covered(o)]
         known = merged
         if sum(len(i.name) for i in merged) >= 40:

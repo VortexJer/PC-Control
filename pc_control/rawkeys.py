@@ -118,8 +118,40 @@ class Session:
             self._set_key(left, down)
         return True
 
-    def combo(self, name):
-        """'ctrl+shift+s', 'x', 'esc', 'f2': modifiers down, the key down and up, modifiers up."""
+    def _msg(self, target, vk, down, alt, state=True):
+        """One key as a key MESSAGE to `target` (apps that read key messages but check the modifiers with GetKeyState): the key state
+        is set before the message, as Windows does for a real key, and answered by the guard in this app only."""
+        self._keys_until()
+        if state:
+            self._set_key(vk, down)
+        from .core import key_lparam
+        msg = (0x104 if down else 0x105) if alt else (0x100 if down else 0x101)          # WM_(SYS)KEYDOWN / UP
+        win32gui.PostMessage(target, msg, vk, key_lparam(vk, up=not down) | (0x20000000 if alt else 0))
+        time.sleep(0.03)
+        return True
+
+    def combo(self, name, messages_to=None):
+        """'ctrl+shift+s', 'x', 'esc', 'f2': modifiers down, the key down and up, modifiers up. messages_to: deliver as key messages
+        to that window instead of Raw Input."""
+        if messages_to:
+            parts = [p for p in name.lower().split("+") if p]
+            mods, k = [m for m in ("ctrl", "alt", "shift", "win") if m in parts[:-1]], parts[-1]
+            vk = VK.get(k)
+            if vk is None and len(k) == 1:
+                r = u.VkKeyScanExW(k, self.hkl)
+                vk = None if r == -1 else r & 0xFF
+            if vk is None:
+                raise ValueError(f"unknown key '{k}'")
+            alt = "alt" in mods
+            for m in mods:
+                self._set_key(MOD_VK[m][1], True); self._msg(messages_to, MOD_VK[m][0], True, alt and m != "alt")
+            self._msg(messages_to, vk, True, alt); self._msg(messages_to, vk, False, alt)
+            for m in reversed(mods):                               # released as messages; their STATE stays held until the app is done
+                self._msg(messages_to, MOD_VK[m][0], False, alt and m != "alt", state=False)
+            self._keys_until(); time.sleep(0.15)                  # the app handles the posted keys while the modifiers still read held
+            for m in mods:
+                self._set_key(MOD_VK[m][0], False); self._set_key(MOD_VK[m][1], False)
+            return True
         parts = [p for p in name.lower().split("+") if p]
         mods = set(parts[:-1])
         k = parts[-1]

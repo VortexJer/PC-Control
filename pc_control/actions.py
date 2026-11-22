@@ -9,7 +9,7 @@ find(query, terms, wait)                  -> only the elements whose text matche
 """
 import ctypes, re, time
 import uiautomation as auto
-import win32api, win32con, win32gui
+import win32api, win32con, win32gui, win32process
 from . import core, office
 
 SB = {"up": 0, "down": 1, "pageup": 2, "pagedown": 3, "top": 6, "bottom": 7, "end": 8}      # SB_LINEUP.. SB_TOP/SB_BOTTOM, SB_ENDSCROLL
@@ -46,13 +46,8 @@ def _scrollable_from(ctrl, vertical):
 
 def _biggest_scrollable(hwnd, vertical, budget_s=3.0):
     """With no target: the biggest visible area of the window that can scroll (the page, the document, the list)."""
-    root = auto.ControlFromHandle(hwnd); best = None; t0 = time.time(); stack = [(root, 0)]; n = 0
-    while stack and time.time() - t0 < budget_s and n < 2500:
-        c, d = stack.pop(); n += 1
-        try:
-            kind = c.ControlTypeName
-        except Exception:
-            continue
+    best = None
+    for c, kind, d in core.walk_visible(hwnd, budget_s):                   # what the user sees: not a hidden view's page
         if kind in _CONTAINERS:
             p = _scroll_pat(c)
             if p and (p.VerticallyScrollable if vertical else p.HorizontallyScrollable):
@@ -62,11 +57,6 @@ def _biggest_scrollable(hwnd, vertical, budget_s=3.0):
                     a = 0
                 if best is None or a > best[0]:
                     best = (a, c, p)
-        if d < 28:
-            try:
-                stack.extend((ch, d + 1) for ch in c.GetChildren())
-            except Exception:
-                pass
     return (best[1], best[2]) if best else (None, None)
 
 
@@ -229,25 +219,22 @@ def _ctrl_text(c):
 
 
 def _biggest_text(hwnd, budget_s=3.0):
-    """The element holding the most text: the document, the page, the editor."""
-    root = auto.ControlFromHandle(hwnd); best = None; t0 = time.time(); stack = [(root, 0)]; n = 0
-    while stack and time.time() - t0 < budget_s and n < 2500:
-        c, d = stack.pop(); n += 1
-        try:
-            kind = c.ControlTypeName
-        except Exception:
-            continue
-        if kind in ("DocumentControl", "EditControl"):
-            s = _ctrl_text(c)
-            if s and (best is None or len(s) > len(best[1])):
-                best = (c, s)
-            if kind == "DocumentControl" and s:
-                continue                                                    # a document's children are already in its text
-        if d < 28:
-            try:
-                stack.extend((ch, d + 1) for ch in c.GetChildren())
-            except Exception:
-                pass
+    """The element holding the most text that the user can see: the document, the page, the editor (not a hidden view's)."""
+    best = None
+    walk = core.walk_visible(hwnd, budget_s)
+    try:
+        item = next(walk)
+        while True:
+            c, kind, d = item
+            skip = False
+            if kind in ("DocumentControl", "EditControl"):
+                s = _ctrl_text(c)
+                if s and (best is None or len(s) > len(best[1])):
+                    best = (c, s)
+                skip = kind == "DocumentControl" and bool(s)                 # a document's children are already in its text
+            item = walk.send(False if skip else None)
+    except StopIteration:
+        pass
     return best
 
 
@@ -368,6 +355,13 @@ def read_text(query, target=None, start=0, length=6000):
             if s not in seen:
                 seen.add(s); lines.append(s)
         text = "\n".join(lines); src = "all texts of the window (no document found)"
+        if len(text) < 200 and not win32gui.IsIconic(hwnd):                 # the content is drawn, not published (a PDF in Acrobat):
+            img = core.grab(hwnd, win32gui.GetWindowRect(hwnd))             # read what is ON SCREEN by OCR, and say it is only that
+            ocr = core.ocr_items(img) if img is not None else []
+            if ocr:
+                ocr.sort(key=lambda o: (o.rect[1] // 12, o.rect[0]))
+                text = "\n".join(o.name for o in ocr)
+                src = "OCR of what is on screen now (this app publishes no text for it: scroll and read again for more)"
     text = _clean(text or "")
     if not text:
         return "no text found in this window (an image-only app: use look mode=image)" + _min_hint(hwnd)
@@ -551,6 +545,33 @@ def _dialog_text(h):
             f"Answer it with look(window=\"{h}\") and click (ask the user if it means saving or discarding their work)")
 
 
+def _inapp_shortcut(hwnd, combo_text):
+    """A shortcut for an app with no menu entry for it (CEF/Electron UIs, Acrobat, many modern apps): key MESSAGES to the app's own
+    focus window, while the guard inside the app answers GetKeyState/GetAsyncKeyState with the modifiers held. The user's keyboard is
+    never pressed and other apps see nothing. None if the app is not reachable that way."""
+    from . import rawkeys
+    if not rawkeys.ready(hwnd):
+        return None
+    tid = win32process.GetWindowThreadProcessId(hwnd)[0]
+    class GTI(ctypes.Structure):
+        _fields_ = [("cbSize", ctypes.c_ulong), ("flags", ctypes.c_ulong), ("hwndActive", ctypes.c_void_p), ("hwndFocus", ctypes.c_void_p),
+                    ("hwndCapture", ctypes.c_void_p), ("hwndMenuOwner", ctypes.c_void_p), ("hwndMoveSize", ctypes.c_void_p),
+                    ("hwndCaret", ctypes.c_void_p), ("rcCaret", ctypes.c_long * 4)]
+    gti = GTI(); gti.cbSize = ctypes.sizeof(GTI)
+    focus = (gti.hwndFocus or 0) if ctypes.windll.user32.GetGUIThreadInfo(tid, ctypes.byref(gti)) else 0
+    target = focus if focus and win32gui.IsWindow(focus) and win32gui.GetAncestor(focus, 2) == win32gui.GetAncestor(hwnd, 2) else 0
+    if not target:                                     # an app that is not in front has no focus of its own: its main view takes it
+        l, t, r, b = win32gui.GetWindowRect(hwnd)
+        target = core._top_child_at(hwnd, (l + r) // 2, (t + b) // 2) or hwnd
+    try:
+        with rawkeys.Session(hwnd) as ks:
+            ok = ks.combo(combo_text, messages_to=target)
+    except (ValueError, RuntimeError):
+        return None
+    return (f"ok (shortcut {combo_text} delivered as keys inside the app only, to its focus point; the modifiers were held for "
+            "this app alone: look to see what it did)") if ok else None
+
+
 def shortcut(query, combo_text):
     """Run a keyboard shortcut WITHOUT pressing keys. Routes, in order: the classic text box command (copy, paste, select all, undo),
     the app's menu entry showing that shortcut (WM_COMMAND), the element declaring it (UI Automation), alt+f4 = close request."""
@@ -614,6 +635,10 @@ def shortcut(query, combo_text):
             return done
         _MENU_CACHE[hwnd] = (time.time(), dict(SEEN))
     known = "; ".join(f"{k} = {v}" for k, v in list(SEEN.items())[:25])
+    if not hidden:                                     # no menu shows it: the key itself, inside the app only (its own focus point,
+        done = _inapp_shortcut(hwnd, combo_text)        # Ctrl/Alt/Shift answered as held by the guard in the app, never real keys)
+        if done:
+            return done
     if not hidden and not known:
         return (f"did not press '{combo_text}': this app keeps its shortcuts inside menus that only exist while open, and opening them on the "
                 f"user's desktop could take the focus. Use the menu instead: look, click the menu (e.g. File), look, click the entry. "
