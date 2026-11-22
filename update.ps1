@@ -31,7 +31,10 @@ function Remove-LegacyPackage {
 
 # Windows will not let pip replace `pc-control-mcp.exe` while it runs (one server per open Claude Code session that uses PC-Control), and
 # the launcher cannot even be renamed. Say so BEFORE touching anything, or stop those servers when asked with -StopServers.
-$servers = @(Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*pc-control-mcp.ex[e]*' })
+# Only servers that run THIS Python's pip launcher block pip (Windows cannot replace a running .exe). Sessions of 0.8.4.6 and later run a
+# copy in ~/.pc-control/bin and never block it; servers of another installation (another Python, a venv) are not this update's business.
+$launchers = @((Get-Python "import sysconfig, os`nfor s in ('nt', 'nt_user'):`n    try: print(os.path.join(sysconfig.get_path('scripts', s), 'pc-control-mcp.exe').lower())`n    except KeyError: pass").out | Where-Object { $_ })
+$servers = @(Get-CimInstance Win32_Process | Where-Object { $_.ExecutablePath -and ($launchers -contains $_.ExecutablePath.ToLower()) })
 if ($servers.Count) {
     $ids = ($servers | ForEach-Object { $_.ProcessId }) -join ', '
     if (-not $StopServers) {
