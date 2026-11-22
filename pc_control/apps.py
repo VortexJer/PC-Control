@@ -17,6 +17,11 @@ URI_SCHEMES = ("ms-settings:", "ms-", "shell:", "http://", "https://", "mailto:"
 def split(command):
     """(program, rest of the command line) as written; quotes around the program are removed."""
     command = command.strip()
+    if not command.startswith('"'):                  # an unquoted path with spaces (C:/Program Files/App/app.exe arg): the longest
+        low = command.lower()                        # prefix ending in .exe that exists is the program
+        for i in [j + 4 for j in range(len(low)) if low.startswith(".exe", j)][::-1]:
+            if (i == len(command) or command[i] == " ") and " " in command[:i] and os.path.isfile(command[:i]):
+                return command[:i], command[i:].strip()
     try:
         parts = shlex.split(command, posix=False)
     except ValueError:
@@ -128,3 +133,39 @@ def suggestions(command, n=6):
     exe, _ = split(command)
     names = list(start_menu_shortcuts()) + list(store_apps())
     return difflib.get_close_matches(exe.casefold().removesuffix(".exe"), names, n=n, cutoff=0.5)
+CHROMIUM_FILES = ("icudtl.dat", "libcef.dll", "chrome_elf.dll", "v8_context_snapshot.bin", "chrome_100_percent.pak")
+
+
+def exec_alias_target(path):
+    """The real program behind a Store "app execution alias" (WindowsApps\\Spotify.exe is a 0-byte link to the package's exe), or None.
+    Read from the alias' reparse point (IO_REPARSE_TAG_APPEXECLINK): version, then package id, app id and the target path."""
+    import ctypes, ctypes.wintypes as W
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.CreateFileW.restype = W.HANDLE
+    k.CreateFileW.argtypes = [W.LPCWSTR, W.DWORD, W.DWORD, ctypes.c_void_p, W.DWORD, W.DWORD, W.HANDLE]
+    k.DeviceIoControl.argtypes = [W.HANDLE, W.DWORD, ctypes.c_void_p, W.DWORD, ctypes.c_void_p, W.DWORD, ctypes.POINTER(W.DWORD), ctypes.c_void_p]
+    h = k.CreateFileW(path, 0, 7, None, 3, 0x00200000 | 0x02000000, None)   # OPEN_EXISTING, OPEN_REPARSE_POINT | BACKUP_SEMANTICS
+    if not h or h == W.HANDLE(-1).value:
+        return None
+    try:
+        buf = ctypes.create_string_buffer(16 * 1024)
+        n = W.DWORD()
+        if not k.DeviceIoControl(h, 0x000900A8, None, 0, buf, len(buf), ctypes.byref(n), None):    # FSCTL_GET_REPARSE_POINT
+            return None
+        raw = buf.raw[:n.value]
+        if int.from_bytes(raw[:4], "little") != 0x8000001B:                                         # IO_REPARSE_TAG_APPEXECLINK
+            return None
+        strings = raw[12:].decode("utf-16-le", "ignore").split("\x00")
+        return strings[2] if len(strings) > 2 and strings[2].lower().endswith(".exe") else None
+    finally:
+        k.CloseHandle(h)
+
+
+def chromium_like(exe):
+    """A Chromium-based program (Chrome/Edge family, CEF apps like Spotify, Electron apps like Discord or VS Code): it ships Chromium's
+    own files next to its exe. Those hide their page from UI Automation unless started with accessibility on, and stop painting when
+    covered unless told not to."""
+    import os
+    exe = exec_alias_target(exe) or exe
+    d = os.path.dirname(exe)
+    return bool(d) and any(os.path.exists(os.path.join(d, f)) for f in CHROMIUM_FILES)
