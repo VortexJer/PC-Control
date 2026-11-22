@@ -72,8 +72,9 @@ def stable_copy(path):
     path = Path(path)
     try:
         data = path.read_bytes()
-        from . import envvars
-        home = envvars.get("HOME") or os.path.join(os.path.expanduser("~"), ".pc-control")
+        # always the user's own ~/.pc-control (not PC_CONTROL_HOME, which tests point at %TEMP%): Windows may refuse to load an
+        # unsigned DLL from the temp folder into another process (seen: error 126 for Blender), and the copies are shared by content
+        home = os.path.join(os.path.expanduser("~"), ".pc-control")
         d = Path(home) / "native" / hashlib.sha256(data).hexdigest()[:16]
         dst = d / path.name
         if not dst.exists():
@@ -219,6 +220,81 @@ def publish_restore(hwnd):
     if view:
         ctypes.c_void_p.from_address(view).value = hwnd
         k.UnmapViewOfFile(view)
+
+
+# ---- programs PC-Control never puts anything into: games protected by anti-cheat ----
+# The focus guard (and Claude's pointer/keys) live in a DLL inside the app. Anti-cheat systems treat any foreign DLL or import
+# redirect in a game as cheating, and a ban falls on the USER's account. So a process with anti-cheat loaded, or a program shipped
+# with one, is not touched at all: the action is refused and the answer says why.
+ANTICHEAT_MARKS = ("easyanticheat", "eos_anticheat", "eac_", "beclient", "bedaisy", "battleye", "vgk", "vgc.", "vanguard", "faceit",
+                   "xigncode", "x3.xem", "npggnt", "gameguard", "nprotect", "mhyprot", "ace-base", "acebase", "tenprotect",
+                   "ricochet", "pnkbstr", "punkbuster", "hackshield", "equ8", "nexon", "wellbia", "xhunter")
+ANTICHEAT_DIRS = ("EasyAntiCheat", "BattlEye", "EAAntiCheat", "AntiCheatExpert", "Punkbuster", "GameGuard", "XignCode")
+_AC = {}
+
+
+def _mark(name):
+    n = name.lower()
+    return next((m for m in ANTICHEAT_MARKS if m in n), None)
+
+
+def anticheat_dir(exe_path):
+    """The anti-cheat a program ships with (a folder next to its exe or one level up), or None."""
+    d = os.path.dirname(os.path.abspath(exe_path or ""))
+    for base in (d, os.path.dirname(d)):
+        for sub in ANTICHEAT_DIRS:
+            if base and os.path.isdir(os.path.join(base, sub)):
+                return sub
+    return None
+
+
+def anticheat(pid):
+    """The anti-cheat loaded in (or shipped with) process pid, or None. Cached per pid."""
+    if pid in _AC:
+        return _AC[pid]
+    found = None
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    class ME(ctypes.Structure):
+        _fields_ = [("dwSize", W.DWORD), ("th32ModuleID", W.DWORD), ("th32ProcessID", W.DWORD), ("GlblcntUsage", W.DWORD),
+                    ("ProccntUsage", W.DWORD), ("modBaseAddr", ctypes.c_void_p), ("modBaseSize", W.DWORD), ("hModule", W.HMODULE),
+                    ("szModule", ctypes.c_wchar * 256), ("szExePath", ctypes.c_wchar * 260)]
+    k.CreateToolhelp32Snapshot.restype = W.HANDLE
+    snap = k.CreateToolhelp32Snapshot(0x8 | 0x10, int(pid))                  # TH32CS_SNAPMODULE | SNAPMODULE32
+    exe = ""
+    if snap and snap != W.HANDLE(-1).value:
+        try:
+            me = ME(); me.dwSize = ctypes.sizeof(ME)
+            ok = k.Module32FirstW(snap, ctypes.byref(me))
+            while ok:
+                exe = exe or me.szExePath
+                found = found or _mark(me.szModule)
+                ok = k.Module32NextW(snap, ctypes.byref(me))
+        finally:
+            k.CloseHandle(snap)
+    found = found or (anticheat_dir(exe) if exe else None)
+    _AC[pid] = found
+    return found
+
+
+def _thread_anticheat(tid):
+    k = ctypes.WinDLL("kernel32", use_last_error=True)
+    k.OpenThread.restype = W.HANDLE
+    h = k.OpenThread(0x0800, False, int(tid))                                  # THREAD_QUERY_LIMITED_INFORMATION
+    if not h:
+        return None
+    try:
+        pid = k.GetProcessIdOfThread(h)
+    finally:
+        k.CloseHandle(h)
+    return anticheat(pid) if pid else None
+
+
+def refuse_anticheat(pid=None, exe_path=None):
+    ac = anticheat(pid) if pid else None
+    ac = ac or (anticheat_dir(exe_path) if exe_path else None)
+    if ac:
+        raise RuntimeError(f"this program uses anti-cheat ({ac}): PC-Control puts nothing inside it, because the anti-cheat could take "
+                           "it for a cheat and ban the user's account; action not executed. Ask the user to do this themselves")
 
 
 _VP, _VP_PATCHED, _RAW_KB = {}, set(), {}
@@ -471,6 +547,9 @@ class FocusGuard:
                 return False
             if tid in self.hooks:
                 return True
+            if _thread_anticheat(tid):                               # the one place every hook goes through: never into such a game
+                self.errors[tid] = "anti-cheat"
+                return False
             arch = arch or self.arch.get(tid, "native")
             self.arch[tid] = arch
             try:
@@ -553,6 +632,8 @@ class FocusGuard:
         """Start suspended, install on its initial thread, then resume. Never run an unguarded failed launch."""
         if self.stop.is_set():
             raise RuntimeError("cannot launch with a closed focus guard")
+        from .apps import split
+        refuse_anticheat(exe_path=str(command[0]) if isinstance(command, (list, tuple)) else split(command)[0].strip('"'))
         p = subprocess.Popen(command, startupinfo=startupinfo, cwd=cwd, creationflags=creationflags | 0x00000004, env=env)
         self.processes.append(p)
         try:
@@ -712,6 +793,7 @@ class FocusGuard:
         import win32process
         guard = cls("")
         tid, pid = win32process.GetWindowThreadProcessId(hwnd)
+        refuse_anticheat(pid)                                        # never inside a game protected by anti-cheat
         arch = process_arch(pid)
         if arch not in ("native", "x86"):
             raise RuntimeError("cannot protect this app's focus across different process architectures; action not executed")
