@@ -14,6 +14,8 @@ ALLOWED = ["github.com/VortexJer/PC-Control",
            "github.com/nvaccess/nvda", "github.com/skelsec/aardwolf",   # public projects cited as research sources
            "github.com/notepad-plus-plus/notepad-plus-plus",         # a real test app's official download (tools/realapps.py)
            "github.com/microsoft/OmniParser",                        # public project cited as a research source
+           "github.com/AndreMiras/pycaw", "github.com/CursorTouch/Windows-MCP",   # public projects cited (docs/RESEARCH-APP-FAMILIES.md)
+           "api.github.com/repos/",                                  # GitHub's release API (tools/realapps.py), not a person
            'os.environ.get("APPDATA"', 'os.environ.get("LOCALAPPDATA"']   # the variable NAME, not anyone's path
 
 def scan(text, patterns):

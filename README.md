@@ -241,6 +241,21 @@ You can keep working in the app while Claude works in it, as long as you do not 
   pixels at the target: a real change is reported as seen, an action that changed nothing is reported as `NO VISIBLE EFFECT`, never `ok`.
 - **No loops:** the same call failing the same way twice gets an explanation of what to do instead; a third identical attempt is refused
   without acting until the window changes.
+- **Apps that ask Windows where the mouse is, or read only Raw Input (Blender, game engines, 3D tools):** detected by themselves, nothing
+  app-specific. The guard inside the app answers its "where is the mouse" calls with Claude's point while PC-Control delivers a click, and
+  takes keys that PC-Control posts as Raw Input (exact characters, accents and emoji included, modifiers held for that app alone). The
+  user's mouse and keyboard are never used. `key` takes `target` x,y: where the mouse is for that key. A background app is never let move
+  or confine the user's mouse (a grab tool, a game's mouse-look). See [the research](docs/RESEARCH-APP-FAMILIES.md).
+- **Chromium-based apps (Spotify, Discord, VS Code, Brave, the Claude desktop app):** recognised by Chromium's own files next to their
+  exe (Store aliases resolved) and opened with accessibility on and occlusion off: their page is readable and they keep painting behind
+  your windows.
+- **The taskbar:** `window="taskbar"`. Its volume button takes `scroll` (2 per step, like the wheel) and `type` 0-100 / mute through
+  Windows' audio API: no flyout, no focus change. Other taskbar buttons open Windows UI in front of you, so you are asked first.
+- **Hidden views:** an app's invisible web view or dialog (Acrobat keeps one over the page) still publishes its buttons; anything another
+  window of the app covers is not offered, and text an app only draws is read by OCR of what is on screen.
+- **Games with anti-cheat:** PC-Control puts nothing inside them (a foreign DLL can get your account banned): it says so and does nothing.
+- **Apps whose UI Automation is very slow** (reported for Premiere Pro, which can freeze while a tree is read): detected while reading and
+  from then on read from pixels only.
 
 ## Tools
 
@@ -277,7 +292,8 @@ You can keep working in the app while Claude works in it, as long as you do not 
 - Windows running as administrator cannot be read from a normal process (Windows blocks it).
 - Modern Store/XAML apps (Calculator, Paint, Settings) may ignore background mouse messages. For buttons, PC-Control can use UI Automation patterns. These patterns are app-provided and are not a universal focus-isolation guarantee. The modern Paint canvas ignores background drags: PC-Control now refuses that unsupported operation instead of reporting a successful stroke. Other canvases still require visual verification.
 - Some apps ignore "start minimized". A native, thread-specific CBT guard now vetoes programmatic activation/focus changes in compatible target threads, rather than restoring focus after it was stolen. It distinguishes top-level windows sharing a process, while allowing their own dialogs and user activation. A temporary, thread-specific message hook confirms delivery with a tagged `WM_NULL` heartbeat; it inspects no keyboard/mouse contents and is removed immediately. Startup GUI-queue initialization, new broker processes, protected apps and architecture differences still limit coverage; this is not a universal guarantee for every app.
-- Chromium browsers (Chrome, Edge) and Electron apps expose the page contents only while their accessibility support is on; if a page shows only the browser's own controls, start it with `--force-renderer-accessibility`. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
+- Chromium browsers and Chromium-based apps expose the page contents only while their accessibility support is on: `open_app` starts them with it; one you started yourself may show only its own controls until it is restarted by `open_app`.
+- Shortcuts in apps with no menu entry for them are delivered as keys inside the app; some apps act on keys only while they are in front (Acrobat's zoom, a browser's back): the answer then says there was no visible effect. Web fields are filled through UI Automation (no focus), and web buttons and checkboxes are pressed the same way.
 - Apps without an accessibility tree rely on OCR; apps that draw everything themselves (some games) may need images.
 - A minimized window is read through its UI tree only: no screenshot, no scrolling, no clicks by coordinates (it would have to be shown).
   Open it from the taskbar when that is needed.
@@ -353,9 +369,28 @@ It only rewrites the tool list, the "keep ... on review" sentence and the pinned
 Guard is a human decision.
 ## Tested with
 
-Besides the throw-away test windows: Word, Excel, PowerPoint, Notepad, File Explorer, Edge (web pages), Calculator, Paint, Settings,
-KiCad, OBS Studio, RStudio, VS Code, Git GUI, Character Map, Windows Media Player and Clock, driven by Claude and by a cheaper model
-(Haiku) as a test user, whose reports fixed most of the 0.4 issues.
+"verified" = checked on the real app by a test in `tests/` or hands-on through the server (date), with your focus, mouse and keyboard
+untouched. "limits" = what does not work there and is reported as such, never as success.
+
+| App | Kind | Status | How |
+|---|---|---|---|
+| Word, Excel, PowerPoint | Office (COM) | verified | `test_word.py`, `test_excel.py`, `test_powerpoint.py` |
+| Notepad, Calculator, Paint, Settings, Photos | Win32 / Store apps | verified | `test_store_focus.py` |
+| Edge / Chrome pages | Chromium | verified | `test_web.py` |
+| Brave | Chromium | verified 2026-11-22 | hands-on: page read, link clicked, back button; `alt+left` delivered without visible effect (reported) |
+| Spotify | Chromium (CEF) | verified 2026-11-22 | hands-on: search typed, results read, play (hover-only button) and pause |
+| VS Code | Electron | limits | hands-on 2026-11-22: opens readable, menus and status bar; typing into its editor is refused (no writable value) |
+| Blender | Raw Input / reads the cursor | verified | `test_rawinput_live.py` (select, delete/undo, rename with accents and emoji, Text Editor) |
+| Adobe Acrobat Reader | CEF + custom | verified 2026-11-22 | hands-on: PDF text read (OCR of screen), search box, scroll; zoom shortcut without visible effect (reported) |
+| Adobe Premiere Pro / After Effects | Adobe | not tested | needs an Adobe account; protected by the slow-tree guard |
+| Windows Terminal, cmd, PowerShell | Terminals | verified | `test_terminal.py` |
+| Java (Swing, Oracle SQL Developer, JMeter) | Java Access Bridge | verified | `test_java_live.py` |
+| Remote Desktop | Pixels | verified | `test_rdp_live.py` |
+| Taskbar (volume) | Shell | verified | `test_taskbar_target.py` |
+| Games with anti-cheat | - | refused by design | `test_anticheat.py` |
+
+Earlier releases were also driven, by Claude and by a cheaper model (Haiku) as a test user, in KiCad, OBS Studio, RStudio, Git GUI,
+Character Map, Windows Media Player and Clock.
 
 ## Demo
 
