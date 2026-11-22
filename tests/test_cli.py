@@ -287,6 +287,19 @@ finally:
 c["the launcher copy goes to PC_CONTROL_HOME, not the real profile"] = bool(_dst) and _dst.startswith(_bin)
 c["an older copy of the same installation is removed"] = not os.path.exists(os.path.join(_bin, "0.1-old"))
 c["another installation's copy (another Python) is kept"] = os.path.exists(os.path.join(_bin, "0.1-other", "pc-control-mcp.exe"))
+# Reinstalling for ONE client (Codex) must not delete the older copy of the same installation that the OTHER client (Claude Code)
+# is still registered with: Claude Code would start nothing in its next session.
+_held = os.path.join(_bin, "0.0-claude", "pc-control-mcp.exe")
+os.makedirs(os.path.dirname(_held), exist_ok=True); open(_held, "wb").write(_fake_launcher(r"C:\Py313\python.exe", b"v0"))
+_cj = os.path.join(os.path.dirname(cli.claude_home()), ".claude.json")
+open(_cj, "w", encoding="utf-8").write(json.dumps({"mcpServers": {"PC-Control": {"command": _held}}}))
+try:
+    cli.pip_launcher = lambda: _src
+    cli.server_exe()
+finally:
+    cli.pip_launcher = _real_pl
+    os.remove(_cj)
+c["a copy another client is registered with (same Python, older) is kept"] = os.path.exists(_held)
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")

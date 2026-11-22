@@ -30,8 +30,57 @@ def skill_text():
         "  Permissions are requested through MCP elicitation: only the user can approve them. "
         "If the client cannot display the question, stop and report that limitation; do not retry or approve it yourself.\n"
         "- In Codex, `follow` uses PC-Control's `auto` policy. It does not read Codex's sandbox or approval mode. "
-        "Codex's own permissions still apply; no Claude hooks are installed.\n"
+        "PC-Control's tools are pre-approved in Codex (so they also run with approval_policy never); PC-Control's own mode asks "
+        "the user for protected windows. No Claude hooks are installed.\n"
     ) + text[end:]
+
+
+APPROVAL_KEY = "default_tools_approval_mode"
+
+
+def _preapprove(config):
+    """Mark PC-Control's tools as pre-approved in Codex's config.toml (`codex mcp add` has no flag for it).
+
+    Why: Codex treats a tool with no annotations as one that needs approval. With approval_policy "never" - Codex's "do not ask", like
+    Claude Code's dontAsk - such a call is not run but REJECTED ("MCP tool call requires approval, but approval policy is never"):
+    PC-Control could not click or type at all. Pre-approved, PC-Control's OWN mode decides, like in Claude Code: follow/auto act and
+    ask the user (MCP elicitation) only for protected windows; `ask` asks for every window. A question Codex cannot show is a no.
+    Only the PC-Control table is touched; the rest of the file stays byte for byte. Returns True if the key is set."""
+    if not os.path.exists(config):
+        return False
+    lines = _read(config).splitlines(keepends=True)
+    header = f"[mcp_servers.{cli.SERVER_NAME}]"
+    try:
+        i = next(n for n, l in enumerate(lines) if l.strip() == header)
+    except StopIteration:
+        return False
+    j = i + 1
+    while j < len(lines) and not lines[j].lstrip().startswith("["):      # the table's own keys end at the next header (its .env too)
+        j += 1
+    body = [n for n in range(i + 1, j) if lines[n].split("=", 1)[0].strip() == APPROVAL_KEY]
+    nl = "\r\n" if lines[i].endswith("\r\n") else "\n"
+    line = f'{APPROVAL_KEY} = "approve"{nl}'
+    if body:
+        lines[body[0]] = line
+    else:
+        k = j
+        while k > i + 1 and not lines[k - 1].strip():                    # before the blank lines that separate it from the next table
+            k -= 1
+        lines.insert(k, line)
+    tmp = config + ".pc-control.tmp"
+    with open(tmp, "w", encoding="utf-8", newline="") as f:
+        f.write("".join(lines))
+    try:
+        import tomllib
+        with open(tmp, "rb") as f:
+            tomllib.load(f)                                                # never leave Codex a file it cannot read
+    except ImportError:
+        pass
+    except Exception:
+        os.remove(tmp)
+        return False
+    os.replace(tmp, config)
+    return True
 
 
 def install(mode="follow", scope="user", allow_reads=False, runner=None, python=None):
@@ -48,6 +97,7 @@ def install(mode="follow", scope="user", allow_reads=False, runner=None, python=
                         "--env", "PC_CONTROL_CLIENT=codex", "--env", "PYTHONUTF8=1", "--"] + cli.server_command(python))
     if code:
         raise RuntimeError(f"codex mcp add failed: {out}")
+    approved = _preapprove(os.path.join(os.path.dirname(p["record"]), "config.toml"))
     owned = not os.path.exists(p["skill"]) or cli._ours(_read(p["skill"]))
     if owned:
         os.makedirs(os.path.dirname(p["skill"]), exist_ok=True)
@@ -74,6 +124,9 @@ def install(mode="follow", scope="user", allow_reads=False, runner=None, python=
             "skill installed" if owned else "foreign pc-control skill left untouched",
             "Codex instructions installed; no Claude settings or hooks changed",
             "follow uses auto policy in Codex; user permission requests use MCP elicitation",
+            ("PC-Control's tools pre-approved in Codex (they also work with approval_policy never; PC-Control's own mode decides)"
+             if approved else "WARNING: could not pre-approve PC-Control's tools in config.toml: with approval_policy never Codex "
+                              "rejects them; set default_tools_approval_mode = \"approve\" under [mcp_servers.PC-Control]"),
             "done: reconnect MCP or open a new Codex session to load PC-Control"]
 
 

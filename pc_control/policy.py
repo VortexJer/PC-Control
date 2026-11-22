@@ -113,12 +113,32 @@ LAUNCHERS = {"explorer", "start", "ie4uinit", "cmd", "forfiles", "pcalua", "runa
 SCRIPT_ARG = re.compile(r"\.(bat|cmd|ps1|psm1|vbs|vbe|js|jse|wsf|wsh|hta|msi|msix|reg|scr|com|cpl|jar|lnk|appref-ms)\b", re.I)
 
 
+CODEX = {"full_access": False}      # what the LAST tool call of this Codex session said about its permissions (one server per session)
+
+
+def note_codex_call(meta):
+    """Codex sends its sandbox state with every tool call (_meta: x-codex-turn-metadata.sandbox_mode and, because the server asks for
+    it, codex/sandbox-state-meta.permissionProfile). Measured with codex exec 0.171: Full Access = sandbox_mode "danger-full-access"
+    and permissionProfile {"type": "disabled"}; Workspace / Read only = "workspace-write" / "read-only" with a managed profile.
+    Read on EVERY call: /permissions can change in the middle of a session."""
+    if not isinstance(meta, dict):
+        return
+    turn = meta.get("x-codex-turn-metadata") or {}
+    state = meta.get("codex/sandbox-state-meta") or meta.get("codex/sandbox-state") or {}
+    mode = turn.get("sandbox_mode") if isinstance(turn, dict) else None
+    profile = (state.get("permissionProfile") or {}).get("type") if isinstance(state, dict) else None
+    if mode is None and profile is None:
+        return                                                   # an older Codex that sends neither: keep what was known
+    CODEX["full_access"] = mode == "danger-full-access" or (mode is None and profile == "disabled")
+
+
 def follow_mode():
-    """PC_CONTROL_MODE=follow (default): PC-Control follows CLAUDE CODE's permission mode, as cautious as the user chose to be:
-    bypassPermissions -> bypass (asks nothing); auto -> auto (protected windows and delicate actions); default, acceptEdits and plan
-    -> ask (every window the first time, "don't ask again" per window). If Claude Code's mode is unknown (no hook), it behaves like auto."""
+    """PC_CONTROL_MODE=follow (default): PC-Control follows the CLIENT's permission mode, as cautious as the user chose to be.
+    Claude Code: bypassPermissions -> bypass (asks nothing); auto -> auto (protected windows and delicate actions); default, acceptEdits
+    and plan -> ask (every window the first time, "don't ask again" per window). If Claude Code's mode is unknown (no hook): auto.
+    Codex: Full Access in /permissions (no sandbox, like Claude's --dangerously-skip-permissions) -> bypass; anything else -> auto."""
     if envvars.get("CLIENT") == "codex":
-        return "auto"
+        return "bypass" if CODEX["full_access"] else "auto"
     try:
         from . import perm
         pm = perm.cc_mode().strip().lower()

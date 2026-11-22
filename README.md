@@ -83,7 +83,9 @@ same as the commands above.
 
 **Codex:** `pc-control install --client codex` registers the server with `codex mcp add`, installs the skill in
 `~/.agents/skills/pc-control` and a managed block in `$CODEX_HOME/AGENTS.md`. Permission requests reach you through MCP elicitation
-(if Codex cannot show one, the action is refused). Only user scope; `--allow-reads` is Claude-only. Both clients can be installed at
+(if Codex cannot show one, the action is refused). Its tools are registered pre-approved in Codex (`default_tools_approval_mode =
+"approve"`): with `approval_policy = "never"` Codex rejects every MCP tool that needs approval, so PC-Control's own mode decides
+instead. Only user scope; `--allow-reads` is Claude-only. Both clients can be installed at
 once; uninstalling one keeps what the other needs.
 
 **Native focus guard:** included in the package (x64, ARM64 and x86 binaries; no compiler needed). The ARM64 build is cross-compiled
@@ -114,7 +116,7 @@ Pick one with `pc-control install --mode ...` or the `PC_CONTROL_MODE` environme
 
 | Mode | What it does |
 |---|---|
-| `follow` (default) | Follows Claude Code's own permission mode, as cautious as you chose to be: `bypassPermissions` -> `bypass`, `auto` -> `auto`, `default` / `acceptEdits` / `plan` -> `ask`. |
+| `follow` (default) | Follows the client's own permission mode, as cautious as you chose to be. Claude Code: `bypassPermissions` -> `bypass`, `auto` -> `auto`, `default` / `acceptEdits` / `plan` -> `ask`. Codex: **Full Access** in `/permissions` (no sandbox, `--dangerously-bypass-approvals-and-sandbox`) -> `bypass`; Workspace or Read only -> `auto`. Codex sends its sandbox state with every call, so changing `/permissions` mid-session applies to the next call. |
 | `auto` | Filters apps **by category**, no list to maintain: password managers and authenticators, terminals, system administration tools, remote access, crypto wallets, the AI client itself, mail and messaging apps, VPN/security tools, signing/identity apps, developer tools with credentials, and any window whose title is about banking, payments or passwords are *protected*: PC-Control asks you before Claude can use them. Delicate actions (pay, delete, send, install, sign out...) are asked every time. It never types into a password field. |
 | `ask` | The lowest-risk mode: **every window** asks. A plain *Yes* is for that call only; *Yes, and don't ask again* remembers that one window for the session. Protected windows ask too. |
 | `strict` | `auto` plus: acting only on apps listed in `PC_CONTROL_ALLOW=app1,app2` or `~/.pc-control/allow.txt`. |

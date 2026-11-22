@@ -69,6 +69,33 @@ class CodexTests(unittest.TestCase):
         self.assertTrue(Path(cli.data_home()).exists())
         claude_record.unlink()
 
+    def test_tools_preapproved_for_approval_policy_never(self):
+        # Codex rejects an MCP call that needs approval when approval_policy is "never" (Codex's "do not ask"): PC-Control's table is
+        # pre-approved so its own mode decides. Written as `codex mcp add` leaves it: the table, its .env subtable, other servers.
+        import tomllib
+        config = Path(codex.paths()["record"]).parent / "config.toml"
+        config.parent.mkdir(parents=True)
+        original = ('model = "m"\n\n[mcp_servers.blender]\ncommand = "uvx"\n\n'
+                    "[mcp_servers.PC-Control]\ncommand = 'C:\\x\\pc-control-mcp.exe'\n\n"
+                    '[mcp_servers.PC-Control.env]\nPC_CONTROL_MODE = "follow"\n\n'
+                    '[mcp_servers.chrome]\ncommand = "node"\ndefault_tools_approval_mode = "prompt"\n')
+        config.write_text(original, encoding="utf-8")
+        lines = self.install()
+        self.install()                                                     # idempotent: the key appears once
+        text = config.read_text(encoding="utf-8")
+        data = tomllib.loads(text)
+        self.assertEqual(data["mcp_servers"]["PC-Control"]["default_tools_approval_mode"], "approve")
+        self.assertEqual(data["mcp_servers"]["PC-Control"]["env"]["PC_CONTROL_MODE"], "follow")
+        self.assertEqual(data["mcp_servers"]["chrome"]["default_tools_approval_mode"], "prompt")       # another server untouched
+        self.assertEqual(text.count("default_tools_approval_mode"), 2)
+        self.assertEqual(text.replace('default_tools_approval_mode = "approve"\n', "", 1), original)  # nothing else changed
+        self.assertTrue(any("pre-approved" in l for l in lines))
+        # no PC-Control table (codex mcp add failed to write it): nothing is invented, the install says so
+        config.write_text('[mcp_servers.other]\ncommand = "o"\n', encoding="utf-8")
+        lines = self.install()
+        self.assertNotIn("PC-Control", config.read_text(encoding="utf-8"))
+        self.assertTrue(any(l.startswith("WARNING: could not pre-approve") for l in lines))
+
     def test_created_agents_removed(self):
         self.install()
         codex.uninstall(runner=self.runner)
@@ -157,6 +184,41 @@ class CodexTests(unittest.TestCase):
         with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "claude", "PC_CONTROL_MODE": "follow"}):
             with patch("pc_control.perm.cc_mode", return_value="bypassPermissions"):
                 self.assertEqual(policy.mode(), "bypass")
+
+    def test_codex_full_access_follows_permissions_call_by_call(self):
+        # _meta exactly as Codex 0.171 sends it (measured with codex exec and a probe server): Full Access = no sandbox
+        full = {"x-codex-turn-metadata": {"sandbox": "none", "sandbox_mode": "danger-full-access"},
+                "codex/sandbox-state-meta": {"permissionProfile": {"type": "disabled"}, "sandboxCwd": "file:///C:/x"}}
+        workspace = {"x-codex-turn-metadata": {"sandbox": "windows_sandbox", "sandbox_mode": "workspace-write"},
+                     "codex/sandbox-state-meta": {"permissionProfile": {"type": "managed", "network": "restricted"}}}
+        read_only = {"x-codex-turn-metadata": {"sandbox_mode": "read-only"}, "codex/sandbox-state-meta": {"permissionProfile": {"type": "managed"}}}
+        try:
+            with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "codex", "PC_CONTROL_MODE": "follow"}):
+                policy.note_codex_call(full)
+                self.assertEqual(policy.mode(), "bypass")                      # Full Access asks nothing, like --dangerously-skip-permissions
+                self.assertIsNone(policy.needs_ask(policy.mode(), "chrome", "Santander - banca online"))
+                policy.note_codex_call(workspace)                              # /permissions changed mid-session: the next call says so
+                self.assertEqual(policy.mode(), "auto")
+                self.assertIsNotNone(policy.needs_ask(policy.mode(), "chrome", "Santander - banca online"))
+                policy.note_codex_call(full); policy.note_codex_call(read_only)
+                self.assertEqual(policy.mode(), "auto")
+                policy.note_codex_call(full); policy.note_codex_call({"progress_token": 1})   # a call without that information: unchanged
+                self.assertEqual(policy.mode(), "bypass")
+                policy.note_codex_call({"codex/sandbox-state-meta": {"permissionProfile": {"type": "disabled"}}})   # profile only
+                self.assertEqual(policy.mode(), "bypass")
+            with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "codex", "PC_CONTROL_MODE": "ask"}):
+                self.assertEqual(policy.mode(), "ask")                         # an explicit mode is the user's choice: Full Access does not override it
+            with patch.dict(os.environ, {"PC_CONTROL_CLIENT": "claude", "PC_CONTROL_MODE": "follow"}), \
+                    patch("pc_control.perm.cc_mode", return_value="default"):
+                self.assertEqual(policy.mode(), "ask")                         # Codex's state never leaks into Claude Code's follow
+        finally:
+            policy.CODEX["full_access"] = False
+
+    def test_server_asks_codex_for_its_sandbox_state(self):
+        from pc_control import server
+        low = getattr(server.mcp, "_lowlevel_server", None) or server.mcp._mcp_server
+        caps = low.create_initialization_options().capabilities
+        self.assertIn("codex/sandbox-state-meta", caps.experimental or {})
 
     def test_permission_no_claude_fallback(self):
         from pc_control import server

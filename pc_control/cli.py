@@ -507,6 +507,27 @@ def _launcher_python(data):
     return m.group(1).decode("utf-8", "replace").lower() if m else None
 
 
+def _registered_launchers():
+    """Every pc-control-mcp.exe a client is registered with right now: Claude Code (~/.claude.json, user and project scopes) and Codex
+    (config.toml). Reinstalling for ONE client must not delete the copy the other one still starts."""
+    import re
+    files = [os.path.join(os.path.dirname(claude_home()), ".claude.json"), os.path.join(claude_home(), ".claude.json")]
+    try:
+        from . import codex
+        files.append(os.path.join(os.path.dirname(codex.paths()["record"]), "config.toml"))
+    except Exception:
+        pass
+    out = set()
+    for f in files:
+        try:
+            text = open(f, encoding="utf-8", errors="replace").read()
+        except OSError:
+            continue
+        for m in re.findall(r"[A-Za-z]:[\\/][^\"'\r\n]*?pc-control-mcp\.exe", text):
+            out.add(os.path.normcase(os.path.normpath(m.replace("\\\\", "\\"))))
+    return out
+
+
 def server_exe():
     """The launcher Claude Code / Codex run: a COPY of pip's, in ~/.pc-control/bin/<version>/pc-control-mcp.exe (same program name, so
     tools that police agents still recognize it). Windows cannot replace an .exe that is running, and every open session runs one: with
@@ -527,9 +548,10 @@ def server_exe():
             tmp = dst + ".new"
             open(tmp, "wb").write(data); os.replace(tmp, dst)
         mine = _launcher_python(data)
+        used = _registered_launchers()
         for d in os.listdir(base):
-            if d == tag:
-                continue
+            if d == tag or os.path.normcase(os.path.join(base, d, "pc-control-mcp.exe")) in used:
+                continue                       # a client is still registered with that copy (Claude Code while Codex is reinstalled)
             # only OLDER copies of THIS installation (same Python inside): another installation's copy (Claude Code on one Python,
             # Codex or a venv on another) is what that client is registered with, and removing it would break that client
             try:

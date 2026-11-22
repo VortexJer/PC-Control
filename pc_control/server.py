@@ -241,6 +241,7 @@ def tool(fn):
 
     @functools.wraps(fn)
     async def wrapper(*a, ctx: Context, **k):
+        _note_client_state(ctx)
         try:
             try:
                 return _branded(await asyncio.to_thread(inner, *a, **k))
@@ -260,6 +261,36 @@ def tool(fn):
     wrapper.__annotations__ = {k: v for k, v in fn.__annotations__.items() if k != "confirm"} | {"ctx": Context}
     wrapper.__doc__ = brand.text(fn.__doc__)                    # the tool description, too
     return mcp.tool(description=brand.text(fn.__doc__))(wrapper)
+
+
+def _note_client_state(ctx):
+    """Codex tells every tool call its permissions (Full Access or a sandbox): `follow` in Codex follows that, call by call."""
+    if envvars.get("CLIENT") != "codex":
+        return
+    try:
+        meta = ctx.request_context.meta
+        meta = meta.model_dump(by_alias=True) if hasattr(meta, "model_dump") else meta
+        policy.note_codex_call(meta)
+    except Exception:
+        pass                                                      # no metadata: the mode stays what it was (auto by default)
+
+
+def _ask_codex_for_sandbox_state():
+    """Ask Codex for its sandbox state in every tool call (experimental capability codex/sandbox-state-meta; Claude Code ignores it)."""
+    low = getattr(mcp, "_lowlevel_server", None) or getattr(mcp, "_mcp_server", None)
+    orig = getattr(low, "create_initialization_options", None)
+    if orig is None:
+        return
+
+    @functools.wraps(orig)
+    def with_codex_caps(notification_options=None, experimental_capabilities=None, *a, **kw):
+        caps = dict(experimental_capabilities or {})
+        caps.setdefault("codex/sandbox-state-meta", {})
+        return orig(notification_options, caps, *a, **kw)
+    low.create_initialization_options = with_codex_caps
+
+
+_ask_codex_for_sandbox_state()
 
 
 def _clean_error(e):
