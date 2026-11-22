@@ -128,6 +128,24 @@ c["key-up has the transition bits"] = core.key_lparam(0x0D, True) & 0xC0000000 =
 c["a pixel change at the element is an observed effect"] = server.verdict("ok (mouse message at 1,1)", "pixels changed at the element and around it (2.0% of the window)").startswith("effect observed")
 c["no pixel change is a warning"] = "NO VISIBLE EFFECT" in server.verdict("ok (x)", "nothing changed on screen (pixels compared before and after)")
 
+# ---- Spotify's search box on its home page: a web combobox with a writable value but NO TextPattern and NO inner field. It was taken
+# for a <select> (expand, look for an option) and typing was refused. A <select> opens a MENU, a text input with suggestions a LISTBOX
+# (measured in Chromium on a test page): only the popup tells them apart.
+from pc_control import actions
+
+
+class _Combo:
+    def __init__(self, props): self.AriaProperties = props
+    def GetPattern(self, pid): return None
+    def GetChildren(self): return []
+
+
+c["Spotify-like search combobox (listbox popup, no TextPattern, no children) takes typed text"] = actions._types_text(
+    _Combo("expanded=true;haspopup=listbox;multiline=false;multiselectable=false;required=false;hasactions=false"))
+c["a <select> (menu popup) is still a choice among options"] = not actions._types_text(
+    _Combo("expanded=false;haspopup=menu;multiline=false;multiselectable=false"))
+c["a combobox with no popup information is not assumed to take text"] = not actions._types_text(_Combo(""))
+
 bad = [k for k, v in c.items() if not v]
 for k, v in c.items():
     print(("OK   " if v else "FAIL ") + k)

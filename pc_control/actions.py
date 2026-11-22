@@ -665,9 +665,18 @@ def _types_text(ctrl):
     try:
         if ctrl.GetPattern(auto.PatternId.TextPattern):
             return True
-        return any(ch.ControlTypeName == "EditControl" for ch in ctrl.GetChildren())
+        if any(ch.ControlTypeName == "EditControl" for ch in ctrl.GetChildren()):
+            return True
     except Exception:
         return False
+    # A web page tells them apart by what pops up: a <select> opens a MENU (Chromium: haspopup=menu), a text input with suggestions
+    # (Spotify's search, an <input list=...>, role=combobox) a LISTBOX. Measured on a test page: everything else - a writable value,
+    # multiline=false, no children - is the same, and Spotify's box on its home page has neither TextPattern nor an inner field.
+    try:
+        props = dict(p.split("=", 1) for p in (ctrl.AriaProperties or "").split(";") if "=" in p)
+    except Exception:
+        return False
+    return props.get("haspopup", "") in ("listbox", "grid", "tree", "dialog")
 
 
 def select_option(ctrl, text):
