@@ -500,6 +500,13 @@ def pip_launcher():
     return None
 
 
+def _launcher_python(data):
+    """The Python a pip launcher runs (the '#!' line it carries), lower-cased; None if there is none."""
+    import re
+    m = re.search(rb"#!([A-Za-z]:\\[^\r\n\"]{3,400}?python[w]?\.exe)", data)
+    return m.group(1).decode("utf-8", "replace").lower() if m else None
+
+
 def server_exe():
     """The launcher Claude Code / Codex run: a COPY of pip's, in ~/.pc-control/bin/<version>/pc-control-mcp.exe (same program name, so
     tools that police agents still recognize it). Windows cannot replace an .exe that is running, and every open session runs one: with
@@ -510,7 +517,7 @@ def server_exe():
         return None
     from . import __version__
     import hashlib
-    base = os.path.join(os.path.expanduser("~"), ".pc-control", "bin")
+    base = os.path.join(data_home(), "bin")
     try:
         data = open(src, "rb").read()                                  # the launcher embeds its Python's path: one copy per launcher
         tag = f"{__version__}-{hashlib.sha256(data).hexdigest()[:10]}"
@@ -519,8 +526,17 @@ def server_exe():
             os.makedirs(os.path.dirname(dst), exist_ok=True)
             tmp = dst + ".new"
             open(tmp, "wb").write(data); os.replace(tmp, dst)
+        mine = _launcher_python(data)
         for d in os.listdir(base):
-            if d != tag:
+            if d == tag:
+                continue
+            # only OLDER copies of THIS installation (same Python inside): another installation's copy (Claude Code on one Python,
+            # Codex or a venv on another) is what that client is registered with, and removing it would break that client
+            try:
+                other = _launcher_python(open(os.path.join(base, d, "pc-control-mcp.exe"), "rb").read())
+            except OSError:
+                other = None
+            if mine and other == mine:
                 shutil.rmtree(os.path.join(base, d), ignore_errors=True)   # an old version still running stays (Windows refuses)
         return dst
     except OSError:

@@ -231,7 +231,7 @@ try:
     exe = cli.server_exe()
     c["sessions run a COPY of the launcher (pip can replace its own), named pc-control-mcp.exe, per version"] = (
         exe and exe != src and os.path.basename(exe) == "pc-control-mcp.exe" and open(exe, "rb").read() == b"MZ launcher"
-        and os.path.normcase(os.path.join(_home, ".pc-control", "bin")) in os.path.normcase(exe))
+        and os.path.normcase(os.path.join(cli.data_home(), "bin")) in os.path.normcase(exe))      # PC_CONTROL_HOME when set
     cli.pip_launcher = real_pl
 finally:
     if _old is not None:
@@ -269,6 +269,24 @@ c["the skill tells Claude to close and reopen with behind=true by itself, only f
 _srv_src = open(os.path.join(os.path.dirname(_core.__file__), "server.py"), encoding="utf-8").read()
 c["look names the way out for a fresh app (close, reopen behind) and forbids closing one the user may be using"] = (
     "close it (key alt+f4) and open it again with open_app(behind=true)" in _srv_src and "do NOT close it, the user may be using it" in _srv_src)
+# The launcher copies: in PC_CONTROL_HOME (never the real profile in a test), and an update removes only OLDER copies of THE SAME
+# installation. Another installation's copy (Claude Code on one Python, Codex or a venv on another) is what that client runs: it stays.
+_bin = os.path.join(ph, "bin")
+def _fake_launcher(python, extra=b""):
+    return b"MZ" + b"\0" * 64 + b"#!" + python.encode() + b"\r\n" + extra
+_mine = _fake_launcher(r"C:\Py313\python.exe", b"v2")
+for tag, data in (("0.1-old", _fake_launcher(r"C:\Py313\python.exe", b"v1")), ("0.1-other", _fake_launcher(r"C:\venv\Scripts\python.exe"))):
+    os.makedirs(os.path.join(_bin, tag), exist_ok=True); open(os.path.join(_bin, tag, "pc-control-mcp.exe"), "wb").write(data)
+_src = os.path.join(tmp, "pc-control-mcp.exe"); open(_src, "wb").write(_mine)
+_real_pl = cli.pip_launcher
+try:
+    cli.pip_launcher = lambda: _src
+    _dst = cli.server_exe()
+finally:
+    cli.pip_launcher = _real_pl
+c["the launcher copy goes to PC_CONTROL_HOME, not the real profile"] = bool(_dst) and _dst.startswith(_bin)
+c["an older copy of the same installation is removed"] = not os.path.exists(os.path.join(_bin, "0.1-old"))
+c["another installation's copy (another Python) is kept"] = os.path.exists(os.path.join(_bin, "0.1-other", "pc-control-mcp.exe"))
 for k, v in c.items(): print(("OK   " if v else "FAIL ") + k)
 bad = [k for k, v in c.items() if not v]
 print(f"cli verification passed ({len(c)} checks)" if not bad else f"cli verification FAILED ({len(bad)})")
